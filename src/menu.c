@@ -14,6 +14,7 @@
 #endif
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "drw.h"
 #include "log.h"
@@ -174,7 +175,8 @@ menu_create(Display *dpy, Window root, Drw *drw, Clr **scheme)
 	wa.border_pixel      = 0;
 	wa.colormap          = DefaultColormap(dpy, DefaultScreen(dpy));
 	wa.event_mask        = ExposureMask | KeyPressMask | ButtonPressMask |
-	    ButtonReleaseMask | PointerMotionMask | LeaveWindowMask;
+	    ButtonReleaseMask | PointerMotionMask | LeaveWindowMask |
+	    FocusChangeMask;
 
 	menu->win = XCreateWindow(dpy, root, 0, 0, menu->w, menu->h, 1,
 	    DefaultDepth(dpy, DefaultScreen(dpy)), CopyFromParent,
@@ -371,13 +373,23 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data)
 	menu->ignore_next_release = 1; /* Ignore the pending ButtonRelease */
 	menu_render(menu);
 
-	/* Grab pointer - do this AFTER rendering so window is ready */
-	int grab_result = XGrabPointer(menu->dpy, menu->win, False,
-	    ButtonPressMask | ButtonReleaseMask | PointerMotionMask, GrabModeAsync,
-	    GrabModeAsync, None, None, CurrentTime);
+	/* Grab pointer - retry briefly if another client (e.g. Electron) still
+	 * holds the grab from the click that opened this menu. */
+	{
+		int grab_result = AlreadyGrabbed;
+		int tries;
 
-	if (grab_result != GrabSuccess) {
-		awm_error("Menu: Failed to grab pointer (result=%d)", grab_result);
+		for (tries = 0; tries < 5 && grab_result != GrabSuccess; tries++) {
+			if (tries > 0)
+				usleep(20000); /* 20 ms between retries */
+			XSync(menu->dpy, False);
+			grab_result = XGrabPointer(menu->dpy, menu->win, False,
+			    ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+			    GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+		}
+		if (grab_result != GrabSuccess)
+			awm_warn("Menu: Failed to grab pointer after %d tries (result=%d)",
+			    tries, grab_result);
 	}
 
 	{
@@ -661,6 +673,20 @@ menu_handle_event(Menu *menu, XEvent *ev)
 		if (menu->selected != -1) {
 			menu->selected = -1;
 			menu_render(menu);
+		}
+		return 1;
+
+	case FocusOut:
+		/*
+		 * Dismiss menu when keyboard focus leaves — this is the fallback
+		 * dismiss path when XGrabPointer/XGrabKeyboard failed (e.g. because
+		 * an Electron window held the grab).  Ignore grab-related transient
+		 * focus events (NotifyGrab / NotifyUngrab / NotifyWhileGrabbed) and
+		 * focus moving to an inferior window (submenu).
+		 */
+		if (ev->xfocus.detail != NotifyInferior &&
+		    ev->xfocus.mode != NotifyGrab && ev->xfocus.mode != NotifyUngrab) {
+			menu_hide(menu);
 		}
 		return 1;
 	}
