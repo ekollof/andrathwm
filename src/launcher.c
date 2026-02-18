@@ -992,19 +992,27 @@ launcher_hide(Launcher *launcher)
 }
 
 static void
-launcher_insert_char(Launcher *launcher, char c)
+launcher_insert_text(Launcher *launcher, const char *s, int len)
 {
-	if (launcher->input_len >= (int) sizeof(launcher->input) - 1)
+	int avail;
+
+	if (len <= 0)
 		return;
 
+	avail = (int) sizeof(launcher->input) - 1 - launcher->input_len;
+	if (avail <= 0)
+		return;
+	if (len > avail)
+		len = avail;
+
 	if (launcher->cursor_pos < launcher->input_len) {
-		memmove(launcher->input + launcher->cursor_pos + 1,
+		memmove(launcher->input + launcher->cursor_pos + len,
 		    launcher->input + launcher->cursor_pos,
 		    launcher->input_len - launcher->cursor_pos);
 	}
-	launcher->input[launcher->cursor_pos] = c;
-	launcher->input_len++;
-	launcher->cursor_pos++;
+	memcpy(launcher->input + launcher->cursor_pos, s, len);
+	launcher->input_len += len;
+	launcher->cursor_pos += len;
 	launcher->input[launcher->input_len] = '\0';
 
 	launcher_filter_items(launcher);
@@ -1017,17 +1025,22 @@ launcher_insert_char(Launcher *launcher, char c)
 static void
 launcher_delete_char(Launcher *launcher)
 {
+	int pos, nbytes;
+
 	if (launcher->cursor_pos <= 0 || launcher->input_len <= 0)
 		return;
 
-	launcher->input_len--;
-	launcher->cursor_pos--;
+	/* Walk back over UTF-8 continuation bytes (10xxxxxx) to find the
+	 * start of the codepoint, then delete the whole sequence. */
+	pos = launcher->cursor_pos - 1;
+	while (pos > 0 && ((unsigned char) launcher->input[pos] & 0xC0) == 0x80)
+		pos--;
+	nbytes = launcher->cursor_pos - pos;
 
-	if (launcher->cursor_pos < launcher->input_len) {
-		memmove(launcher->input + launcher->cursor_pos,
-		    launcher->input + launcher->cursor_pos + 1,
-		    launcher->input_len - launcher->cursor_pos);
-	}
+	memmove(launcher->input + pos, launcher->input + launcher->cursor_pos,
+	    launcher->input_len - launcher->cursor_pos);
+	launcher->input_len -= nbytes;
+	launcher->cursor_pos                 = pos;
 	launcher->input[launcher->input_len] = '\0';
 
 	launcher_filter_items(launcher);
@@ -1040,13 +1053,22 @@ launcher_delete_char(Launcher *launcher)
 static void
 launcher_delete_char_forward(Launcher *launcher)
 {
+	int end, nbytes;
+
 	if (launcher->cursor_pos >= launcher->input_len)
 		return;
 
-	memmove(launcher->input + launcher->cursor_pos,
-	    launcher->input + launcher->cursor_pos + 1,
-	    launcher->input_len - launcher->cursor_pos - 1);
-	launcher->input_len--;
+	/* Determine the byte length of the codepoint at cursor.
+	 * UTF-8 lead byte tells us how many bytes follow. */
+	end = launcher->cursor_pos + 1;
+	while (end < launcher->input_len &&
+	    ((unsigned char) launcher->input[end] & 0xC0) == 0x80)
+		end++;
+	nbytes = end - launcher->cursor_pos;
+
+	memmove(launcher->input + launcher->cursor_pos, launcher->input + end,
+	    launcher->input_len - end);
+	launcher->input_len -= nbytes;
 	launcher->input[launcher->input_len] = '\0';
 
 	launcher_filter_items(launcher);
@@ -1257,8 +1279,10 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 			KeySym         ks;
 
 			len = XLookupString(&ev->xkey, buf, sizeof(buf), &ks, &status);
-			if (len > 0 && isprint((unsigned char) buf[0])) {
-				launcher_insert_char(launcher, buf[0]);
+			if (len > 0 &&
+			    (isprint((unsigned char) buf[0]) ||
+			        (unsigned char) buf[0] >= 0x80)) {
+				launcher_insert_text(launcher, buf, len);
 			}
 		}
 
