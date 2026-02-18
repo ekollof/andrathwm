@@ -64,5 +64,13 @@ void compositor_damage_all(void);
  */
 void compositor_raise_overlay(void);
 
+/*
+ * Fill *req_base and *err_base with the XRender major opcode and error base
+ * (needed by the X error handler to whitelist transient XRender errors that
+ * arise from GL windows closing while a repaint is in flight).
+ * Sets both to -1 if the compositor is not active.
+ */
+void compositor_xrender_errors(int *req_base, int *err_base);
+
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */

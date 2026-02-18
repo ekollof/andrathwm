@@ -629,6 +629,23 @@ xerror(Display *dpy, XErrorEvent *ee)
 	    (ee->request_code == X_GrabKey && ee->error_code == BadAccess) ||
 	    (ee->request_code == X_CopyArea && ee->error_code == BadDrawable))
 		return 0;
+#ifdef COMPOSITOR
+	/* Transient XRender errors (BadPicture, BadPictFormat) arise when a GL
+	 * window (e.g. alacritty) exits while a compositor repaint is in flight.
+	 * The compositor uses xerror_push_ignore() around individual calls, but
+	 * asynchronous errors can still slip through.  Whitelist them here so
+	 * the WM does not exit. */
+	{
+		int render_req, render_err;
+		compositor_xrender_errors(&render_req, &render_err);
+		if (render_req > 0 && ee->request_code == render_req &&
+		    (ee->error_code == render_err           /* BadPicture    */
+		        || ee->error_code == render_err + 1 /* BadPictFormat */
+		        || ee->error_code == BadDrawable ||
+		        ee->error_code == BadPixmap))
+			return 0;
+	}
+#endif
 	awm_error("X11 error: request_code=%d, error_code=%d", ee->request_code,
 	    ee->error_code);
 	return xerrorxlib(dpy, ee); /* may call exit */

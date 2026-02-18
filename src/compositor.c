@@ -80,6 +80,9 @@ static struct {
 	Atom    atom_esetroot; /* ESETROOT_PMAP_ID                    */
 	Pixmap  wallpaper_pixmap;
 	Picture wallpaper_pict;
+	/* XRender extension codes — needed for error whitelisting */
+	int render_request_base;
+	int render_err_base;
 } comp;
 
 /* -------------------------------------------------------------------------
@@ -202,6 +205,13 @@ compositor_init(GMainContext *ctx)
 	if (!XRenderQueryExtension(dpy, &render_ev, &render_err)) {
 		awm_warn("compositor: XRender extension not available");
 		return -1;
+	}
+	/* Store render error base for the X error handler whitelist */
+	comp.render_err_base = render_err;
+	{
+		int op, ev_dummy, err_dummy;
+		if (XQueryExtension(dpy, "RENDER", &op, &ev_dummy, &err_dummy))
+			comp.render_request_base = op;
 	}
 
 	/* --- Redirect all root children ---------------------------------------
@@ -734,6 +744,18 @@ compositor_raise_overlay(void)
 	XRaiseWindow(dpy, comp.overlay);
 }
 
+void
+compositor_xrender_errors(int *req_base, int *err_base)
+{
+	if (!comp.active) {
+		*req_base = -1;
+		*err_base = -1;
+		return;
+	}
+	*req_base = comp.render_request_base;
+	*err_base = comp.render_err_base;
+}
+
 /* -------------------------------------------------------------------------
  * Event handler
  * ---------------------------------------------------------------------- */
@@ -924,6 +946,11 @@ comp_repaint_idle(gpointer data)
 		return G_SOURCE_REMOVE;
 	}
 
+	/* Guard the entire paint loop: a GL window (e.g. alacritty) may destroy
+	 * its pixmap/picture between the XQueryTree call and the XRenderComposite
+	 * calls.  Absorb any resulting BadPicture/BadDrawable without crashing. */
+	xerror_push_ignore();
+
 	for (i = 0; i < nchildren; i++) {
 		CompWin *cw;
 		int      alpha_idx;
@@ -956,6 +983,8 @@ comp_repaint_idle(gpointer data)
 			    (unsigned int) (cw->h + 2 * cw->bw));
 		}
 	}
+
+	xerror_pop();
 
 	if (children)
 		XFree(children);
