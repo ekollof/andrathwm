@@ -2,12 +2,9 @@
  * See LICENSE file for copyright and license details. */
 
 #include "awm.h"
-#include "monitor.h"
 #include "client.h"
+#include "monitor.h"
 #include "spawn.h"
-#include "events.h"
-#include "ewmh.h"
-#include "systray.h"
 #include "xrdb.h"
 #include "config.h"
 #include "pertag.h"

@@ -3,15 +3,18 @@
  * Reusable menu system for awm
  */
 
-#include "menu.h"
-#include "drw.h"
-#include "log.h"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
-#include <X11/extensions/Xinerama.h>
 #include <X11/keysym.h>
+#ifdef XINERAMA
+#include <X11/extensions/Xinerama.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
+
+#include "drw.h"
+#include "log.h"
+#include "menu.h"
 
 #define MENU_ITEM_HEIGHT 22
 #define MENU_PADDING 4
@@ -219,46 +222,54 @@ static void
 menu_get_monitor_geometry(
     Display *dpy, int x, int y, int *mon_x, int *mon_y, int *mon_w, int *mon_h)
 {
-	XineramaScreenInfo *screens;
-	int                 nscreens, i;
-	int                 found = 0;
-
 	/* Default to full display */
 	*mon_x = 0;
 	*mon_y = 0;
 	*mon_w = DisplayWidth(dpy, DefaultScreen(dpy));
 	*mon_h = DisplayHeight(dpy, DefaultScreen(dpy));
 
-	if (!XineramaIsActive(dpy))
-		return;
+#ifdef XINERAMA
+	{
+		XineramaScreenInfo *screens;
+		int                 nscreens, i;
+		int                 found = 0;
 
-	screens = XineramaQueryScreens(dpy, &nscreens);
-	if (!screens)
-		return;
+		if (!XineramaIsActive(dpy))
+			return;
 
-	/* Find which screen contains the point */
-	for (i = 0; i < nscreens; i++) {
-		if (x >= screens[i].x_org && x < screens[i].x_org + screens[i].width &&
-		    y >= screens[i].y_org &&
-		    y < screens[i].y_org + screens[i].height) {
-			*mon_x = screens[i].x_org;
-			*mon_y = screens[i].y_org;
-			*mon_w = screens[i].width;
-			*mon_h = screens[i].height;
-			found  = 1;
-			break;
+		screens = XineramaQueryScreens(dpy, &nscreens);
+		if (!screens)
+			return;
+
+		/* Find which screen contains the point */
+		for (i = 0; i < nscreens; i++) {
+			if (x >= screens[i].x_org &&
+			    x < screens[i].x_org + screens[i].width &&
+			    y >= screens[i].y_org &&
+			    y < screens[i].y_org + screens[i].height) {
+				*mon_x = screens[i].x_org;
+				*mon_y = screens[i].y_org;
+				*mon_w = screens[i].width;
+				*mon_h = screens[i].height;
+				found  = 1;
+				break;
+			}
 		}
-	}
 
-	if (!found && nscreens > 0) {
-		/* Point not in any screen, use first screen */
-		*mon_x = screens[0].x_org;
-		*mon_y = screens[0].y_org;
-		*mon_w = screens[0].width;
-		*mon_h = screens[0].height;
-	}
+		if (!found && nscreens > 0) {
+			/* Point not in any screen, use first screen */
+			*mon_x = screens[0].x_org;
+			*mon_y = screens[0].y_org;
+			*mon_w = screens[0].width;
+			*mon_h = screens[0].height;
+		}
 
-	XFree(screens);
+		XFree(screens);
+	}
+#else
+	(void) x;
+	(void) y;
+#endif /* XINERAMA */
 }
 
 /* Show menu at coordinates */
@@ -288,8 +299,8 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data)
 	menu->x = x;
 	menu->y = y;
 
-	awm_debug("Menu: Initial pos (%d,%d) size %ux%u, monitor [%d,%d %dx%d]",
-	    x, y, menu->w, menu->h, mon_x, mon_y, mon_w, mon_h);
+	awm_debug("Menu: Initial pos (%d,%d) size %ux%u, monitor [%d,%d %dx%d]", x,
+	    y, menu->w, menu->h, mon_x, mon_y, mon_w, mon_h);
 
 	/* Ensure menu fits within monitor bounds */
 	if (menu->x + menu->w > mon_x + mon_w)

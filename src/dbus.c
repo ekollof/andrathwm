@@ -3,13 +3,12 @@
  * Generic D-Bus helper functions
  */
 
+#include "dbus.h"
+#include "log.h"
+#include "util.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dbus/dbus.h>
-#include "dbus.h"
-#include "util.h"
-#include "log.h"
 
 #define PROPERTIES_INTERFACE "org.freedesktop.DBus.Properties"
 
@@ -18,18 +17,19 @@ extern const unsigned int dbustimeout;
 
 /* ============================================================================
  * Async Callback Management
- * ============================================================================ */
+ * ============================================================================
+ */
 
 typedef struct AsyncCallData {
 	dbus_async_reply_callback callback;
-	void *user_data;
+	void                     *user_data;
 } AsyncCallData;
 
 static void
 async_call_notify_function(DBusPendingCall *pending, void *user_data)
 {
 	AsyncCallData *data = user_data;
-	DBusMessage *reply;
+	DBusMessage   *reply;
 
 	reply = dbus_pending_call_steal_reply(pending);
 	if (reply) {
@@ -46,8 +46,7 @@ async_call_notify_function(DBusPendingCall *pending, void *user_data)
  * Returns 1 on success, 0 on failure (with cleanup already done) */
 static int
 setup_async_callback(DBusPendingCall *pending,
-		     dbus_async_reply_callback callback,
-		     void *user_data)
+    dbus_async_reply_callback callback, void *user_data)
 {
 	AsyncCallData *data;
 
@@ -61,11 +60,11 @@ setup_async_callback(DBusPendingCall *pending,
 		return 0;
 	}
 
-	data->callback = callback;
+	data->callback  = callback;
 	data->user_data = user_data;
 
-	if (!dbus_pending_call_set_notify(pending, async_call_notify_function,
-					  data, NULL)) {
+	if (!dbus_pending_call_set_notify(
+	        pending, async_call_notify_function, data, NULL)) {
 		free(data);
 		dbus_pending_call_cancel(pending);
 		dbus_pending_call_unref(pending);
@@ -77,18 +76,16 @@ setup_async_callback(DBusPendingCall *pending,
 
 /* ============================================================================
  * Method Call Helpers
- * ============================================================================ */
+ * ============================================================================
+ */
 
 /* Generic D-Bus method call helper (BLOCKING - deprecated for WM use) */
 DBusMessage *
-dbus_helper_call_method(DBusConnection *conn,
-			const char *service,
-			const char *path,
-			const char *interface,
-			const char *method)
+dbus_helper_call_method(DBusConnection *conn, const char *service,
+    const char *path, const char *interface, const char *method)
 {
 	DBusMessage *msg, *reply;
-	DBusError err;
+	DBusError    err;
 
 	if (!conn)
 		return NULL;
@@ -98,7 +95,8 @@ dbus_helper_call_method(DBusConnection *conn,
 		return NULL;
 
 	dbus_error_init(&err);
-	reply = dbus_connection_send_with_reply_and_block(conn, msg, dbustimeout, &err);
+	reply = dbus_connection_send_with_reply_and_block(
+	    conn, msg, dbustimeout, &err);
 	dbus_message_unref(msg);
 
 	if (dbus_error_is_set(&err)) {
@@ -111,15 +109,11 @@ dbus_helper_call_method(DBusConnection *conn,
 
 /* Async method call with callback */
 int
-dbus_helper_call_method_async(DBusConnection *conn,
-			      const char *service,
-			      const char *path,
-			      const char *interface,
-			      const char *method,
-			      dbus_async_reply_callback callback,
-			      void *user_data)
+dbus_helper_call_method_async(DBusConnection *conn, const char *service,
+    const char *path, const char *interface, const char *method,
+    dbus_async_reply_callback callback, void *user_data)
 {
-	DBusMessage *msg;
+	DBusMessage     *msg;
 	DBusPendingCall *pending;
 
 	if (!conn || !callback)
@@ -144,24 +138,22 @@ dbus_helper_call_method_async(DBusConnection *conn,
 
 /* Get string property via org.freedesktop.DBus.Properties (BLOCKING) */
 int
-dbus_helper_get_property_string(DBusConnection *conn,
-				const char *service,
-				const char *path,
-				const char *interface,
-				const char *property,
-				char **value)
+dbus_helper_get_property_string(DBusConnection *conn, const char *service,
+    const char *path, const char *interface, const char *property,
+    char **value)
 {
-	DBusMessage *msg, *reply;
+	DBusMessage    *msg, *reply;
 	DBusMessageIter args, variant;
-	DBusError err;
-	const char *str;
+	DBusError       err;
+	const char     *str;
 
 	if (!conn || !value)
 		return 0;
 
 	*value = NULL;
 
-	msg = dbus_message_new_method_call(service, path, PROPERTIES_INTERFACE, "Get");
+	msg = dbus_message_new_method_call(
+	    service, path, PROPERTIES_INTERFACE, "Get");
 	if (!msg)
 		return 0;
 
@@ -170,7 +162,8 @@ dbus_helper_get_property_string(DBusConnection *conn,
 	dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &property);
 
 	dbus_error_init(&err);
-	reply = dbus_connection_send_with_reply_and_block(conn, msg, dbustimeout, &err);
+	reply = dbus_connection_send_with_reply_and_block(
+	    conn, msg, dbustimeout, &err);
 	dbus_message_unref(msg);
 
 	if (dbus_error_is_set(&err)) {
@@ -207,21 +200,18 @@ dbus_helper_get_property_string(DBusConnection *conn,
 /* Async string property getter */
 int
 dbus_helper_get_property_string_async(DBusConnection *conn,
-				      const char *service,
-				      const char *path,
-				      const char *interface,
-				      const char *property,
-				      dbus_async_reply_callback callback,
-				      void *user_data)
+    const char *service, const char *path, const char *interface,
+    const char *property, dbus_async_reply_callback callback, void *user_data)
 {
-	DBusMessage *msg;
+	DBusMessage     *msg;
 	DBusPendingCall *pending;
-	DBusMessageIter args;
+	DBusMessageIter  args;
 
 	if (!conn || !callback)
 		return 0;
 
-	msg = dbus_message_new_method_call(service, path, PROPERTIES_INTERFACE, "Get");
+	msg = dbus_message_new_method_call(
+	    service, path, PROPERTIES_INTERFACE, "Get");
 	if (!msg)
 		return 0;
 
@@ -244,22 +234,19 @@ dbus_helper_get_property_string_async(DBusConnection *conn,
 
 /* Get int32 property via org.freedesktop.DBus.Properties (BLOCKING) */
 int
-dbus_helper_get_property_int(DBusConnection *conn,
-			     const char *service,
-			     const char *path,
-			     const char *interface,
-			     const char *property,
-			     int *value)
+dbus_helper_get_property_int(DBusConnection *conn, const char *service,
+    const char *path, const char *interface, const char *property, int *value)
 {
-	DBusMessage *msg, *reply;
+	DBusMessage    *msg, *reply;
 	DBusMessageIter args, variant;
-	DBusError err;
-	dbus_int32_t val;
+	DBusError       err;
+	dbus_int32_t    val;
 
 	if (!conn || !value)
 		return 0;
 
-	msg = dbus_message_new_method_call(service, path, PROPERTIES_INTERFACE, "Get");
+	msg = dbus_message_new_method_call(
+	    service, path, PROPERTIES_INTERFACE, "Get");
 	if (!msg)
 		return 0;
 
@@ -268,7 +255,8 @@ dbus_helper_get_property_int(DBusConnection *conn,
 	dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &property);
 
 	dbus_error_init(&err);
-	reply = dbus_connection_send_with_reply_and_block(conn, msg, dbustimeout, &err);
+	reply = dbus_connection_send_with_reply_and_block(
+	    conn, msg, dbustimeout, &err);
 	dbus_message_unref(msg);
 
 	if (dbus_error_is_set(&err)) {
@@ -296,22 +284,19 @@ dbus_helper_get_property_int(DBusConnection *conn,
 
 /* Async int32 property getter */
 int
-dbus_helper_get_property_int_async(DBusConnection *conn,
-				   const char *service,
-				   const char *path,
-				   const char *interface,
-				   const char *property,
-				   dbus_async_reply_callback callback,
-				   void *user_data)
+dbus_helper_get_property_int_async(DBusConnection *conn, const char *service,
+    const char *path, const char *interface, const char *property,
+    dbus_async_reply_callback callback, void *user_data)
 {
-	DBusMessage *msg;
+	DBusMessage     *msg;
 	DBusPendingCall *pending;
-	DBusMessageIter args;
+	DBusMessageIter  args;
 
 	if (!conn || !callback)
 		return 0;
 
-	msg = dbus_message_new_method_call(service, path, PROPERTIES_INTERFACE, "Get");
+	msg = dbus_message_new_method_call(
+	    service, path, PROPERTIES_INTERFACE, "Get");
 	if (!msg)
 		return 0;
 
@@ -337,21 +322,19 @@ dbus_helper_get_property_int_async(DBusConnection *conn,
  * Much more efficient than multiple Get() calls
  */
 int
-dbus_helper_get_all_properties_async(DBusConnection *conn,
-				     const char *service,
-				     const char *path,
-				     const char *interface,
-				     dbus_async_reply_callback callback,
-				     void *user_data)
+dbus_helper_get_all_properties_async(DBusConnection *conn, const char *service,
+    const char *path, const char *interface,
+    dbus_async_reply_callback callback, void *user_data)
 {
-	DBusMessage *msg;
+	DBusMessage     *msg;
 	DBusPendingCall *pending;
-	DBusMessageIter args;
+	DBusMessageIter  args;
 
 	if (!conn || !callback)
 		return 0;
 
-	msg = dbus_message_new_method_call(service, path, PROPERTIES_INTERFACE, "GetAll");
+	msg = dbus_message_new_method_call(
+	    service, path, PROPERTIES_INTERFACE, "GetAll");
 	if (!msg)
 		return 0;
 
@@ -373,7 +356,8 @@ dbus_helper_get_all_properties_async(DBusConnection *conn,
 
 /* ============================================================================
  * Iterator Unwrapping Helpers
- * ============================================================================ */
+ * ============================================================================
+ */
 
 int
 dbus_iter_unwrap_variant(DBusMessageIter *iter, DBusMessageIter *variant)
@@ -429,13 +413,14 @@ dbus_iter_recurse_dict_entry(DBusMessageIter *iter, DBusMessageIter *entry)
 
 /* ============================================================================
  * Variant Value Extraction Helpers
- * ============================================================================ */
+ * ============================================================================
+ */
 
 char *
 dbus_iter_get_variant_string(DBusMessageIter *variant)
 {
 	const char *str;
-	int type;
+	int         type;
 
 	if (!variant)
 		return NULL;
@@ -481,14 +466,15 @@ dbus_iter_get_variant_int32(DBusMessageIter *variant, dbus_int32_t *value)
 
 /* ============================================================================
  * Dictionary Parsing Helpers
- * ============================================================================ */
+ * ============================================================================
+ */
 
 void
-dbus_iter_parse_dict(DBusMessageIter *dict, dbus_dict_entry_callback callback,
-		     void *user_data)
+dbus_iter_parse_dict(
+    DBusMessageIter *dict, dbus_dict_entry_callback callback, void *user_data)
 {
 	DBusMessageIter entry_iter, value_iter;
-	const char *key;
+	const char     *key;
 
 	if (!dict || !callback)
 		return;
@@ -512,28 +498,27 @@ dbus_iter_parse_dict(DBusMessageIter *dict, dbus_dict_entry_callback callback,
 		/* Call callback with key and unwrapped value iterator */
 		callback(key, &value_iter, user_data);
 
-next:
+	next:
 		dbus_message_iter_next(dict);
 	}
 }
 
 /* ============================================================================
  * Signal Subscription Helper
- * ============================================================================ */
+ * ============================================================================
+ */
 
 int
 dbus_helper_add_match(DBusConnection *conn, const char *match_rule)
 {
-	DBusMessage *msg;
+	DBusMessage    *msg;
 	DBusMessageIter args;
 
 	if (!conn || !match_rule)
 		return 0;
 
 	msg = dbus_message_new_method_call("org.freedesktop.DBus",
-					   "/org/freedesktop/DBus",
-					   "org.freedesktop.DBus",
-					   "AddMatch");
+	    "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch");
 	if (!msg)
 		return 0;
 
@@ -548,17 +533,16 @@ dbus_helper_add_match(DBusConnection *conn, const char *match_rule)
 
 /* ============================================================================
  * Connection Setup Helpers
- * ============================================================================ */
+ * ============================================================================
+ */
 
 DBusConnection *
 dbus_helper_session_connect(const char *well_known_name,
-			    dbus_message_filter_func filter,
-			    void *filter_data,
-			    char **unique_name_out)
+    dbus_message_filter_func filter, void *filter_data, char **unique_name_out)
 {
 	DBusConnection *conn;
-	DBusError err;
-	int ret;
+	DBusError       err;
+	int             ret;
 
 	if (!filter)
 		return NULL;
@@ -579,7 +563,7 @@ dbus_helper_session_connect(const char *well_known_name,
 	/* Get and store unique name if requested */
 	if (unique_name_out) {
 		const char *unique = dbus_bus_get_unique_name(conn);
-		*unique_name_out = unique ? strdup(unique) : NULL;
+		*unique_name_out   = unique ? strdup(unique) : NULL;
 	}
 
 	/* Set up event loop integration */
@@ -593,18 +577,18 @@ dbus_helper_session_connect(const char *well_known_name,
 
 	/* Request well-known name if provided */
 	if (well_known_name) {
-		ret = dbus_bus_request_name(conn, well_known_name,
-					    DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
+		ret = dbus_bus_request_name(
+		    conn, well_known_name, DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
 		if (dbus_error_is_set(&err)) {
 			awm_error("Failed to register D-Bus name '%s': %s",
-				well_known_name, err.message);
+			    well_known_name, err.message);
 			dbus_error_free(&err);
 		}
 
 		if (ret != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER &&
 		    ret != DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER) {
 			awm_warn("Failed to become primary owner of D-Bus name '%s'",
-				well_known_name);
+			    well_known_name);
 		}
 	}
 
@@ -613,21 +597,19 @@ dbus_helper_session_connect(const char *well_known_name,
 
 DBusConnection *
 dbus_helper_session_connect_dispatcher(const char *well_known_name,
-				       DBusDispatcher *dispatcher,
-				       char **unique_name_out)
+    DBusDispatcher *dispatcher, char **unique_name_out)
 {
 	if (!dispatcher)
 		return NULL;
 
-	return dbus_helper_session_connect(well_known_name,
-					   dbus_dispatcher_filter,
-					   dispatcher,
-					   unique_name_out);
+	return dbus_helper_session_connect(
+	    well_known_name, dbus_dispatcher_filter, dispatcher, unique_name_out);
 }
 
 /* ============================================================================
  * Message Reply Helpers
- * ============================================================================ */
+ * ============================================================================
+ */
 
 int
 dbus_helper_send_reply(DBusConnection *conn, DBusMessage *msg)
@@ -650,7 +632,7 @@ dbus_helper_send_reply(DBusConnection *conn, DBusMessage *msg)
 
 int
 dbus_helper_send_error(DBusConnection *conn, DBusMessage *msg,
-		       const char *error_name, const char *error_message)
+    const char *error_name, const char *error_message)
 {
 	DBusMessage *reply;
 
@@ -670,11 +652,12 @@ dbus_helper_send_error(DBusConnection *conn, DBusMessage *msg,
 
 /* ============================================================================
  * Signal Emission Helper
- * ============================================================================ */
+ * ============================================================================
+ */
 
 DBusMessage *
-dbus_helper_create_signal(const char *path, const char *interface,
-			  const char *name)
+dbus_helper_create_signal(
+    const char *path, const char *interface, const char *name)
 {
 	if (!path || !interface || !name)
 		return NULL;
@@ -684,10 +667,12 @@ dbus_helper_create_signal(const char *path, const char *interface,
 
 /* ============================================================================
  * Message Type Checking Helpers
- * ============================================================================ */
+ * ============================================================================
+ */
 
 int
-dbus_is_method_call(DBusMessage *msg, const char *interface, const char *method)
+dbus_is_method_call(
+    DBusMessage *msg, const char *interface, const char *method)
 {
 	if (!msg || !interface || !method)
 		return 0;
@@ -706,22 +691,23 @@ dbus_is_signal(DBusMessage *msg, const char *interface, const char *member)
 
 /* ============================================================================
  * Generic Message Dispatcher
- * ============================================================================ */
+ * ============================================================================
+ */
 
 /* Handler entry structures */
 typedef struct MethodHandler {
-	char *interface;
-	char *method;
-	dbus_method_handler handler;
-	void *user_data;
+	char                 *interface;
+	char                 *method;
+	dbus_method_handler   handler;
+	void                 *user_data;
 	struct MethodHandler *next;
 } MethodHandler;
 
 typedef struct SignalHandler {
-	char *interface;
-	char *member;
-	dbus_signal_handler handler;
-	void *user_data;
+	char                 *interface;
+	char                 *member;
+	dbus_signal_handler   handler;
+	void                 *user_data;
 	struct SignalHandler *next;
 } SignalHandler;
 
@@ -767,10 +753,8 @@ dbus_dispatcher_free(DBusDispatcher *dispatcher)
 
 int
 dbus_dispatcher_register_method(DBusDispatcher *dispatcher,
-				const char *interface,
-				const char *method,
-				dbus_method_handler handler,
-				void *user_data)
+    const char *interface, const char *method, dbus_method_handler handler,
+    void *user_data)
 {
 	MethodHandler *mh;
 
@@ -782,18 +766,18 @@ dbus_dispatcher_register_method(DBusDispatcher *dispatcher,
 		return 0;
 
 	mh->interface = strdup(interface);
-	mh->method = strdup(method);
+	mh->method    = strdup(method);
 	if (!mh->interface || !mh->method) {
 		free(mh->interface);
 		free(mh->method);
 		free(mh);
 		return 0;
 	}
-	mh->handler = handler;
+	mh->handler   = handler;
 	mh->user_data = user_data;
 
 	/* Add to front of list */
-	mh->next = dispatcher->methods;
+	mh->next            = dispatcher->methods;
 	dispatcher->methods = mh;
 
 	return 1;
@@ -801,10 +785,8 @@ dbus_dispatcher_register_method(DBusDispatcher *dispatcher,
 
 int
 dbus_dispatcher_register_signal(DBusDispatcher *dispatcher,
-				const char *interface,
-				const char *member,
-				dbus_signal_handler handler,
-				void *user_data)
+    const char *interface, const char *member, dbus_signal_handler handler,
+    void *user_data)
 {
 	SignalHandler *sh;
 
@@ -816,27 +798,26 @@ dbus_dispatcher_register_signal(DBusDispatcher *dispatcher,
 		return 0;
 
 	sh->interface = strdup(interface);
-	sh->member = strdup(member);
+	sh->member    = strdup(member);
 	if (!sh->interface || !sh->member) {
 		free(sh->interface);
 		free(sh->member);
 		free(sh);
 		return 0;
 	}
-	sh->handler = handler;
+	sh->handler   = handler;
 	sh->user_data = user_data;
 
 	/* Add to front of list */
-	sh->next = dispatcher->signals;
+	sh->next            = dispatcher->signals;
 	dispatcher->signals = sh;
 
 	return 1;
 }
 
 void
-dbus_dispatcher_unregister_method(DBusDispatcher *dispatcher,
-				  const char *interface,
-				  const char *method)
+dbus_dispatcher_unregister_method(
+    DBusDispatcher *dispatcher, const char *interface, const char *method)
 {
 	MethodHandler *mh, *prev = NULL;
 
@@ -860,9 +841,8 @@ dbus_dispatcher_unregister_method(DBusDispatcher *dispatcher,
 }
 
 void
-dbus_dispatcher_unregister_signal(DBusDispatcher *dispatcher,
-				  const char *interface,
-				  const char *member)
+dbus_dispatcher_unregister_signal(
+    DBusDispatcher *dispatcher, const char *interface, const char *member)
 {
 	SignalHandler *sh, *prev = NULL;
 
@@ -886,19 +866,18 @@ dbus_dispatcher_unregister_signal(DBusDispatcher *dispatcher,
 }
 
 DBusHandlerResult
-dbus_dispatcher_dispatch(DBusDispatcher *dispatcher,
-			 DBusConnection *conn,
-			 DBusMessage *msg)
+dbus_dispatcher_dispatch(
+    DBusDispatcher *dispatcher, DBusConnection *conn, DBusMessage *msg)
 {
 	const char *interface, *member;
-	int msg_type;
+	int         msg_type;
 
 	if (!dispatcher || !conn || !msg)
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
 	interface = dbus_message_get_interface(msg);
-	member = dbus_message_get_member(msg);
-	msg_type = dbus_message_get_type(msg);
+	member    = dbus_message_get_member(msg);
+	msg_type  = dbus_message_get_type(msg);
 
 	if (!interface || !member)
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;

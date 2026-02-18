@@ -4,8 +4,6 @@
  * Generic icon loader supporting multiple formats and async loading
  */
 
-#include <cairo/cairo.h>
-#include <gdk-pixbuf/gdk-pixbuf.h>
 #include <gio/gio.h>
 #include <gtk/gtk.h>
 #include <librsvg/rsvg.h>
@@ -24,8 +22,8 @@
 #undef MIN
 #endif
 
-#include "util.h"
 #include "log.h"
+#include "util.h"
 
 /* Configuration from awm config.h */
 extern const unsigned int iconcachesize;
@@ -625,7 +623,8 @@ icon_init(void)
 
 	/* Initialize GTK for icon theme support (without requiring a main loop) */
 	if (!gtk_init_check(NULL, NULL)) {
-		awm_warn("Failed to initialize GTK, icon theme support may be limited");
+		awm_warn(
+		    "Failed to initialize GTK, icon theme support may be limited");
 	}
 
 	/* Initialize icon cache */

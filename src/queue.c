@@ -4,11 +4,11 @@
  * Provides deferred task execution integrated with event loop
  */
 
+#include <stdlib.h>
+
+#include "log.h"
 #include "queue.h"
 #include "util.h"
-#include "log.h"
-#include <stdio.h>
-#include <stdlib.h>
 
 /* Task node in queue */
 typedef struct Task {

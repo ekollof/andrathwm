@@ -15,11 +15,6 @@
 #include "queue.h"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
-#include <cairo/cairo-xlib.h>
-#include <cairo/cairo.h>
-#include <dbus/dbus.h>
-#include <limits.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -542,7 +537,8 @@ sni_add_item(const char *service, const char *path)
 	sni_watcher->items = item;
 	sni_watcher->item_count++;
 
-	awm_info("SNI: StatusNotifier item registered: %s at %s (properties pending)",
+	awm_info(
+	    "SNI: StatusNotifier item registered: %s at %s (properties pending)",
 	    service, item->path);
 }
 
@@ -789,10 +785,10 @@ sni_properties_received(DBusMessage *reply, void *user_data)
 							dbus_message_iter_next(&array_iter);
 						}
 
-					item->icon_pixmap       = icons;
-					item->icon_pixmap_count = i;
-					awm_debug("SNI: Parsed %d IconPixmap icons for %s", i,
-					    item->service);
+						item->icon_pixmap       = icons;
+						item->icon_pixmap_count = i;
+						awm_debug("SNI: Parsed %d IconPixmap icons for %s", i,
+						    item->service);
 					}
 				}
 			}
@@ -804,8 +800,8 @@ sni_properties_received(DBusMessage *reply, void *user_data)
 
 	/* Debug output */
 	if (item->menu_path)
-		awm_debug("SNI: Item %s has menu at %s", item->service,
-		    item->menu_path);
+		awm_debug(
+		    "SNI: Item %s has menu at %s", item->service, item->menu_path);
 	else
 		awm_debug("SNI: Item %s has no menu", item->service);
 
@@ -1048,8 +1044,8 @@ sni_load_icon_task(void *data)
 		Pixmap           pixmap;
 		cairo_surface_t *pixmap_surface;
 
-		awm_debug("SNI: Using IconPixmap for %s (%d icons)",
-		    item->service, item->icon_pixmap_count);
+		awm_debug("SNI: Using IconPixmap for %s (%d icons)", item->service,
+		    item->icon_pixmap_count);
 
 		/* SNIIcon and Icon are identical structures, safe to cast */
 		icon_surface = icon_pixmap_to_surface(
@@ -1182,8 +1178,8 @@ sni_render_item(SNIItem *item)
 			return;
 		}
 
-		awm_debug("SNI: Created window 0x%lx for %s", item->win,
-		    item->service);
+		awm_debug(
+		    "SNI: Created window 0x%lx for %s", item->win, item->service);
 
 		item->w = sniconsize;
 		item->h = sniconsize;
@@ -1203,8 +1199,8 @@ sni_render_item(SNIItem *item)
 	    sniconsize);
 
 	if (cairo_surface_status(pixmap_surface) != CAIRO_STATUS_SUCCESS) {
-		awm_error("SNI: Failed to create pixmap surface for %s",
-		    item->service);
+		awm_error(
+		    "SNI: Failed to create pixmap surface for %s", item->service);
 		XFreePixmap(sni_dpy, pixmap);
 		return;
 	}
@@ -1619,8 +1615,8 @@ sni_show_menu(SNIItem *item, int x, int y)
 	if (!item || !item->service || !item->menu_path || !sni_menu)
 		return;
 
-	awm_debug("DBusMenu: Fetching menu from %s%s", item->service,
-	    item->menu_path);
+	awm_debug(
+	    "DBusMenu: Fetching menu from %s%s", item->service, item->menu_path);
 
 	/* Call AboutToShow first */
 	msg = dbus_message_new_method_call(

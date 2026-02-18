@@ -1,6 +1,4 @@
 /* See LICENSE file for copyright and license details. */
-#include <X11/Xft/Xft.h>
-#include <X11/Xlib.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -396,8 +394,8 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 				if (usedfont &&
 				    XftCharExists(drw->dpy, usedfont->xfont, utf8codepoint)) {
 					for (curfont = drw->fonts; curfont->next;
-					    curfont  = curfont->next)
-                        ; /* NOP */
+					     curfont = curfont->next)
+						; /* NOP */
 					curfont->next = usedfont;
 				} else {
 					xfont_free(usedfont);
