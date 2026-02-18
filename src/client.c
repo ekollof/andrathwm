@@ -678,6 +678,17 @@ manage(Window w, XWindowAttributes *wa)
 		c->mon = selmon;
 		applyrules(c);
 	}
+#ifdef COMPOSITOR
+	/* If the window already has _NET_WM_WINDOW_OPACITY set (common for apps
+	 * that manage their own translucency), let it override the rule value so
+	 * the window always wins over the rule default. */
+	{
+		unsigned long raw =
+		    (unsigned long) getatomprop(c, netatom[NetWMWindowOpacity]);
+		if (raw != 0)
+			c->opacity = (double) raw / (double) 0xFFFFFFFFUL;
+	}
+#endif
 
 	if (c->x + WIDTH(c) > c->mon->wx + c->mon->ww)
 		c->x = c->mon->wx + c->mon->ww - WIDTH(c);
