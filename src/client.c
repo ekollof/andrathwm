@@ -1,8 +1,8 @@
 /* AndrathWM - client management
  * See LICENSE file for copyright and license details. */
 
-#include "awm.h"
 #include "client.h"
+#include "awm.h"
 #include "events.h"
 #include "ewmh.h"
 #include "monitor.h"
@@ -57,8 +57,14 @@ applyrules(Client *c)
 	if (ch.res_name)
 		XFree(ch.res_name);
 
-	c->tags = c->tags & TAGMASK ? c->tags & TAGMASK
-	                            : c->mon->tagset[c->mon->seltags];
+	/* Scratchpads always start hidden (tags=0 means off-screen until
+	 * toggled).  For normal clients, fall back to the monitor's current
+	 * tagset if no tag was assigned by the rule. */
+	if (c->scratchkey)
+		c->tags = 0;
+	else
+		c->tags = c->tags & TAGMASK ? c->tags & TAGMASK
+		                            : c->mon->tagset[c->mon->seltags];
 }
 
 int
@@ -751,7 +757,9 @@ manage(Window w, XWindowAttributes *wa)
 	setclientstate(c, NormalState);
 	if (c->mon == selmon)
 		unfocus(selmon->sel, 0);
-	c->mon->sel = c;
+	/* Don't make a hidden scratchpad the selected client */
+	if (!c->scratchkey)
+		c->mon->sel = c;
 	arrange(c->mon);
 	XMapWindow(dpy, c->win);
 	focus(NULL);
@@ -1015,7 +1023,8 @@ setlayout(const Arg *arg)
 		selmon->sellt = selmon->pertag->sellts[selmon->pertag->curtag] ^= 1;
 	if (arg && arg->v)
 		selmon->lt[selmon->sellt] =
-		    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt)] =
+		    selmon->pertag
+		        ->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt)] =
 		        (Layout *) arg->v;
 	strncpy(selmon->ltsymbol, selmon->lt[selmon->sellt]->symbol,
 	    sizeof selmon->ltsymbol);
@@ -1128,11 +1137,23 @@ togglescratch(const Arg *arg)
 	     c = c->next)
 		;
 	if (found) {
-		c->tags = ISVISIBLE(c, selmon) ? 0 : selmon->tagset[selmon->seltags];
-		focus(NULL);
-		arrange(selmon);
-
 		if (ISVISIBLE(c, selmon)) {
+			/* Hide: remove from all tags */
+			c->tags = 0;
+			focus(NULL);
+			arrange(selmon);
+		} else {
+			/* Show: move to selmon, re-centre if changing monitor */
+			if (c->mon != selmon) {
+				detachstack(c);
+				c->mon = selmon;
+				attachstack(c);
+				/* Re-centre on the new monitor */
+				c->x = selmon->mx + (selmon->mw - WIDTH(c)) / 2;
+				c->y = selmon->my + (selmon->mh - HEIGHT(c)) / 2;
+			}
+			c->tags = selmon->tagset[selmon->seltags];
+			arrange(selmon);
 			focus(c);
 			restack(selmon);
 		}
@@ -1195,8 +1216,8 @@ toggleview(const Arg *arg)
 				selmon->pertag->showbars[m_curtag] =
 				    m->pertag->showbars[m_curtag];
 				for (j = 0; j < 2; j++)
-					selmon->pertag->ltidxs[(m_curtag)*2+(j)] =
-					    m->pertag->ltidxs[(m_curtag)*2+(j)];
+					selmon->pertag->ltidxs[(m_curtag) * 2 + (j)] =
+					    m->pertag->ltidxs[(m_curtag) * 2 + (j)];
 
 				m->pertag->nmasters[selmon_curtag] =
 				    selmon->pertag->nmasters[selmon_curtag];
@@ -1207,8 +1228,8 @@ toggleview(const Arg *arg)
 				m->pertag->showbars[selmon_curtag] =
 				    selmon->pertag->showbars[selmon_curtag];
 				for (j = 0; j < 2; j++)
-					m->pertag->ltidxs[(selmon_curtag)*2+(j)] =
-					    selmon->pertag->ltidxs[(selmon_curtag)*2+(j)];
+					m->pertag->ltidxs[(selmon_curtag) * 2 + (j)] =
+					    selmon->pertag->ltidxs[(selmon_curtag) * 2 + (j)];
 
 				m->sel = selmon->sel;
 				m->seltags ^= 1;
@@ -1219,9 +1240,10 @@ toggleview(const Arg *arg)
 				m->mfact   = m->pertag->mfacts[m->pertag->curtag];
 				m->sellt   = m->pertag->sellts[m->pertag->curtag];
 				m->lt[m->sellt] =
-				    m->pertag->ltidxs[(m->pertag->curtag)*2+(m->sellt)];
+				    m->pertag->ltidxs[(m->pertag->curtag) * 2 + (m->sellt)];
 				m->lt[m->sellt ^ 1] =
-				    m->pertag->ltidxs[(m->pertag->curtag)*2+(m->sellt ^ 1)];
+				    m->pertag
+				        ->ltidxs[(m->pertag->curtag) * 2 + (m->sellt ^ 1)];
 				if (m->showbar != m->pertag->showbars[m->pertag->curtag])
 					togglebar(NULL);
 
@@ -1237,11 +1259,11 @@ toggleview(const Arg *arg)
 				selmon->mfact = selmon->pertag->mfacts[selmon->pertag->curtag];
 				selmon->sellt = selmon->pertag->sellts[selmon->pertag->curtag];
 				selmon->lt[selmon->sellt] =
-				    selmon->pertag
-				        ->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt)];
+				    selmon->pertag->ltidxs[(selmon->pertag->curtag) * 2 +
+				        (selmon->sellt)];
 				selmon->lt[selmon->sellt ^ 1] =
-				    selmon->pertag
-				        ->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt ^ 1)];
+				    selmon->pertag->ltidxs[(selmon->pertag->curtag) * 2 +
+				        (selmon->sellt ^ 1)];
 				if (selmon->showbar !=
 				    selmon->pertag->showbars[selmon->pertag->curtag])
 					togglebar(NULL);
@@ -1271,9 +1293,11 @@ toggleview(const Arg *arg)
 		selmon->mfact   = selmon->pertag->mfacts[selmon->pertag->curtag];
 		selmon->sellt   = selmon->pertag->sellts[selmon->pertag->curtag];
 		selmon->lt[selmon->sellt] =
-		    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt)];
+		    selmon->pertag
+		        ->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt)];
 		selmon->lt[selmon->sellt ^ 1] =
-		    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt ^ 1)];
+		    selmon->pertag
+		        ->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt ^ 1)];
 
 		if (selmon->showbar !=
 		    selmon->pertag->showbars[selmon->pertag->curtag])
@@ -1451,8 +1475,8 @@ view(const Arg *arg)
 			selmon->pertag->sellts[m_curtag]   = m->pertag->sellts[m_curtag];
 			selmon->pertag->showbars[m_curtag] = m->pertag->showbars[m_curtag];
 			for (j = 0; j < 2; j++)
-				selmon->pertag->ltidxs[(m_curtag)*2+(j)] =
-				    m->pertag->ltidxs[(m_curtag)*2+(j)];
+				selmon->pertag->ltidxs[(m_curtag) * 2 + (j)] =
+				    m->pertag->ltidxs[(m_curtag) * 2 + (j)];
 
 			m->pertag->nmasters[selmon_curtag] =
 			    selmon->pertag->nmasters[selmon_curtag];
@@ -1463,20 +1487,21 @@ view(const Arg *arg)
 			m->pertag->showbars[selmon_curtag] =
 			    selmon->pertag->showbars[selmon_curtag];
 			for (j = 0; j < 2; j++)
-				m->pertag->ltidxs[(selmon_curtag)*2+(j)] =
-				    selmon->pertag->ltidxs[(selmon_curtag)*2+(j)];
+				m->pertag->ltidxs[(selmon_curtag) * 2 + (j)] =
+				    selmon->pertag->ltidxs[(selmon_curtag) * 2 + (j)];
 
 			m->sel = selmon->sel;
 			m->seltags ^= 1;
 			m->tagset[m->seltags] = selmon->tagset[selmon->seltags];
 			m->pertag->curtag     = selmon_curtag;
 
-			m->nmaster      = m->pertag->nmasters[m->pertag->curtag];
-			m->mfact        = m->pertag->mfacts[m->pertag->curtag];
-			m->sellt        = m->pertag->sellts[m->pertag->curtag];
-			m->lt[m->sellt] = m->pertag->ltidxs[(m->pertag->curtag)*2+(m->sellt)];
+			m->nmaster = m->pertag->nmasters[m->pertag->curtag];
+			m->mfact   = m->pertag->mfacts[m->pertag->curtag];
+			m->sellt   = m->pertag->sellts[m->pertag->curtag];
+			m->lt[m->sellt] =
+			    m->pertag->ltidxs[(m->pertag->curtag) * 2 + (m->sellt)];
 			m->lt[m->sellt ^ 1] =
-			    m->pertag->ltidxs[(m->pertag->curtag)*2+(m->sellt ^ 1)];
+			    m->pertag->ltidxs[(m->pertag->curtag) * 2 + (m->sellt ^ 1)];
 			if (m->showbar != m->pertag->showbars[m->pertag->curtag])
 				togglebar(NULL);
 
@@ -1492,10 +1517,11 @@ view(const Arg *arg)
 			selmon->mfact   = selmon->pertag->mfacts[selmon->pertag->curtag];
 			selmon->sellt   = selmon->pertag->sellts[selmon->pertag->curtag];
 			selmon->lt[selmon->sellt] =
-			    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt)];
-			selmon->lt[selmon->sellt ^ 1] =
 			    selmon->pertag
-			        ->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt ^ 1)];
+			        ->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt)];
+			selmon->lt[selmon->sellt ^ 1] =
+			    selmon->pertag->ltidxs[(selmon->pertag->curtag) * 2 +
+			        (selmon->sellt ^ 1)];
 			if (selmon->showbar !=
 			    selmon->pertag->showbars[selmon->pertag->curtag])
 				togglebar(NULL);
@@ -1528,9 +1554,10 @@ view(const Arg *arg)
 	selmon->mfact   = selmon->pertag->mfacts[selmon->pertag->curtag];
 	selmon->sellt   = selmon->pertag->sellts[selmon->pertag->curtag];
 	selmon->lt[selmon->sellt] =
-	    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt)];
+	    selmon->pertag->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt)];
 	selmon->lt[selmon->sellt ^ 1] =
-	    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt ^ 1)];
+	    selmon->pertag
+	        ->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt ^ 1)];
 
 	if (selmon->showbar != selmon->pertag->showbars[selmon->pertag->curtag])
 		togglebar(NULL);

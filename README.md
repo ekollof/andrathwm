@@ -220,17 +220,30 @@ Some notable bindings:
 
 ### Scratchpads
 
-This build includes scratchpad support. Define scratchpads in the rules array:
+This build includes scratchpad support. Define a command array where the first
+element is a one-character key string, and the rest is the command to run:
 
 ```c
-{ NULL, NULL, "notepad", 0, 1, 1, -1, 's' },  // Bind to 's' key
+static const char  notepadname[] = "notepad";
+static const char *notepadcmd[]  = { "s", "st", "-t", notepadname, "-g",
+    "120x34", "-e", "bash", NULL };
 ```
 
-Then bind a key to toggle the scratchpad:
+Add a matching rule (match by title, `tags=0`, floating, centered):
 
 ```c
-{ MODKEY, XK_s, togglescratch, {.ui = 's'} },
+{ NULL, NULL, "notepad", 0, 1, 1, -1, 's' },
 ```
+
+Then bind a key using `.v` pointing to the command array:
+
+```c
+{ MODKEY, XK_grave, togglescratch, { .v = notepadcmd } },
+```
+
+The scratchpad starts hidden. The first keypress spawns it; subsequent presses
+toggle it on and off. When toggled onto a different monitor it is automatically
+re-centred.
 
 ### System Tray Configuration
 
