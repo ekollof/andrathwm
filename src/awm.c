@@ -425,14 +425,14 @@ main(int argc, char *argv[])
 		die("pledge");
 #endif /* __OpenBSD__ */
 	scan();
-	if (!restart)
-		if (!getenv("RESTARTED")) {
-			runautostart();
-			/* autostart_blocking.sh may have run `xrdb -merge` which sets
-			 * RESOURCE_MANAGER on the root window for the first time.
-			 * Re-apply so schemes reflect the actual Xresources colors. */
-			xrdb(NULL);
-		}
+	if (!restart && !getenv("RESTARTED"))
+		runautostart();
+	/* Always re-apply Xresources after scan: on a fresh start
+	 * autostart_blocking.sh may have just run `xrdb -merge`; on an
+	 * execvp restart the static color strings are re-initialised to
+	 * compile-time defaults so we must reload them even though
+	 * RESOURCE_MANAGER is already set on the root window. */
+	xrdb(NULL);
 	run();
 	if (restart) {
 		setenv("RESTARTED", "1", 0);
