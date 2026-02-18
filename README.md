@@ -30,6 +30,12 @@ This build includes the following enhancements over vanilla dwm:
   - Application menu support via D-Bus
   - Icon caching with LRU eviction
 
+- **Embedded status bar**: Built-in status module replaces external `slstatus`
+  - Coroutine-driven via [minicoro](https://github.com/edubart/minicoro) (vendored, MIT-0)
+  - Components: CPU%, load average, RAM used/total, battery, date/time, uptime
+  - Per-component update intervals; driven by `timerfd` in the main event loop
+  - Configured in `status_config.h` — no recompile of the WM core needed for format changes
+
 - **EWMH Support**: Extended Window Manager Hints for better application compatibility
   - `_NET_CLIENT_LIST` and `_NET_CLIENT_LIST_STACKING`
   - `_NET_WM_DESKTOP` for workspace tracking
@@ -50,7 +56,8 @@ This build includes the following enhancements over vanilla dwm:
 - **Centered windows**: Center floating windows on spawn
 - **Move stack**: Move windows up/down in the stack
 - **Custom layouts**: Tile, Monocle, and Floating layouts
-- **Dynamic colors**: Runtime color scheme modification
+- **Dynamic colors**: Runtime color scheme modification via Xresources
+  - Colors reloaded from `~/.Xresources` on restart and after autostart script
 
 ### Development Features
 - **Debug logging**: Optional logging subsystem for troubleshooting
@@ -155,17 +162,24 @@ exec awm
 
 ### Status Bar
 
-In order to display status info in the bar, you can do something like this in your `.xinitrc`:
+awm includes a built-in status bar module — no external `slstatus` or `xsetroot` script required.
 
-```sh
-while xsetroot -name "`date` `uptime | sed 's/.*,//'`"
-do
-    sleep 1
-done &
-exec awm
+Status components and their update intervals are configured in `status_config.h`:
+
+```c
+static const struct status_arg status_args[] = {
+    { load_avg,       "🖥 %s ",              NULL,   5  },
+    { battery_status, " %s ",               "BAT0", 30 },
+    { ram_used,       "🐏 %s",              NULL,   10 },
+    { ram_total,      "/%s ",               NULL,   60 },
+    { cpu_perc,       "🔲 %s%% ",           NULL,   2  },
+    { datetime,       "%s", "📆 %a %b %d 🕖 %H:%M:%S ", 1 },
+};
 ```
 
-Or use a more sophisticated status bar script like `slstatus`.
+Edit `status_config.h` and recompile to change format strings, intervals, or the set of components. Available components: `battery_status`, `cpu_perc`, `datetime`, `load_avg`, `ram_used`, `ram_total`, `uptime`.
+
+The global update tick is set by `status_interval_ms` (default: 1000 ms).
 
 ### Multi-Monitor Setup
 
@@ -291,12 +305,17 @@ andrathwm/
 │   ├── sni.c/sni.h      # StatusNotifier implementation
 │   ├── icon.c/icon.h    # Icon cache and rendering
 │   ├── launcher.c/launcher.h  # Application launcher
+│   ├── status.c/status.h      # Embedded status bar (coroutine driver)
+│   ├── status_components.c/h  # Status components (CPU, RAM, battery, …)
+│   ├── status_util.c/h        # Status utility functions
 │   ├── menu.c/menu.h    # SNI menu support
 │   ├── queue.c/queue.h  # Event queue
 │   ├── log.c/log.h      # Logging subsystem
 │   ├── xidle.c          # Idle detection utility
 │   ├── movestack.c      # Move stack helper
 │   └── transient.c      # Transient window test
+├── third_party/          # Vendored libraries
+│   └── minicoro.h       # Stackful coroutine library (MIT-0)
 ├── build/                # Build artifacts (.o files)
 ├── docs/                 # Documentation
 │   ├── XIDLE.md         # xidle documentation
@@ -305,11 +324,7 @@ andrathwm/
 │   ├── MULTIMONITOR.md  # Multi-monitor setup
 │   ├── SYSTRAY_ICONS.md # System tray icon docs
 │   └── PHASE1_IMPROVEMENTS.md  # Development notes
-├── examples/             # Example scripts
-│   ├── xidle-autolock.sh    # Auto-lock script
-│   ├── xidle-dpms.sh        # DPMS management
-│   ├── xidle-notify.sh      # Idle notifications
-│   └── xidle-manager.sh     # Combined manager
+├── status_config.h       # Status bar component configuration
 ├── config.def.h          # Default configuration
 ├── config.h              # User configuration (not tracked)
 ├── config.mk             # Build configuration
@@ -327,6 +342,7 @@ This build incorporates the following concepts/patches from the dwm ecosystem:
 - Single-tag mode (custom implementation)
 - Awesomebar with icons
 - Application launcher with GTK icon theme support
+- Embedded status bar (coroutine-driven, replaces slstatus)
 - StatusNotifier/AppIndicator system tray
 - EWMH support (comprehensive implementation)
 - Multi-monitor support (fixmultimon patches)
