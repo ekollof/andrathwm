@@ -267,6 +267,7 @@ typedef struct {
 	int          isfloating;
 	int          monitor;
 	const char   scratchkey;
+	double       opacity; /* 0.0 = use default (1.0); otherwise 0.0–1.0 */
 } Rule;
 
 struct Clientlist {

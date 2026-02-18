@@ -79,11 +79,12 @@ static const Rule rules[] = {
 	 *	WM_NAME(STRING) = title
 	 */
 	/* class      instance    title       tags mask     iscentered   isfloating
-	   monitor    scratch key */
+	   monitor    scratch key  opacity (0.0 = default) */
 	// { "Gimp",     NULL,       NULL,       0,            0,            1, -1,
-	// 0  }, { "firefox",  NULL,       NULL,       1 << 8,       0, 0, -1, 0 },
-	{ NULL, NULL, "notepad", 0, 1, 1, -1, 's' },
-	{ NULL, NULL, "mpd", 0, 1, 1, -1, 'm' },
+	// 0, 0.0 }, { "firefox",  NULL,       NULL,       1 << 8,       0, 0, -1,
+	// 0, 0.0 },
+	{ NULL, NULL, "notepad", 0, 1, 1, -1, 's', 0.0 },
+	{ NULL, NULL, "mpd", 0, 1, 1, -1, 'm', 0.0 },
 };
 
 /* layout(s) */

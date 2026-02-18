@@ -45,6 +45,8 @@ applyrules(Client *c)
 			c->isfloating = r->isfloating;
 			c->tags |= r->tags;
 			c->scratchkey = r->scratchkey;
+			if (r->opacity > 0.0)
+				c->opacity = r->opacity;
 			for (m = mons; m && (m->tagset[m->seltags] & c->tags) == 0;
 			    m  = m->next)
                 ;
