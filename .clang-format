@@ -1,0 +1,16 @@
+# We'll use defaults from the LLVM style, but with 4 columns indentation.
+BasedOnStyle: WebKit
+UseTab: ForIndentation
+IndentWidth: 4
+ColumnLimit: 79
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+AlignTrailingComments: true
+AlignEscapedNewlines: Left
+PointerAlignment: Right
+DerivePointerAlignment: false
+AlwaysBreakAfterReturnType: TopLevelDefinitions
+SpaceAfterCStyleCast: true
+AllowShortFunctionsOnASingleLine: Inline
+BreakBeforeBinaryOperators: None
+TabWidth: 4

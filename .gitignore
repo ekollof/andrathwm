@@ -1,0 +1,37 @@
+# Build artifacts
+build/
+awm
+xidle
+
+# Generated configuration - NOTE: config.h IS tracked (has customizations)
+# config.h
+
+# Distribution tarballs
+*.tar.gz
+
+# Editor files
+*.swp
+*.swo
+*~
+.*.sw?
+
+# IDE/tooling
+.cache/
+.clangd/
+compile_commands.json
+compile_flags.txt
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary/backup files
+*.new
+*.bak
+*.log
+*.tmp
+
+# Weird filenames
+\\

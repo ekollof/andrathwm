@@ -1,0 +1,7 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=AndrathWM
+Comment=Andrath's Window Manager
+Exec=env QT_QPA_PLATFORMTHEME=qt5ct awm
+Icon=awm
+Type=XSession
