@@ -1,5 +1,7 @@
 # AndrathWM (awm)
 
+![AndrathWM logo](awm.png)
+
 AndrathWM is a dynamic window manager for X, forked from
 [dwm 6.5](https://dwm.suckless.org) by suckless.org. It adds modern desktop
 integration features while maintaining dwm's minimalist philosophy and BSD
