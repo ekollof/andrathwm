@@ -321,7 +321,8 @@ menu_get_monitor_geometry(
 
 /* Show menu at coordinates */
 void
-menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data)
+menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
+    Time event_time)
 {
 	int mon_x, mon_y, mon_w, mon_h;
 
@@ -373,28 +374,27 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data)
 	menu->ignore_next_release = 1; /* Ignore the pending ButtonRelease */
 	menu_render(menu);
 
-	/* Grab pointer - retry briefly if another client (e.g. Electron) still
-	 * holds the grab from the click that opened this menu. */
+	/* Ungrab any existing pointer grab (e.g. from Electron) using the
+	 * original event timestamp, then immediately re-grab.  Qt and GTK
+	 * use exactly this approach: issuing a new XCB_GRAB_MODE_ASYNC grab
+	 * with the triggering event's timestamp steals the grab from whoever
+	 * held it (the async/async combination is key — it replaces another
+	 * client's async grab).  Using CurrentTime here would fail with
+	 * AlreadyGrabbed because X11 rejects a grab that pre-dates the
+	 * existing one. */
+	XUngrabPointer(menu->dpy, event_time);
+	XSync(menu->dpy, False);
 	{
-		int grab_result = AlreadyGrabbed;
-		int tries;
-
-		for (tries = 0; tries < 5 && grab_result != GrabSuccess; tries++) {
-			if (tries > 0)
-				usleep(20000); /* 20 ms between retries */
-			XSync(menu->dpy, False);
-			grab_result = XGrabPointer(menu->dpy, menu->win, False,
-			    ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
-			    GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
-		}
+		int grab_result = XGrabPointer(menu->dpy, menu->win, False,
+		    ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+		    GrabModeAsync, GrabModeAsync, None, None, event_time);
 		if (grab_result != GrabSuccess)
-			awm_warn("Menu: Failed to grab pointer after %d tries (result=%d)",
-			    tries, grab_result);
+			awm_warn("Menu: Failed to grab pointer (result=%d)", grab_result);
 	}
 
 	{
 		int key_grab = XGrabKeyboard(menu->dpy, menu->win, True, GrabModeAsync,
-		    GrabModeAsync, CurrentTime);
+		    GrabModeAsync, event_time);
 		if (key_grab != GrabSuccess)
 			awm_warn("Menu: Failed to grab keyboard (result=%d)", key_grab);
 	}

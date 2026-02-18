@@ -1,9 +1,9 @@
 /* AndrathWM - X event handlers
  * See LICENSE file for copyright and license details. */
 
+#include "events.h"
 #include "awm.h"
 #include "client.h"
-#include "events.h"
 #include "ewmh.h"
 #include "monitor.h"
 #include "spawn.h"
@@ -100,7 +100,8 @@ buttonpress(XEvent *e)
 	else {
 		SNIItem *sni_item = sni_find_item_by_window(ev->window);
 		if (sni_item) {
-			sni_handle_click(ev->window, ev->button, ev->x_root, ev->y_root);
+			sni_handle_click(
+			    ev->window, ev->button, ev->x_root, ev->y_root, ev->time);
 			return; /* Don't process further */
 		}
 	}

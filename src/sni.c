@@ -801,8 +801,8 @@ sni_properties_received(DBusMessage *reply, void *user_data)
 		awm_debug("SNI: Draining pending click (button %d) for %s",
 		    item->pending_button, item->service);
 		item->pending_click = 0;
-		sni_handle_click(
-		    item->win, item->pending_button, item->pending_x, item->pending_y);
+		sni_handle_click(item->win, item->pending_button, item->pending_x,
+		    item->pending_y, item->pending_time);
 	}
 }
 
@@ -1282,7 +1282,7 @@ sni_find_item_by_window(Window win)
 
 /* Handle click events on SNI icons */
 void
-sni_handle_click(Window win, int button, int x, int y)
+sni_handle_click(Window win, int button, int x, int y, Time event_time)
 {
 	SNIItem          *item;
 	DBusMessage      *msg;
@@ -1303,6 +1303,7 @@ sni_handle_click(Window win, int button, int x, int y)
 		item->pending_button = button;
 		item->pending_x      = x;
 		item->pending_y      = y;
+		item->pending_time   = event_time;
 		return;
 	}
 
@@ -1334,7 +1335,7 @@ sni_handle_click(Window win, int button, int x, int y)
 	if (button == Button3) {
 		if (item->menu_path) {
 			awm_debug("SNI: Showing DBusMenu for %s", item->service);
-			sni_show_menu(item, x, y);
+			sni_show_menu(item, x, y, event_time);
 			return;
 		}
 		awm_debug(
@@ -1546,7 +1547,7 @@ sni_build_menu_from_layout(SNIItem *item, DBusMessageIter *iter, int depth)
 
 /* Show DBusMenu for an item */
 void
-sni_show_menu(SNIItem *item, int x, int y)
+sni_show_menu(SNIItem *item, int x, int y, Time event_time)
 {
 	DBusMessage    *msg, *reply;
 	DBusError       error;
@@ -1641,7 +1642,8 @@ sni_show_menu(SNIItem *item, int x, int y)
 				/* Set items and show menu (menu_show handles monitor
 				 * detection) */
 				menu_set_items(sni_menu, menu_items);
-				menu_show(sni_menu, x, y, sni_menu_activated, item);
+				menu_show(
+				    sni_menu, x, y, sni_menu_activated, item, event_time);
 
 				awm_debug("DBusMenu: Menu shown");
 			} else {

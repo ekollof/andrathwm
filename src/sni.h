@@ -60,10 +60,11 @@ typedef struct SNIItem {
 	int properties_fetching; /* In-flight guard: prevents re-sending GetAll */
 
 	/* Pending click: queued when click arrives before properties are ready */
-	int pending_click;  /* 1 if a click is waiting */
-	int pending_button; /* button number */
-	int pending_x;      /* root x coordinate */
-	int pending_y;      /* root y coordinate */
+	int  pending_click;  /* 1 if a click is waiting */
+	int  pending_button; /* button number */
+	int  pending_x;      /* root x coordinate */
+	int  pending_y;      /* root y coordinate */
+	Time pending_time;   /* ButtonPress timestamp for grab steal */
 
 	struct SNIItem *next;
 } SNIItem;
@@ -98,14 +99,14 @@ void     sni_update_item(SNIItem *item);
 void sni_render_item(SNIItem *item);
 
 /* Event handling */
-void     sni_handle_click(Window win, int button, int x, int y);
+void sni_handle_click(Window win, int button, int x, int y, Time event_time);
 SNIItem *sni_find_item_by_window(Window win);
 
 /* Event handling */
 void sni_scroll(SNIItem *item, int delta, const char *orientation);
 
 /* Menu support */
-void sni_show_menu(SNIItem *item, int x, int y);
+void sni_show_menu(SNIItem *item, int x, int y, Time event_time);
 void sni_free_menu(SNIMenuItem *menu);
 int  sni_handle_menu_event(XEvent *ev);
 
