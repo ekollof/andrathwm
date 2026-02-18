@@ -79,5 +79,13 @@ void compositor_xrender_errors(int *req_base, int *err_base);
  */
 void compositor_damage_errors(int *err_base);
 
+/*
+ * Perform a compositor repaint synchronously right now, bypassing the GLib
+ * idle scheduler.  Call this from synchronous event loops (movemouse /
+ * resizemouse) that block the GLib main loop and prevent idle callbacks
+ * from firing.
+ */
+void compositor_repaint_now(void);
+
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */

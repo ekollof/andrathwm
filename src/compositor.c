@@ -96,6 +96,7 @@ static void     comp_free_win(CompWin *cw);
 static void     comp_refresh_pixmap(CompWin *cw);
 static void     comp_update_wallpaper(void);
 static void     schedule_repaint(void);
+static void     comp_do_repaint(void);
 static gboolean comp_repaint_idle(gpointer data);
 static Picture  make_alpha_picture(double a);
 
@@ -769,6 +770,19 @@ compositor_damage_errors(int *err_base)
 	*err_base = comp.damage_err_base;
 }
 
+void
+compositor_repaint_now(void)
+{
+	if (!comp.active)
+		return;
+	/* Cancel any pending idle repaint — we're doing it right now. */
+	if (comp.repaint_id) {
+		g_source_remove(comp.repaint_id);
+		comp.repaint_id = 0;
+	}
+	comp_do_repaint();
+}
+
 /* -------------------------------------------------------------------------
  * Event handler
  * ---------------------------------------------------------------------- */
@@ -924,16 +938,22 @@ schedule_repaint(void)
 static gboolean
 comp_repaint_idle(gpointer data)
 {
+	(void) data;
+	comp.repaint_id = 0;
+	comp_do_repaint();
+	return G_SOURCE_REMOVE;
+}
+
+static void
+comp_do_repaint(void)
+{
 	Window       root_ret, parent_ret;
 	Window      *children  = NULL;
 	unsigned int nchildren = 0, i;
 	XRenderColor bg_color  = { 0, 0, 0, 0xffff }; /* opaque black default */
-	(void) data;
-
-	comp.repaint_id = 0;
 
 	if (!comp.active)
-		return G_SOURCE_REMOVE;
+		return;
 
 	/* --- 1. Clip back-buffer to dirty region ------------------------------
 	 */
@@ -956,7 +976,7 @@ comp_repaint_idle(gpointer data)
 	if (!XQueryTree(
 	        dpy, root, &root_ret, &parent_ret, &children, &nchildren)) {
 		XFixesSetPictureClipRegion(dpy, comp.back, 0, 0, None);
-		return G_SOURCE_REMOVE;
+		return;
 	}
 
 	/* Guard the entire paint loop: a GL window (e.g. alacritty) may destroy
@@ -1020,8 +1040,6 @@ comp_repaint_idle(gpointer data)
 	XFixesSetPictureClipRegion(dpy, comp.target, 0, 0, None);
 
 	XFlush(dpy);
-
-	return G_SOURCE_REMOVE;
 }
 
 #endif /* COMPOSITOR */

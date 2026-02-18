@@ -787,6 +787,9 @@ movemouse(const Arg *arg)
 				togglefloating(NULL);
 			if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
 				resize(c, nx, ny, c->w, c->h, 1);
+#ifdef COMPOSITOR
+			compositor_repaint_now();
+#endif
 			break;
 		}
 	} while (ev.type != ButtonRelease);
@@ -903,6 +906,9 @@ resizemouse(const Arg *arg)
 			}
 			if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
 				resize(c, c->x, c->y, nw, nh, 1);
+#ifdef COMPOSITOR
+			compositor_repaint_now();
+#endif
 			break;
 		}
 	} while (ev.type != ButtonRelease);
