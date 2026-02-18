@@ -44,9 +44,10 @@ typedef struct {
 	unsigned int input_h;
 	unsigned int item_h;
 
-	int  visible;
-	int  scroll_offset;
-	char history_path[512]; /* Path to launch-history file */
+	int          visible;
+	int          scroll_offset;
+	char         history_path[512]; /* Path to launch-history file */
+	unsigned int max_item_width; /* Widest item across all items, set once */
 } Launcher;
 
 Launcher *launcher_create(Display *dpy, Window root, Drw *drw, Clr **scheme);

@@ -27,7 +27,6 @@
 #define LAUNCHER_ITEM_HEIGHT 24
 #define LAUNCHER_PADDING 8
 #define LAUNCHER_MIN_WIDTH 400
-#define LAUNCHER_MAX_ITEMS 15
 #define LAUNCHER_MAX_VISIBLE 12
 #define LAUNCHER_SCROLL_BAR_WIDTH 6
 
@@ -259,6 +258,14 @@ launcher_should_skip_entry(const char *name)
 static LauncherItem *
 launcher_parse_desktop_file(const char *path)
 {
+	/* Check filename against skip_prefixes before opening the file */
+	const char *basename = strrchr(path, '/');
+	basename             = basename ? basename + 1 : path;
+
+	/* Skip entries whose filename matches a known prefix */
+	if (launcher_should_skip_entry(basename))
+		return NULL;
+
 	FILE         *fp;
 	char         *line = NULL;
 	size_t        len  = 0;
@@ -306,7 +313,7 @@ launcher_parse_desktop_file(const char *path)
 	free(line);
 	fclose(fp);
 
-	if (!name || !exec_cmd || no_display || launcher_should_skip_entry(name)) {
+	if (!name || !exec_cmd || no_display) {
 		if (name)
 			free(name);
 		if (exec_cmd)
@@ -387,9 +394,11 @@ launcher_merge_items(LauncherItem *a, LauncherItem *b)
 			if (dup->exec)
 				free(dup->exec);
 			if (dup->icon)
-				free(dup->icon);
-			dup->exec = a->exec;
-			dup->icon = a->icon;
+				cairo_surface_destroy(dup->icon);
+			free(dup->icon_name);
+			dup->exec      = a->exec;
+			dup->icon_name = a->icon_name;
+			dup->icon      = a->icon;
 			free(a->name);
 			free(a);
 		} else {
@@ -415,7 +424,7 @@ launcher_merge_items(LauncherItem *a, LauncherItem *b)
 }
 
 static LauncherItem *
-launcher_scan_path(void)
+launcher_scan_path(LauncherItem *existing)
 {
 	DIR           *dir;
 	struct dirent *entry;
@@ -448,9 +457,11 @@ launcher_scan_path(void)
 				if (!launcher_is_executable(full_path))
 					continue;
 
-				LauncherItem *dup =
-				    launcher_find_duplicates(items, entry->d_name);
-				if (dup)
+				/* Skip if already present in desktop items or this PATH list
+				 */
+				if (launcher_find_duplicates(existing, entry->d_name))
+					continue;
+				if (launcher_find_duplicates(items, entry->d_name))
 					continue;
 
 				LauncherItem *item = ecalloc(1, sizeof(LauncherItem));
@@ -642,19 +653,11 @@ launcher_filter_items(Launcher *launcher)
 static void
 launcher_calculate_size(Launcher *launcher)
 {
-	LauncherItem *item;
-	unsigned int  maxw = LAUNCHER_MIN_WIDTH;
-
-	for (int i = 0; i < launcher->visible_count && launcher->filtered[i];
-	     i++) {
-		item           = launcher->filtered[i];
-		unsigned int w = drw_fontset_getwidth(launcher->drw, item->name);
-		/* Add icon width if item has icon */
-		if (item->icon)
-			w += LAUNCHER_ICON_SIZE + 6;
-		if (w > maxw)
-			maxw = w;
-	}
+	/* Use the pre-computed full-list maximum as the minimum width so the
+	 * window never shrinks as the filter narrows the visible set. */
+	unsigned int maxw = launcher->max_item_width > LAUNCHER_MIN_WIDTH
+	    ? launcher->max_item_width
+	    : LAUNCHER_MIN_WIDTH;
 
 	launcher->w = maxw + LAUNCHER_PADDING * 2 + LAUNCHER_SCROLL_BAR_WIDTH;
 	launcher->h = LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING * 2;
@@ -863,11 +866,24 @@ launcher_create(Display *dpy, Window root, Drw *drw, Clr **scheme)
 		launcher_append_items(launcher, items);
 	}
 
-	LauncherItem *path_items = launcher_scan_path();
+	LauncherItem *path_items = launcher_scan_path(launcher->items);
 	launcher_append_items(launcher, path_items);
 
 	/* Load launch history so counts are available before first filter/sort */
 	launcher_history_load(launcher);
+
+	/* Pre-compute the widest item width so the window never shrinks while
+	 * typing — calculate over the full item list, not just visible items. */
+	{
+		LauncherItem *it;
+		for (it = launcher->items; it; it = it->next) {
+			unsigned int w = drw_fontset_getwidth(launcher->drw, it->name);
+			if (it->icon)
+				w += LAUNCHER_ICON_SIZE + 6;
+			if (w > launcher->max_item_width)
+				launcher->max_item_width = w;
+		}
+	}
 
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);
@@ -997,6 +1013,7 @@ launcher_insert_char(Launcher *launcher, char c)
 	launcher_render(launcher);
 }
 
+/* Delete the character before the cursor (Backspace) */
 static void
 launcher_delete_char(Launcher *launcher)
 {
@@ -1011,6 +1028,54 @@ launcher_delete_char(Launcher *launcher)
 		    launcher->input + launcher->cursor_pos + 1,
 		    launcher->input_len - launcher->cursor_pos);
 	}
+	launcher->input[launcher->input_len] = '\0';
+
+	launcher_filter_items(launcher);
+	launcher_calculate_size(launcher);
+	XResizeWindow(launcher->dpy, launcher->win, launcher->w, launcher->h);
+	launcher_render(launcher);
+}
+
+/* Delete the character at the cursor (Delete) */
+static void
+launcher_delete_char_forward(Launcher *launcher)
+{
+	if (launcher->cursor_pos >= launcher->input_len)
+		return;
+
+	memmove(launcher->input + launcher->cursor_pos,
+	    launcher->input + launcher->cursor_pos + 1,
+	    launcher->input_len - launcher->cursor_pos - 1);
+	launcher->input_len--;
+	launcher->input[launcher->input_len] = '\0';
+
+	launcher_filter_items(launcher);
+	launcher_calculate_size(launcher);
+	XResizeWindow(launcher->dpy, launcher->win, launcher->w, launcher->h);
+	launcher_render(launcher);
+}
+
+/* Delete the word before the cursor (Ctrl+w) */
+static void
+launcher_delete_word(Launcher *launcher)
+{
+	int pos = launcher->cursor_pos;
+
+	if (pos <= 0)
+		return;
+
+	/* Skip trailing spaces */
+	while (pos > 0 && launcher->input[pos - 1] == ' ')
+		pos--;
+	/* Skip the word */
+	while (pos > 0 && launcher->input[pos - 1] != ' ')
+		pos--;
+
+	int deleted = launcher->cursor_pos - pos;
+	memmove(launcher->input + pos, launcher->input + launcher->cursor_pos,
+	    launcher->input_len - launcher->cursor_pos);
+	launcher->input_len -= deleted;
+	launcher->cursor_pos                 = pos;
 	launcher->input[launcher->input_len] = '\0';
 
 	launcher_filter_items(launcher);
@@ -1121,7 +1186,7 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 			return 1;
 		case XK_Delete:
 			if (launcher->cursor_pos < launcher->input_len) {
-				launcher_delete_char(launcher);
+				launcher_delete_char_forward(launcher);
 			}
 			return 1;
 		case XK_Left:
@@ -1169,6 +1234,9 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 				launcher_filter_items(launcher);
 				launcher_calculate_size(launcher);
 				launcher_render(launcher);
+				return 1;
+			case XK_w:
+				launcher_delete_word(launcher);
 				return 1;
 			case XK_a:
 				launcher->cursor_pos = 0;
