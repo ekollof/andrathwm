@@ -654,7 +654,10 @@ compositor_remove_window(Client *c)
 void
 compositor_configure_window(Client *c)
 {
-	CompWin *cw;
+	CompWin      *cw;
+	int           resized;
+	XRectangle    old_rect;
+	XserverRegion old_r;
 
 	if (!comp.active || !c)
 		return;
@@ -663,13 +666,39 @@ compositor_configure_window(Client *c)
 	if (!cw)
 		return;
 
+	/* Mark the old footprint dirty so it gets repainted with background. */
+	old_rect.x      = (short) cw->x;
+	old_rect.y      = (short) cw->y;
+	old_rect.width  = (unsigned short) (cw->w + 2 * cw->bw);
+	old_rect.height = (unsigned short) (cw->h + 2 * cw->bw);
+	old_r           = XFixesCreateRegion(dpy, &old_rect, 1);
+	XFixesUnionRegion(dpy, comp.dirty, comp.dirty, old_r);
+	XFixesDestroyRegion(dpy, old_r);
+
+	resized = (c->w != cw->w || c->h != cw->h);
+
 	cw->x  = c->x - c->bw;
 	cw->y  = c->y - c->bw;
 	cw->w  = c->w;
 	cw->h  = c->h;
 	cw->bw = c->bw;
 
-	if (cw->redirected)
+	/* Mark the new footprint dirty so the window gets painted at its new pos.
+	 */
+	{
+		XRectangle    new_rect;
+		XserverRegion new_r;
+		new_rect.x      = (short) cw->x;
+		new_rect.y      = (short) cw->y;
+		new_rect.width  = (unsigned short) (cw->w + 2 * cw->bw);
+		new_rect.height = (unsigned short) (cw->h + 2 * cw->bw);
+		new_r           = XFixesCreateRegion(dpy, &new_rect, 1);
+		XFixesUnionRegion(dpy, comp.dirty, comp.dirty, new_r);
+		XFixesDestroyRegion(dpy, new_r);
+	}
+
+	/* Only re-acquire the pixmap on resize; a move reuses the existing one. */
+	if (cw->redirected && resized)
 		comp_refresh_pixmap(cw);
 
 	schedule_repaint();
@@ -854,6 +883,14 @@ compositor_handle_event(XEvent *ev)
 		XConfigureEvent *cev = (XConfigureEvent *) ev;
 		CompWin         *cw  = comp_find_by_xid(cev->window);
 		if (cw) {
+			/* Managed clients are already handled synchronously by
+			 * compositor_configure_window() from resizeclient().  Processing
+			 * the async ConfigureNotify here as well would double-update
+			 * geometry (using stale cev->x/y) and undo what configure_window
+			 * already did correctly.  Skip them. */
+			if (cw->client)
+				return;
+
 			int resized = (cev->width != cw->w || cev->height != cw->h);
 
 			/* Mark the old position dirty so ghost images are cleared */
