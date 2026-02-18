@@ -7,18 +7,19 @@
 
 #ifdef STATUSNOTIFIER
 
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <cairo/cairo-xlib.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
 #include "dbus.h"
 #include "drw.h"
 #include "icon.h"
 #include "log.h"
 #include "menu.h"
 #include "queue.h"
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-
 #include "sni.h"
 
 /* Forward declaration for awm integration */

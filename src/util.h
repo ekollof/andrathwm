@@ -1,5 +1,8 @@
 /* See LICENSE file for copyright and license details. */
 
+#ifndef UTIL_H
+#define UTIL_H
+
 #include <unistd.h>
 
 #ifndef MAX
@@ -27,3 +30,5 @@ void *ecalloc(size_t nmemb, size_t size);
 
 #define LOG_SAFE_ERR(msg) LOG_SAFE("error", msg)
 #define LOG_SAFE_WARN(msg) LOG_SAFE("warning", msg)
+
+#endif /* UTIL_H */

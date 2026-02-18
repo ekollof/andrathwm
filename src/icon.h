@@ -7,21 +7,20 @@
 #ifndef ICON_H
 #define ICON_H
 
-#include <X11/Xlib.h>
 #include <cairo/cairo.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
 /* Icon structure for ARGB pixmap data */
 typedef struct {
-	int width;
-	int height;
+	int            width;
+	int            height;
 	unsigned char *pixels; /* ARGB32 format */
 } Icon;
 
 /* Callback data for async icon loading */
 typedef struct {
 	void *user_data;
-	int size;
+	int   size;
 	void (*callback)(cairo_surface_t *surface, void *user_data);
 } IconLoadData;
 
@@ -43,8 +42,8 @@ cairo_surface_t *icon_load(const char *name_or_path, int size);
  * Returns immediately, performs I/O and decoding in background
  */
 void icon_load_async(const char *path, int size,
-		     void (*callback)(cairo_surface_t *surface, void *user_data),
-		     void *user_data);
+    void (*callback)(cairo_surface_t *surface, void *user_data),
+    void *user_data);
 
 /* Convert ARGB pixmap data to cairo surface
  * icons: array of Icon structs (different sizes)

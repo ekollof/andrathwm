@@ -3,12 +3,12 @@
  * Generic D-Bus helper functions
  */
 
+#include <stdlib.h>
+#include <string.h>
+
 #include "dbus.h"
 #include "log.h"
 #include "util.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #define PROPERTIES_INTERFACE "org.freedesktop.DBus.Properties"
 
