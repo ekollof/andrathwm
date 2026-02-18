@@ -26,6 +26,9 @@ case-insensitively as you type.
 | `Home` / `End` | Jump to first / last item |
 | `Return` | Launch selected application |
 | `Escape` | Close without launching |
+| `Backspace` | Delete character before cursor |
+| `Delete` | Delete character at cursor (forward delete) |
+| `Ctrl+w` | Delete word before cursor |
 
 ### Mouse Navigation
 
@@ -82,8 +85,14 @@ The launcher searches two sources, in this order:
    Only entries without `NoDisplay=true` are shown. Field codes (`%f`, `%u`,
    etc.) are stripped from `Exec` values before execution.
 
+   `.desktop` files whose **filename** (not display name) begins with a prefix
+   listed in `skip_prefixes` (e.g. `gnome-`, `kde-`, `org.freedesktop.`) are
+   silently skipped. Edit that array in `src/launcher.c` to adjust filtering.
+
 2. **PATH executables** — all executables found on `$PATH` that are not already
-   represented by a `.desktop` entry.
+   represented by a `.desktop` entry. Deduplication checks against both the
+   already-loaded desktop item names and the filenames of seen `.desktop` files,
+   so the same application never appears twice regardless of install path.
 
 ## Icons
 
