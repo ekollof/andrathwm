@@ -652,7 +652,7 @@ compositor_remove_window(Client *c)
 }
 
 void
-compositor_configure_window(Client *c)
+compositor_configure_window(Client *c, int actual_bw)
 {
 	CompWin      *cw;
 	int           resized;
@@ -677,11 +677,12 @@ compositor_configure_window(Client *c)
 
 	resized = (c->w != cw->w || c->h != cw->h);
 
-	cw->x  = c->x - c->bw;
-	cw->y  = c->y - c->bw;
-	cw->w  = c->w;
-	cw->h  = c->h;
-	cw->bw = c->bw;
+	cw->x = c->x - actual_bw;
+	cw->y = c->y - actual_bw;
+	cw->w = c->w;
+	cw->h = c->h;
+	cw->bw =
+	    actual_bw; /* actual X border_width, may be 0 for singularborders */
 
 	/* Mark the new footprint dirty so the window gets painted at its new pos.
 	 */

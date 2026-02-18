@@ -32,10 +32,11 @@ void compositor_add_window(Client *c);
 void compositor_remove_window(Client *c);
 
 /*
- * Called from resizeclient() after XConfigureWindow — the window's pixmap
- * must be re-acquired because the old one is now stale.
+ * Called from resizeclient() after XConfigureWindow.
+ * actual_bw is wc.border_width — the border width actually applied to the X
+ * window (may differ from c->bw when singularborders collapses it to 0).
  */
-void compositor_configure_window(Client *c);
+void compositor_configure_window(Client *c, int actual_bw);
 
 /*
  * bypass == 1 : stop redirecting this window (fullscreen / bypass-compositor)

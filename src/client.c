@@ -855,7 +855,7 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	configure(c);
 	XSync(dpy, False);
 #ifdef COMPOSITOR
-	compositor_configure_window(c);
+	compositor_configure_window(c, wc.border_width);
 #endif
 }
 
