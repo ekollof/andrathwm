@@ -14,3 +14,6 @@ SpaceAfterCStyleCast: true
 AllowShortFunctionsOnASingleLine: Inline
 BreakBeforeBinaryOperators: None
 TabWidth: 4
+# Include order is load-order significant (config.h must come last).
+# Do not let clang-format reorder or group them.
+SortIncludes: Never

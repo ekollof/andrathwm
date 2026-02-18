@@ -36,6 +36,16 @@ xidle: $(SRCDIR)/xidle.c
 compile_flags.txt: config.mk
 	printf '%s\n' $(INCS) $(CPPFLAGS) > $@
 
+# Generate compile_commands.json for clangd.  Requires a clean build so
+# all compile lines appear in make output.
+compdb: config.h status_config.h
+	$(MAKE) clean
+	$(MAKE) --dry-run 2>/dev/null | grep '^${CC} -c' | python3 -c "\
+import sys,json,re,os; cwd=os.getcwd(); entries=[\
+{'directory':cwd,'command':re.sub(r'-o build/\S+','',l.strip()),'file':os.path.join(cwd,re.search(r'(src/\S+\.c)$$',l.strip()).group(1))}\
+for l in sys.stdin if re.search(r'src/\S+\.c$$',l)]; print(json.dumps(entries,indent=2))" > compile_commands.json
+	$(MAKE)
+
 clean:
 	rm -rf awm xidle $(BUILDDIR) awm-${VERSION}.tar.gz compile_flags.txt
 
@@ -64,4 +74,4 @@ uninstall:
 
 compile_flags: compile_flags.txt
 
-.PHONY: all clean dist install uninstall compile_flags
+.PHONY: all clean dist install uninstall compile_flags compdb
