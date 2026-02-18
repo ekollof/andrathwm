@@ -1055,6 +1055,32 @@ comp_do_repaint(void)
 			    0, 0, 0, cw->x + cw->bw, cw->y + cw->bw, (unsigned int) cw->w,
 			    (unsigned int) cw->h);
 		}
+
+		/* Paint the border frame that awm manages.  The redirected pixmap
+		 * is interior-only, so the compositor must draw it explicitly.
+		 * Only managed clients with a visible border need this. */
+		if (cw->client && cw->bw > 0) {
+			int          sel = (cw->client == selmon->sel);
+			XRenderColor bc =
+			    scheme[sel ? SchemeSel : SchemeNorm][ColBorder].color;
+			unsigned int bw = (unsigned int) cw->bw;
+			unsigned int ow = (unsigned int) cw->w + 2 * bw; /* outer w */
+			unsigned int oh = (unsigned int) cw->h + 2 * bw; /* outer h */
+
+			/* top */
+			XRenderFillRectangle(
+			    dpy, PictOpSrc, comp.back, &bc, cw->x, cw->y, ow, bw);
+			/* bottom */
+			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc, cw->x,
+			    cw->y + (int) (oh - bw), ow, bw);
+			/* left */
+			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc, cw->x,
+			    cw->y + (int) bw, bw, (unsigned int) cw->h);
+			/* right */
+			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc,
+			    cw->x + (int) (ow - bw), cw->y + (int) bw, bw,
+			    (unsigned int) cw->h);
+		}
 	}
 
 	xerror_pop();
