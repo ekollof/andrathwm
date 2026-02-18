@@ -14,6 +14,12 @@ This build includes the following enhancements over vanilla dwm:
 - **Awesomebar**: Visual window list with icons in the status bar
 - **Multi-monitor support**: Xinerama and XRandR support for multiple displays
 - **Scratchpads**: Drop-down terminals and floating windows on demand
+- **Application launcher**: Rofi-style launcher with icon support (Super+P)
+  - Searches installed `.desktop` files and PATH executables
+  - GTK icon theme integration with SVG and raster icon support
+  - Reverse-DNS icon name resolution (e.g. `Alacritty` → `com.alacritty.Alacritty`)
+  - Mouse-wheel and keyboard navigation
+  - See [docs/LAUNCHER.md](docs/LAUNCHER.md) for details
 
 ### Modern Desktop Integration
 - **StatusNotifier/AppIndicator**: Full D-Bus based system tray support
@@ -189,7 +195,7 @@ The default modifier key is `Mod4` (Windows/Super key). See `config.def.h` for t
 
 Some notable bindings:
 - `Mod4+Return` - Spawn terminal
-- `Mod4+p` - Launch dmenu
+- `Mod4+p` - Open application launcher
 - `Mod4+j/k` - Focus next/previous window
 - `Mod4+h/l` - Resize master area
 - `Mod4+Tab` - Toggle between current and previous tag
@@ -277,11 +283,12 @@ CFLAGS   = -g -std=c99 -pedantic -Wall -O0 ${INCS} ${CPPFLAGS}
 andrathwm/
 ├── src/                  # Source files
 │   ├── awm.c            # Main window manager code
-│   ├── drw.c/drw.h      # Drawing library
+│   ├── drw.c/drw.h      # Drawing library (Cairo/X11)
 │   ├── util.c/util.h    # Utility functions
 │   ├── dbus.c/dbus.h    # D-Bus integration
 │   ├── sni.c/sni.h      # StatusNotifier implementation
 │   ├── icon.c/icon.h    # Icon cache and rendering
+│   ├── launcher.c/launcher.h  # Application launcher
 │   ├── menu.c/menu.h    # SNI menu support
 │   ├── queue.c/queue.h  # Event queue
 │   ├── log.c/log.h      # Logging subsystem
@@ -292,6 +299,7 @@ andrathwm/
 ├── docs/                 # Documentation
 │   ├── XIDLE.md         # xidle documentation
 │   ├── AWESOMEBAR.md    # Awesomebar feature docs
+│   ├── LAUNCHER.md      # Application launcher docs
 │   ├── MULTIMONITOR.md  # Multi-monitor setup
 │   ├── SYSTRAY_ICONS.md # System tray icon docs
 │   └── PHASE1_IMPROVEMENTS.md  # Development notes
@@ -316,6 +324,7 @@ This build incorporates the following concepts/patches from the dwm ecosystem:
 
 - Single-tag mode (custom implementation)
 - Awesomebar with icons
+- Application launcher with GTK icon theme support
 - StatusNotifier/AppIndicator system tray
 - EWMH support (comprehensive implementation)
 - Multi-monitor support (fixmultimon patches)
