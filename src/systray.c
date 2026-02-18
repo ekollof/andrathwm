@@ -216,11 +216,13 @@ updatesystray(void)
 	    CWX | CWY | CWWidth | CWHeight | CWSibling | CWStackMode, &wc);
 	XMapWindow(dpy, systray->win);
 	XMapSubwindows(dpy, systray->win);
-	/* redraw background — XClearWindow uses the window's own background
-	 * pixel, avoiding a BadMatch from using drw->gc (depth-24) on a
-	 * depth-32 window. */
-	XClearWindow(dpy, systray->win);
-	XSync(dpy, False);
+	/* Flush buffered requests to the X server without blocking for
+	 * completion.  We use XFlush rather than XSync to avoid stalling the
+	 * GLib main loop on every status-bar tick.  The window background is
+	 * filled automatically from the background_pixel set at creation time
+	 * whenever the server exposes previously-hidden areas, so no explicit
+	 * XClearWindow call is needed here. */
+	XFlush(dpy);
 }
 
 Client *
