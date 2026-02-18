@@ -30,7 +30,6 @@
 #include "xrdb.h"
 #define AWM_CONFIG_IMPL
 #include "config.h"
-#include "pertag.h"
 
 /* variables */
 Systray *systray = NULL;

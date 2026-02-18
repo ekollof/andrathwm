@@ -10,7 +10,6 @@
 #include "systray.h"
 #include "xrdb.h"
 #include "config.h"
-#include "pertag.h"
 
 /* module-local strings */
 static const char broken[] = "broken";
@@ -1016,7 +1015,7 @@ setlayout(const Arg *arg)
 		selmon->sellt = selmon->pertag->sellts[selmon->pertag->curtag] ^= 1;
 	if (arg && arg->v)
 		selmon->lt[selmon->sellt] =
-		    selmon->pertag->ltidxs[selmon->pertag->curtag][selmon->sellt] =
+		    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt)] =
 		        (Layout *) arg->v;
 	strncpy(selmon->ltsymbol, selmon->lt[selmon->sellt]->symbol,
 	    sizeof selmon->ltsymbol);
@@ -1196,8 +1195,8 @@ toggleview(const Arg *arg)
 				selmon->pertag->showbars[m_curtag] =
 				    m->pertag->showbars[m_curtag];
 				for (j = 0; j < 2; j++)
-					selmon->pertag->ltidxs[m_curtag][j] =
-					    m->pertag->ltidxs[m_curtag][j];
+					selmon->pertag->ltidxs[(m_curtag)*2+(j)] =
+					    m->pertag->ltidxs[(m_curtag)*2+(j)];
 
 				m->pertag->nmasters[selmon_curtag] =
 				    selmon->pertag->nmasters[selmon_curtag];
@@ -1208,8 +1207,8 @@ toggleview(const Arg *arg)
 				m->pertag->showbars[selmon_curtag] =
 				    selmon->pertag->showbars[selmon_curtag];
 				for (j = 0; j < 2; j++)
-					m->pertag->ltidxs[selmon_curtag][j] =
-					    selmon->pertag->ltidxs[selmon_curtag][j];
+					m->pertag->ltidxs[(selmon_curtag)*2+(j)] =
+					    selmon->pertag->ltidxs[(selmon_curtag)*2+(j)];
 
 				m->sel = selmon->sel;
 				m->seltags ^= 1;
@@ -1220,9 +1219,9 @@ toggleview(const Arg *arg)
 				m->mfact   = m->pertag->mfacts[m->pertag->curtag];
 				m->sellt   = m->pertag->sellts[m->pertag->curtag];
 				m->lt[m->sellt] =
-				    m->pertag->ltidxs[m->pertag->curtag][m->sellt];
+				    m->pertag->ltidxs[(m->pertag->curtag)*2+(m->sellt)];
 				m->lt[m->sellt ^ 1] =
-				    m->pertag->ltidxs[m->pertag->curtag][m->sellt ^ 1];
+				    m->pertag->ltidxs[(m->pertag->curtag)*2+(m->sellt ^ 1)];
 				if (m->showbar != m->pertag->showbars[m->pertag->curtag])
 					togglebar(NULL);
 
@@ -1239,10 +1238,10 @@ toggleview(const Arg *arg)
 				selmon->sellt = selmon->pertag->sellts[selmon->pertag->curtag];
 				selmon->lt[selmon->sellt] =
 				    selmon->pertag
-				        ->ltidxs[selmon->pertag->curtag][selmon->sellt];
+				        ->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt)];
 				selmon->lt[selmon->sellt ^ 1] =
 				    selmon->pertag
-				        ->ltidxs[selmon->pertag->curtag][selmon->sellt ^ 1];
+				        ->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt ^ 1)];
 				if (selmon->showbar !=
 				    selmon->pertag->showbars[selmon->pertag->curtag])
 					togglebar(NULL);
@@ -1272,9 +1271,9 @@ toggleview(const Arg *arg)
 		selmon->mfact   = selmon->pertag->mfacts[selmon->pertag->curtag];
 		selmon->sellt   = selmon->pertag->sellts[selmon->pertag->curtag];
 		selmon->lt[selmon->sellt] =
-		    selmon->pertag->ltidxs[selmon->pertag->curtag][selmon->sellt];
+		    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt)];
 		selmon->lt[selmon->sellt ^ 1] =
-		    selmon->pertag->ltidxs[selmon->pertag->curtag][selmon->sellt ^ 1];
+		    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt ^ 1)];
 
 		if (selmon->showbar !=
 		    selmon->pertag->showbars[selmon->pertag->curtag])
@@ -1452,8 +1451,8 @@ view(const Arg *arg)
 			selmon->pertag->sellts[m_curtag]   = m->pertag->sellts[m_curtag];
 			selmon->pertag->showbars[m_curtag] = m->pertag->showbars[m_curtag];
 			for (j = 0; j < 2; j++)
-				selmon->pertag->ltidxs[m_curtag][j] =
-				    m->pertag->ltidxs[m_curtag][j];
+				selmon->pertag->ltidxs[(m_curtag)*2+(j)] =
+				    m->pertag->ltidxs[(m_curtag)*2+(j)];
 
 			m->pertag->nmasters[selmon_curtag] =
 			    selmon->pertag->nmasters[selmon_curtag];
@@ -1464,8 +1463,8 @@ view(const Arg *arg)
 			m->pertag->showbars[selmon_curtag] =
 			    selmon->pertag->showbars[selmon_curtag];
 			for (j = 0; j < 2; j++)
-				m->pertag->ltidxs[selmon_curtag][j] =
-				    selmon->pertag->ltidxs[selmon_curtag][j];
+				m->pertag->ltidxs[(selmon_curtag)*2+(j)] =
+				    selmon->pertag->ltidxs[(selmon_curtag)*2+(j)];
 
 			m->sel = selmon->sel;
 			m->seltags ^= 1;
@@ -1475,9 +1474,9 @@ view(const Arg *arg)
 			m->nmaster      = m->pertag->nmasters[m->pertag->curtag];
 			m->mfact        = m->pertag->mfacts[m->pertag->curtag];
 			m->sellt        = m->pertag->sellts[m->pertag->curtag];
-			m->lt[m->sellt] = m->pertag->ltidxs[m->pertag->curtag][m->sellt];
+			m->lt[m->sellt] = m->pertag->ltidxs[(m->pertag->curtag)*2+(m->sellt)];
 			m->lt[m->sellt ^ 1] =
-			    m->pertag->ltidxs[m->pertag->curtag][m->sellt ^ 1];
+			    m->pertag->ltidxs[(m->pertag->curtag)*2+(m->sellt ^ 1)];
 			if (m->showbar != m->pertag->showbars[m->pertag->curtag])
 				togglebar(NULL);
 
@@ -1493,10 +1492,10 @@ view(const Arg *arg)
 			selmon->mfact   = selmon->pertag->mfacts[selmon->pertag->curtag];
 			selmon->sellt   = selmon->pertag->sellts[selmon->pertag->curtag];
 			selmon->lt[selmon->sellt] =
-			    selmon->pertag->ltidxs[selmon->pertag->curtag][selmon->sellt];
+			    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt)];
 			selmon->lt[selmon->sellt ^ 1] =
 			    selmon->pertag
-			        ->ltidxs[selmon->pertag->curtag][selmon->sellt ^ 1];
+			        ->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt ^ 1)];
 			if (selmon->showbar !=
 			    selmon->pertag->showbars[selmon->pertag->curtag])
 				togglebar(NULL);
@@ -1529,9 +1528,9 @@ view(const Arg *arg)
 	selmon->mfact   = selmon->pertag->mfacts[selmon->pertag->curtag];
 	selmon->sellt   = selmon->pertag->sellts[selmon->pertag->curtag];
 	selmon->lt[selmon->sellt] =
-	    selmon->pertag->ltidxs[selmon->pertag->curtag][selmon->sellt];
+	    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt)];
 	selmon->lt[selmon->sellt ^ 1] =
-	    selmon->pertag->ltidxs[selmon->pertag->curtag][selmon->sellt ^ 1];
+	    selmon->pertag->ltidxs[(selmon->pertag->curtag)*2+(selmon->sellt ^ 1)];
 
 	if (selmon->showbar != selmon->pertag->showbars[selmon->pertag->curtag])
 		togglebar(NULL);

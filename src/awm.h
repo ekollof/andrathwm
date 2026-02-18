@@ -224,7 +224,18 @@ typedef struct {
 	void (*arrange)(Monitor *);
 } Layout;
 
+struct Pertag {
+	unsigned int   curtag, prevtag;
+	int           *nmasters;     /* [TAGSLENGTH + 1] */
+	float         *mfacts;       /* [TAGSLENGTH + 1] */
+	unsigned int  *sellts;       /* [TAGSLENGTH + 1] */
+	const Layout **ltidxs;       /* [(TAGSLENGTH + 1) * 2] flattened */
+	int           *showbars;     /* [TAGSLENGTH + 1] */
+	int           *drawwithgaps; /* [TAGSLENGTH + 1] */
+	unsigned int  *gappx;        /* [TAGSLENGTH + 1] */
+};
 typedef struct Pertag Pertag;
+
 struct Monitor {
 	char          ltsymbol[16];
 	float         mfact;

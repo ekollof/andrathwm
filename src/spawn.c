@@ -7,7 +7,6 @@
 #include "spawn.h"
 #include "xrdb.h"
 #include "config.h"
-#include "pertag.h"
 
 /* autostart script filenames */
 static const char autostartblocksh[] = "autostart_blocking.sh";

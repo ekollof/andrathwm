@@ -8,7 +8,6 @@
 #include "systray.h"
 #include "xrdb.h"
 #include "config.h"
-#include "pertag.h"
 
 void
 loadxrdb(void)

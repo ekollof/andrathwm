@@ -9,7 +9,6 @@
 #include "systray.h"
 #include "xrdb.h"
 #include "config.h"
-#include "pertag.h"
 
 #ifdef XINERAMA
 static int
@@ -66,6 +65,13 @@ cleanupmon(Monitor *mon)
 	}
 	XUnmapWindow(dpy, mon->barwin);
 	XDestroyWindow(dpy, mon->barwin);
+	free(mon->pertag->nmasters);
+	free(mon->pertag->mfacts);
+	free(mon->pertag->sellts);
+	free(mon->pertag->ltidxs);
+	free(mon->pertag->showbars);
+	free(mon->pertag->drawwithgaps);
+	free(mon->pertag->gappx);
 	free(mon->pertag);
 	free(mon);
 }
@@ -108,15 +114,22 @@ createmon(void)
 	m->lt[0]                    = &layouts[0];
 	m->lt[1]                    = &layouts[1 % LENGTH(layouts)];
 	strncpy(m->ltsymbol, layouts[0].symbol, sizeof m->ltsymbol);
-	m->pertag         = ecalloc(1, sizeof(Pertag));
-	m->pertag->curtag = m->pertag->prevtag = 1;
+	m->pertag              = ecalloc(1, sizeof(Pertag));
+	m->pertag->curtag      = m->pertag->prevtag = 1;
+	m->pertag->nmasters    = ecalloc(TAGSLENGTH + 1, sizeof(int));
+	m->pertag->mfacts      = ecalloc(TAGSLENGTH + 1, sizeof(float));
+	m->pertag->sellts      = ecalloc(TAGSLENGTH + 1, sizeof(unsigned int));
+	m->pertag->ltidxs      = ecalloc((TAGSLENGTH + 1) * 2, sizeof(Layout *));
+	m->pertag->showbars    = ecalloc(TAGSLENGTH + 1, sizeof(int));
+	m->pertag->drawwithgaps = ecalloc(TAGSLENGTH + 1, sizeof(int));
+	m->pertag->gappx       = ecalloc(TAGSLENGTH + 1, sizeof(unsigned int));
 
 	for (i = 0; i <= LENGTH(tags); i++) {
 		m->pertag->nmasters[i] = m->nmaster;
 		m->pertag->mfacts[i]   = m->mfact;
 
-		m->pertag->ltidxs[i][0] = m->lt[0];
-		m->pertag->ltidxs[i][1] = m->lt[1];
+		m->pertag->ltidxs[(i)*2+(0)] = m->lt[0];
+		m->pertag->ltidxs[(i)*2+(1)] = m->lt[1];
 		m->pertag->sellts[i]    = m->sellt;
 
 		m->pertag->showbars[i] = m->showbar;
