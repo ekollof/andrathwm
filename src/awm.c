@@ -426,8 +426,13 @@ main(int argc, char *argv[])
 #endif /* __OpenBSD__ */
 	scan();
 	if (!restart)
-		if (!getenv("RESTARTED"))
+		if (!getenv("RESTARTED")) {
 			runautostart();
+			/* autostart_blocking.sh may have run `xrdb -merge` which sets
+			 * RESOURCE_MANAGER on the root window for the first time.
+			 * Re-apply so schemes reflect the actual Xresources colors. */
+			xrdb(NULL);
+		}
 	run();
 	if (restart) {
 		setenv("RESTARTED", "1", 0);
