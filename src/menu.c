@@ -9,6 +9,9 @@
 #ifdef XINERAMA
 #include <X11/extensions/Xinerama.h>
 #endif
+#ifdef XRANDR
+#include <X11/extensions/Xrandr.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -228,43 +231,85 @@ menu_get_monitor_geometry(
 	*mon_w = DisplayWidth(dpy, DefaultScreen(dpy));
 	*mon_h = DisplayHeight(dpy, DefaultScreen(dpy));
 
+#ifdef XRANDR
+	{
+		int                 randr_event, randr_error;
+		XRRScreenResources *sr;
+		int                 i;
+
+		if (XRRQueryExtension(dpy, &randr_event, &randr_error) &&
+		    (sr = XRRGetScreenResources(dpy, DefaultRootWindow(dpy)))) {
+			int found = 0;
+
+			for (i = 0; i < sr->ncrtc && !found; i++) {
+				XRRCrtcInfo *ci = XRRGetCrtcInfo(dpy, sr, sr->crtcs[i]);
+				if (!ci)
+					continue;
+				if (ci->noutput > 0 &&
+				    x >= ci->x && x < (int)(ci->x + ci->width) &&
+				    y >= ci->y && y < (int)(ci->y + ci->height)) {
+					*mon_x = ci->x;
+					*mon_y = ci->y;
+					*mon_w = ci->width;
+					*mon_h = ci->height;
+					found  = 1;
+				}
+				XRRFreeCrtcInfo(ci);
+			}
+
+			if (!found) {
+				/* Point not in any CRTC — use first active one */
+				for (i = 0; i < sr->ncrtc && !found; i++) {
+					XRRCrtcInfo *ci = XRRGetCrtcInfo(dpy, sr, sr->crtcs[i]);
+					if (!ci)
+						continue;
+					if (ci->noutput > 0) {
+						*mon_x = ci->x;
+						*mon_y = ci->y;
+						*mon_w = ci->width;
+						*mon_h = ci->height;
+						found  = 1;
+					}
+					XRRFreeCrtcInfo(ci);
+				}
+			}
+
+			XRRFreeScreenResources(sr);
+			if (found)
+				return;
+		}
+	}
+#endif /* XRANDR */
+
 #ifdef XINERAMA
 	{
 		XineramaScreenInfo *screens;
 		int                 nscreens, i;
 		int                 found = 0;
 
-		if (!XineramaIsActive(dpy))
-			return;
-
-		screens = XineramaQueryScreens(dpy, &nscreens);
-		if (!screens)
-			return;
-
-		/* Find which screen contains the point */
-		for (i = 0; i < nscreens; i++) {
-			if (x >= screens[i].x_org &&
-			    x < screens[i].x_org + screens[i].width &&
-			    y >= screens[i].y_org &&
-			    y < screens[i].y_org + screens[i].height) {
-				*mon_x = screens[i].x_org;
-				*mon_y = screens[i].y_org;
-				*mon_w = screens[i].width;
-				*mon_h = screens[i].height;
-				found  = 1;
-				break;
+		if (XineramaIsActive(dpy) &&
+		    (screens = XineramaQueryScreens(dpy, &nscreens))) {
+			for (i = 0; i < nscreens; i++) {
+				if (x >= screens[i].x_org &&
+				    x < screens[i].x_org + screens[i].width &&
+				    y >= screens[i].y_org &&
+				    y < screens[i].y_org + screens[i].height) {
+					*mon_x = screens[i].x_org;
+					*mon_y = screens[i].y_org;
+					*mon_w = screens[i].width;
+					*mon_h = screens[i].height;
+					found  = 1;
+					break;
+				}
 			}
+			if (!found && nscreens > 0) {
+				*mon_x = screens[0].x_org;
+				*mon_y = screens[0].y_org;
+				*mon_w = screens[0].width;
+				*mon_h = screens[0].height;
+			}
+			XFree(screens);
 		}
-
-		if (!found && nscreens > 0) {
-			/* Point not in any screen, use first screen */
-			*mon_x = screens[0].x_org;
-			*mon_y = screens[0].y_org;
-			*mon_w = screens[0].width;
-			*mon_h = screens[0].height;
-		}
-
-		XFree(screens);
 	}
 #else
 	(void) x;
