@@ -22,6 +22,8 @@
  */
 #include <stdint.h>
 
+#include <glib-unix.h>
+
 #include "awm.h"
 #include "client.h"
 #include "events.h"
@@ -33,6 +35,7 @@
 #include "status.h"
 #include "systray.h"
 #include "xrdb.h"
+#include "xsource.h"
 #define AWM_CONFIG_IMPL
 #include "config.h"
 
@@ -46,6 +49,11 @@ int       bh;     /* bar height */
 int       lrpad;  /* sum of left and right padding for text */
 int (*xerrorxlib)(Display *, XErrorEvent *);
 unsigned int numlockmask = 0;
+static guint xsource_id  = 0; /* GLib source ID for the X11 event source */
+#ifdef STATUSNOTIFIER
+static guint dbus_src_id   = 0; /* GLib source ID for the D-Bus fd source */
+static guint dbus_retry_id = 0; /* GLib source ID for the reconnect timer */
+#endif
 #ifdef XRANDR
 int randrbase, rrerrbase;
 #endif
@@ -64,18 +72,17 @@ void (*handler[LASTEvent])(XEvent *) = { [ButtonPress] = buttonpress,
 	[PropertyNotify]                                   = propertynotify,
 	[ResizeRequest]                                    = resizerequest,
 	[UnmapNotify]                                      = unmapnotify };
-Atom        wmatom[WMLast], netatom[NetLast], xatom[XLast];
-int         restart   = 0;
-int         running   = 1;
-int         barsdirty = 0;
-static int  status_fd = -1;
-Cur        *cursor[CurLast];
-Clr       **scheme;
-Display    *dpy;
-Drw        *drw;
-Monitor    *mons, *selmon;
-Window      root, wmcheckwin;
-Clientlist *cl;
+Atom              wmatom[WMLast], netatom[NetLast], xatom[XLast];
+int               restart   = 0;
+int               barsdirty = 0;
+static GMainLoop *main_loop = NULL;
+Cur              *cursor[CurLast];
+Clr             **scheme;
+Display          *dpy;
+Drw              *drw;
+Monitor          *mons, *selmon;
+Window            root, wmcheckwin;
+Clientlist       *cl;
 
 /* compile-time check if all tags fit into an unsigned int bit array. */
 struct NumTags {
@@ -117,8 +124,19 @@ cleanup(void)
 	XSync(dpy, False);
 	XSetInputFocus(dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
 	XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
+	if (xsource_id > 0) {
+		g_source_remove(xsource_id);
+		xsource_id = 0;
+	}
 #ifdef STATUSNOTIFIER
-	queue_cleanup();
+	if (dbus_retry_id > 0) {
+		g_source_remove(dbus_retry_id);
+		dbus_retry_id = 0;
+	}
+	if (dbus_src_id > 0) {
+		g_source_remove(dbus_src_id);
+		dbus_src_id = 0;
+	}
 	sni_cleanup();
 #endif
 }
@@ -128,7 +146,8 @@ quit(const Arg *arg)
 {
 	if (arg->i)
 		restart = 1;
-	running = 0;
+	if (main_loop)
+		g_main_loop_quit(main_loop);
 }
 
 void
@@ -150,112 +169,157 @@ launchermenu(const Arg *arg)
 	launcher_show(launcher, x, y);
 }
 
+/* ---------------------------------------------------------------------------
+ * X event dispatch callback — called by the XSource on each loop iteration
+ * where X events are available.
+ * ------------------------------------------------------------------------- */
+static gboolean
+x_dispatch_cb(gpointer user_data)
+{
+	XEvent ev;
+	(void) user_data;
+
+	while (XPending(dpy)) {
+		XNextEvent(dpy, &ev);
+#ifdef XRANDR
+		if (ev.type == randrbase + RRScreenChangeNotify) {
+			XRRUpdateConfiguration(&ev);
+			updategeom();
+			drw_resize(drw, sw, bh);
+			updatebars();
+			for (Monitor *m = mons; m; m = m->next) {
+				for (Client *c = m->cl->clients; c; c = c->next)
+					if (c->isfullscreen)
+						resizeclient(c, m->mx, m->my, m->mw, m->mh);
+				resizebarwin(m);
+			}
+			focus(NULL);
+			arrange(NULL);
+		} else
+#endif
+#ifdef STATUSNOTIFIER
+			/* Handle menu events BEFORE normal handlers if menu is visible */
+			if (!sni_handle_menu_event(&ev)) {
+#endif
+				/* Handle launcher events if visible */
+				if (launcher && launcher->visible) {
+					if (!launcher_handle_event(launcher, &ev) &&
+					    ev.type < LASTEvent && handler[ev.type])
+						handler[ev.type](&ev);
+				} else if (ev.type < LASTEvent && handler[ev.type])
+					handler[ev.type](&ev);
+#ifdef STATUSNOTIFIER
+			}
+#endif
+	}
+
+	if (barsdirty) {
+		drawbars();
+		updatesystray();
+		barsdirty = 0;
+	}
+
+	return G_SOURCE_CONTINUE;
+}
+
+#ifdef STATUSNOTIFIER
+/* Forward declaration — dbus_dispatch_cb is defined after
+ * sni_attach_dbus_source */
+static gboolean dbus_dispatch_cb(
+    gint fd, GIOCondition condition, gpointer user_data);
+
+/* Attach a new GUnixFDSource for the D-Bus fd to the given context.
+ * Removes any previously registered source first. */
+static void
+sni_attach_dbus_source(GMainContext *ctx)
+{
+	GSource *src;
+	int      fd;
+
+	if (dbus_src_id > 0) {
+		g_source_remove(dbus_src_id);
+		dbus_src_id = 0;
+	}
+
+	fd = sni_get_fd();
+	if (fd < 0)
+		return;
+
+	src = g_unix_fd_source_new(fd, G_IO_IN | G_IO_HUP | G_IO_ERR);
+	g_source_set_callback(src, (GSourceFunc) dbus_dispatch_cb, NULL, NULL);
+	dbus_src_id = g_source_attach(src, ctx);
+	g_source_unref(src);
+}
+
+/* One-shot timer callback: attempt to reconnect to D-Bus after a disconnect.
+ */
+static gboolean
+dbus_reconnect_cb(gpointer user_data)
+{
+	GMainContext *ctx = (GMainContext *) user_data;
+
+	dbus_retry_id = 0; /* this one-shot timer has fired */
+	awm_warn("D-Bus: attempting reconnect...");
+	if (!sni_reconnect()) {
+		awm_error("D-Bus: reconnect failed — will retry in 5 s");
+		/* Keep retrying every 5 s until we succeed. */
+		dbus_retry_id = g_timeout_add_seconds(5, dbus_reconnect_cb, ctx);
+	} else {
+		sni_attach_dbus_source(ctx);
+		awm_warn("D-Bus: reconnected successfully");
+	}
+
+	return G_SOURCE_REMOVE; /* one-shot */
+}
+
+/* D-Bus dispatch callback — called by the GUnixFDSource when dbus_fd is
+ * readable, or on HUP/ERR when the D-Bus daemon disappears. */
+static gboolean
+dbus_dispatch_cb(gint fd, GIOCondition condition, gpointer user_data)
+{
+	(void) fd;
+
+	if (condition & (G_IO_HUP | G_IO_ERR)) {
+		awm_error("D-Bus connection lost (HUP/ERR) — scheduling reconnect");
+		dbus_src_id = 0; /* source is being removed by returning REMOVE */
+		/* Schedule a reconnect attempt 2 s from now on the same context. */
+		dbus_retry_id = g_timeout_add_seconds(
+		    2, dbus_reconnect_cb, g_main_loop_get_context(main_loop));
+		return G_SOURCE_REMOVE;
+	}
+
+	(void) user_data;
+	sni_handle_dbus();
+	return G_SOURCE_CONTINUE;
+}
+
+#endif /* STATUSNOTIFIER */
+
 void
 run(void)
 {
-	XEvent ev;
-	int    xfd;
-	int    select_ret;
-	int    max_fd;
-	fd_set fds;
-#ifdef STATUSNOTIFIER
-	int dbus_fd = -1;
-#endif
+	GMainContext *ctx;
 
-	/* main event loop */
 	XSync(dpy, False);
-	xfd = ConnectionNumber(dpy);
 
-	while (running) {
-#ifdef STATUSNOTIFIER
-		/* Re-query D-Bus FD each iteration in case of reconnection */
-		dbus_fd = sni_get_fd();
-#endif
-		FD_ZERO(&fds);
-		FD_SET(xfd, &fds);
-		max_fd = xfd;
-		if (status_fd >= 0) {
-			FD_SET(status_fd, &fds);
-			if (status_fd > max_fd)
-				max_fd = status_fd;
-		}
-#ifdef STATUSNOTIFIER
-		if (dbus_fd >= 0) {
-			FD_SET(dbus_fd, &fds);
-			if (dbus_fd > max_fd)
-				max_fd = dbus_fd;
-		}
-#endif
+	ctx = g_main_context_default();
 
-		select_ret = select(max_fd + 1, &fds, NULL, NULL, NULL);
-		if (select_ret < 0) {
-			if (errno == EINTR)
-				continue;
-			awm_warn("select: %s", strerror(errno));
-			continue;
-		}
-
-		if (status_fd >= 0 && FD_ISSET(status_fd, &fds)) {
-			uint64_t expirations;
-			if (read(status_fd, &expirations, sizeof(expirations)) > 0)
-				status_resume();
-		}
-#ifdef STATUSNOTIFIER
-		if (dbus_fd >= 0 && FD_ISSET(dbus_fd, &fds))
-			sni_handle_dbus();
-
-		/* Process deferred icon loading (one per iteration) */
-		queue_process(1);
-#endif
-
-		if (FD_ISSET(xfd, &fds)) {
-			while (XPending(dpy)) {
-				XNextEvent(dpy, &ev);
-#ifdef XRANDR
-				if (ev.type == randrbase + RRScreenChangeNotify) {
-					XRRUpdateConfiguration(&ev);
-					updategeom();
-					drw_resize(drw, sw, bh);
-					updatebars();
-					for (Monitor *m = mons; m; m = m->next) {
-						for (Client *c = m->cl->clients; c; c = c->next)
-							if (c->isfullscreen)
-								resizeclient(c, m->mx, m->my, m->mw, m->mh);
-						resizebarwin(m);
-					}
-					focus(NULL);
-					arrange(NULL);
-				} else
-#endif
-#ifdef STATUSNOTIFIER
-					/* Handle menu events BEFORE normal handlers if menu is
-					 * visible */
-					if (!sni_handle_menu_event(&ev)) {
-#endif
-						/* Handle launcher events if visible */
-						if (launcher && launcher->visible) {
-							if (!launcher_handle_event(launcher, &ev) &&
-							    ev.type < LASTEvent && handler[ev.type])
-								handler[ev.type](&ev);
-						} else if (ev.type < LASTEvent && handler[ev.type])
-							handler[ev.type](&ev);
-#ifdef STATUSNOTIFIER
-					}
-#endif
-			}
-		}
+	/* X11 source — wakes the loop whenever X events are pending */
+	xsource_id = xsource_attach(dpy, ctx, x_dispatch_cb, NULL);
 
 #ifdef STATUSNOTIFIER
-		while (gtk_events_pending())
-			gtk_main_iteration_do(FALSE);
+	/* D-Bus source — use helper so reconnect can re-attach cleanly */
+	sni_attach_dbus_source(ctx);
 #endif
 
-		if (barsdirty) {
-			drawbars();
-			updatesystray();
-			barsdirty = 0;
-		}
-	}
+	main_loop = g_main_loop_new(ctx, FALSE);
+	/* Let xsource_dispatch quit the loop cleanly on X server death
+	 * instead of calling exit(1), so cleanup() can run. */
+	xsource_set_quit_loop(main_loop);
+	g_main_loop_run(main_loop);
+	xsource_set_quit_loop(NULL);
+	g_main_loop_unref(main_loop);
+	main_loop = NULL;
 }
 
 void
@@ -388,7 +452,7 @@ setup(void)
 	scheme = ecalloc(LENGTH(colors), sizeof(Clr *));
 	for (i = 0; i < LENGTH(colors); i++)
 		scheme[i] = drw_scm_create(drw, colors[i], 3);
-	if (status_init(&status_fd) < 0)
+	if (status_init(g_main_context_default()) < 0)
 		awm_warn("status module failed to initialize");
 	/* init system tray */
 	updatesystray();
@@ -432,7 +496,6 @@ setup(void)
 	/* Initialize StatusNotifier support */
 	if (!sni_init(dpy, root, drw, scheme, sniconsize))
 		awm_warn("Failed to initialize StatusNotifier support");
-	queue_init();
 #endif
 	/* Initialize launcher */
 	launcher = launcher_create(dpy, root, drw, scheme, termcmd[0]);
@@ -471,8 +534,9 @@ main(int argc, char *argv[])
 	xrdb(NULL);
 	run();
 	if (restart) {
-		setenv("RESTARTED", "1", 0);
+		setenv("RESTARTED", "1", 1); /* overwrite=1: always update */
 		execvp(argv[0], argv);
+		awm_error("execvp failed: %s", strerror(errno));
 	}
 	cleanup();
 	log_cleanup();

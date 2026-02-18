@@ -6,8 +6,6 @@
 #ifdef STATUSNOTIFIER
 
 #include "drw.h"
-#include <cairo/cairo-xlib.h>
-#include <cairo/cairo.h>
 #include <dbus/dbus.h>
 #include <gtk/gtk.h>
 
@@ -52,12 +50,13 @@ typedef struct SNIItem {
 	int item_is_menu;       /* ItemIsMenu=true: icon is a pure menu trigger */
 
 	/* Internal state */
-	Window           win;                /* X11 window for this item */
-	cairo_surface_t *surface;            /* Cairo surface for rendering */
-	int              w, h;               /* Window size */
-	int              mapped;             /* Window mapped state */
-	int              properties_fetched; /* Set when GetAll reply arrives */
+	Window win;                /* X11 window for this item */
+	int    w, h;               /* Window size */
+	int    mapped;             /* Window mapped state */
+	int    properties_fetched; /* Set when GetAll reply arrives */
 	int properties_fetching; /* In-flight guard: prevents re-sending GetAll */
+	uint32_t
+	    generation; /* Incremented when item is freed (use-after-free guard) */
 
 	/* Pending click: queued when click arrives before properties are ready */
 	int  pending_click;  /* 1 if a click is waiting */
@@ -84,6 +83,7 @@ typedef struct {
 int  sni_init(Display *display, Window rootwin, Drw *drw, Clr **scheme,
      unsigned int icon_size);
 void sni_cleanup(void);
+int  sni_reconnect(void); /* cleanup + re-init preserving awm globals */
 
 /* D-Bus event handling */
 void sni_handle_dbus(void);

@@ -513,6 +513,7 @@ dbus_helper_add_match(DBusConnection *conn, const char *match_rule)
 {
 	DBusMessage    *msg;
 	DBusMessageIter args;
+	dbus_bool_t     ok;
 
 	if (!conn || !match_rule)
 		return 0;
@@ -525,10 +526,10 @@ dbus_helper_add_match(DBusConnection *conn, const char *match_rule)
 	dbus_message_iter_init_append(msg, &args);
 	dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &match_rule);
 
-	dbus_connection_send(conn, msg, NULL);
+	ok = dbus_connection_send(conn, msg, NULL);
 	dbus_message_unref(msg);
 
-	return 1;
+	return ok ? 1 : 0;
 }
 
 /* ============================================================================
@@ -571,6 +572,10 @@ dbus_helper_session_connect(const char *well_known_name,
 
 	/* Add message filter */
 	if (!dbus_connection_add_filter(conn, filter, filter_data, NULL)) {
+		if (unique_name_out && *unique_name_out) {
+			free(*unique_name_out);
+			*unique_name_out = NULL;
+		}
 		dbus_connection_unref(conn);
 		return NULL;
 	}
@@ -587,8 +592,15 @@ dbus_helper_session_connect(const char *well_known_name,
 
 		if (ret != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER &&
 		    ret != DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER) {
-			awm_warn("Failed to become primary owner of D-Bus name '%s'",
+			awm_error("Failed to become primary owner of D-Bus name '%s' — "
+			          "aborting connection",
 			    well_known_name);
+			if (unique_name_out && *unique_name_out) {
+				free(*unique_name_out);
+				*unique_name_out = NULL;
+			}
+			dbus_connection_unref(conn);
+			return NULL;
 		}
 	}
 

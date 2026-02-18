@@ -15,12 +15,12 @@
 #include <X11/keysym.h>
 #include <cairo/cairo.h>
 #include <errno.h>
+#include <glib.h>
 #include <locale.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -42,7 +42,6 @@
 #include "drw.h"
 #include "icon.h"
 #include "log.h"
-#include "queue.h"
 #include "util.h"
 
 /* macros */
@@ -282,7 +281,6 @@ extern Clientlist  *cl;
 extern Systray     *systray;
 extern Atom         wmatom[WMLast], netatom[NetLast], xatom[XLast];
 extern char         stext[STATUS_TEXT_LEN];
-extern int          running;
 extern int          restart;
 extern int          barsdirty;
 extern unsigned int numlockmask;

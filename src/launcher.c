@@ -9,10 +9,12 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include "drw.h"
@@ -31,7 +33,8 @@
 #define LAUNCHER_SCROLL_BAR_WIDTH 6
 
 static const char *desktop_paths[] = {
-	"/usr/share/applications", "/usr/local/share/applications",
+	"/usr/share/applications",
+	"/usr/local/share/applications",
 	NULL, /* will be replaced with ~/.local/share/applications */
 	NULL, /* will be replaced with flatpak path */
 };
@@ -192,12 +195,12 @@ launcher_item_matches(LauncherItem *item, const char *input)
 
 	char *p = name_lower;
 	while (*p) {
-		*p = tolower(*p);
+		*p = (char) tolower((unsigned char) *p);
 		p++;
 	}
 	p = input_lower;
 	while (*p) {
-		*p = tolower(*p);
+		*p = (char) tolower((unsigned char) *p);
 		p++;
 	}
 
@@ -780,7 +783,13 @@ launcher_launch_selected(Launcher *launcher)
 
 	launcher_hide(launcher);
 
-	if (fork() == 0) {
+	pid_t pid = fork();
+	if (pid < 0) {
+		awm_error("launcher: fork failed: %s", strerror(errno));
+		return;
+	}
+	if (pid == 0) {
+		signal(SIGCHLD, SIG_DFL); /* reset inherited SIG_IGN from WM */
 		if (launcher->dpy)
 			close(ConnectionNumber(launcher->dpy));
 		setsid();
@@ -852,7 +861,8 @@ launcher_create(
 	if (!home)
 		home = "/root";
 
-	for (i = 0; desktop_paths[i] != NULL || i < 2; i++) {
+	for (i = 0; i < (int) (sizeof(desktop_paths) / sizeof(desktop_paths[0]));
+	    i++) {
 		if (desktop_paths[i] == NULL) {
 			if (i == 2) {
 				snprintf(
@@ -1115,11 +1125,29 @@ launcher_delete_word(Launcher *launcher)
 static void
 launcher_move_cursor(Launcher *launcher, int delta)
 {
-	launcher->cursor_pos += delta;
-	if (launcher->cursor_pos < 0)
-		launcher->cursor_pos = 0;
-	if (launcher->cursor_pos > launcher->input_len)
-		launcher->cursor_pos = launcher->input_len;
+	int pos = launcher->cursor_pos;
+
+	if (delta < 0) {
+		/* Move backward: step back one byte at a time over UTF-8
+		 * continuation bytes (10xxxxxx) to land on the codepoint start. */
+		if (pos <= 0)
+			return;
+		pos--;
+		while (
+		    pos > 0 && ((unsigned char) launcher->input[pos] & 0xC0) == 0x80)
+			pos--;
+	} else {
+		/* Move forward: skip past the leading byte and any continuation
+		 * bytes to land on the start of the next codepoint. */
+		if (pos >= launcher->input_len)
+			return;
+		pos++;
+		while (pos < launcher->input_len &&
+		    ((unsigned char) launcher->input[pos] & 0xC0) == 0x80)
+			pos++;
+	}
+
+	launcher->cursor_pos = pos;
 }
 
 static void

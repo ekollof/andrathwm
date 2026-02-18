@@ -31,9 +31,9 @@ This build includes the following enhancements over vanilla dwm:
   - Icon caching with LRU eviction
 
 - **Embedded status bar**: Built-in status module replaces external `slstatus`
-  - Coroutine-driven via [minicoro](https://github.com/edubart/minicoro) (vendored, MIT-0)
+  - Timer-driven via GLib `GTimeout` source integrated with the main event loop
   - Components: CPU%, load average, RAM used/total, battery, date/time, uptime
-  - Per-component update intervals; driven by `timerfd` in the main event loop
+  - Per-component update intervals; driven by a GLib timeout in the main event loop
   - Configured in `status_config.h` — no recompile of the WM core needed for format changes
 
 - **EWMH Support**: Extended Window Manager Hints for better application compatibility
@@ -318,7 +318,7 @@ andrathwm/
 │   ├── sni.c/sni.h      # StatusNotifier implementation
 │   ├── icon.c/icon.h    # Icon cache and rendering
 │   ├── launcher.c/launcher.h  # Application launcher
-│   ├── status.c/status.h      # Embedded status bar (coroutine driver)
+│   ├── status.c/status.h      # Embedded status bar (GLib timer-driven)
 │   ├── status_components.c/h  # Status components (CPU, RAM, battery, …)
 │   ├── status_util.c/h        # Status utility functions
 │   ├── menu.c/menu.h    # SNI menu support
@@ -327,8 +327,7 @@ andrathwm/
 │   ├── xidle.c          # Idle detection utility
 │   ├── movestack.c      # Move stack helper
 │   └── transient.c      # Transient window test
-├── third_party/          # Vendored libraries
-│   └── minicoro.h       # Stackful coroutine library (MIT-0)
+├── third_party/          # Vendored libraries (currently empty)
 ├── build/                # Build artifacts (.o files)
 ├── docs/                 # Documentation
 │   ├── XIDLE.md         # xidle documentation

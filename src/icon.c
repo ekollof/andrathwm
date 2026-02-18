@@ -127,6 +127,7 @@ cache_evict_lru(void)
 	while (*pp) {
 		if (*pp == entry) {
 			*pp = entry->next;
+			cache_count--;
 			break;
 		}
 		pp = &(*pp)->next;
@@ -135,7 +136,6 @@ cache_evict_lru(void)
 	free(entry->key);
 	cairo_surface_destroy(entry->surface);
 	free(entry);
-	cache_count--;
 }
 
 static void
@@ -322,6 +322,9 @@ icon_pixbuf_to_surface(GdkPixbuf *orig_pixbuf, int size)
 			return NULL;
 		}
 		pixbuf = scaled;
+		/* Update dimensions to reflect the scaled size */
+		width  = size;
+		height = size;
 	} else {
 		/* Keep reference if we're using the original */
 		g_object_ref(pixbuf);
@@ -513,11 +516,23 @@ icon_pixmap_to_surface(Icon *icons, int count, int size)
 		cairo_scale(cr, scale_x, scale_y);
 	}
 
-	/* Create source surface from pixmap data */
-	cairo_surface_t *src = cairo_image_surface_create_for_data(
-	    best_icon->pixels, CAIRO_FORMAT_ARGB32, best_icon->width,
-	    best_icon->height,
-	    cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, best_icon->width));
+	/* Create source surface with a private copy of the pixel data so the
+	 * surface lifetime is independent of the Icon / SNIIcon struct. */
+	cairo_surface_t *src = cairo_image_surface_create(
+	    CAIRO_FORMAT_ARGB32, best_icon->width, best_icon->height);
+	if (cairo_surface_status(src) == CAIRO_STATUS_SUCCESS) {
+		int src_stride = cairo_image_surface_get_stride(src);
+		int dst_stride = cairo_format_stride_for_width(
+		    CAIRO_FORMAT_ARGB32, best_icon->width);
+		unsigned char *dst_data = cairo_image_surface_get_data(src);
+		/* Copy row by row in case strides differ */
+		for (int row = 0; row < best_icon->height; row++) {
+			memcpy(dst_data + row * src_stride,
+			    best_icon->pixels + row * dst_stride,
+			    (size_t) (best_icon->width * 4));
+		}
+		cairo_surface_mark_dirty(src);
+	}
 
 	/* Paint the icon */
 	cairo_set_source_surface(cr, src, 0, 0);
@@ -608,6 +623,12 @@ file_read_callback(
 void
 icon_init(void)
 {
+	static int initialized = 0;
+
+	if (initialized)
+		return;
+	initialized = 1;
+
 	/* Disable glycin loaders - they use subprocesses which can deadlock
 	 * with async operations and window manager event loops */
 	setenv("GDK_PIXBUF_DISABLE_GLYCIN", "1", 1);

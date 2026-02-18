@@ -7,9 +7,9 @@ include config.mk
 SRCDIR = src
 BUILDDIR = build
 
-SRC = drw.c awm.c util.c menu.c dbus.c icon.c queue.c sni.c log.c \
+SRC = drw.c awm.c util.c menu.c dbus.c icon.c sni.c log.c \
 	client.c monitor.c events.c ewmh.c systray.c spawn.c xrdb.c \
-	status.c status_util.c status_components.c launcher.c
+	status.c status_util.c status_components.c launcher.c xsource.c
 SRCS = $(addprefix $(SRCDIR)/,$(SRC))
 OBJ = $(addprefix $(BUILDDIR)/,$(SRC:.c=.o))
 
