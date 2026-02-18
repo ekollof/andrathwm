@@ -815,6 +815,15 @@ sni_properties_received(DBusMessage *reply, void *user_data)
 	/* Render icon now that we have properties */
 	sni_render_item(item);
 	/* Note: systray will update automatically when window is mapped */
+
+	/* Drain any click that arrived before properties were ready */
+	if (item->pending_click) {
+		awm_debug("SNI: Draining pending click (button %d) for %s",
+		    item->pending_button, item->service);
+		item->pending_click = 0;
+		sni_handle_click(
+		    item->win, item->pending_button, item->pending_x, item->pending_y);
+	}
 }
 
 static void
@@ -1306,6 +1315,17 @@ sni_handle_click(Window win, int button, int x, int y)
 	item = sni_find_item_by_window(win);
 	if (!item || !item->service || !item->path) {
 		awm_debug("SNI: Click on unknown window 0x%lx", win);
+		return;
+	}
+
+	/* Properties not yet fetched: queue the click and dispatch once ready */
+	if (!item->properties_fetched) {
+		awm_debug("SNI: Queuing click (button %d) for %s — properties pending",
+		    button, item->service);
+		item->pending_click  = 1;
+		item->pending_button = button;
+		item->pending_x      = x;
+		item->pending_y      = y;
 		return;
 	}
 

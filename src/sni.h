@@ -75,6 +75,12 @@ typedef struct SNIItem {
 	int              mapped;             /* Window mapped state */
 	int              properties_fetched; /* Flag to prevent infinite retry */
 
+	/* Pending click: queued when click arrives before properties are ready */
+	int pending_click;  /* 1 if a click is waiting */
+	int pending_button; /* button number */
+	int pending_x;      /* root x coordinate */
+	int pending_y;      /* root y coordinate */
+
 	struct SNIItem *next;
 } SNIItem;
 
