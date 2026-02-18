@@ -597,7 +597,7 @@ compositor_bypass_window(Client *c, int bypass)
 	if (!cw)
 		return;
 
-	if (bypass == cw->redirected == 0)
+	if (bypass == !cw->redirected)
 		return; /* already in desired state */
 
 	xerror_push_ignore();
@@ -676,9 +676,14 @@ compositor_handle_event(XEvent *ev)
 		/* Subtract the damage so the server resets the dirty state */
 		XDamageSubtract(dpy, dev->damage, None, None);
 
-		/* Union the damaged rect into comp.dirty */
-		rect.x      = (short) dev->area.x;
-		rect.y      = (short) dev->area.y;
+		/* Union the damaged rect into comp.dirty.
+		 * XDamageNotifyEvent.area is window-relative; translate to
+		 * root-relative by adding the tracked window origin. */
+		{
+			CompWin *dcw = comp_find_by_xid(dev->drawable);
+			rect.x       = (short) (dev->area.x + (dcw ? dcw->x : 0));
+			rect.y       = (short) (dev->area.y + (dcw ? dcw->y : 0));
+		}
 		rect.width  = (unsigned short) dev->area.width;
 		rect.height = (unsigned short) dev->area.height;
 		r           = XFixesCreateRegion(dpy, &rect, 1);
@@ -724,13 +729,32 @@ compositor_handle_event(XEvent *ev)
 		XConfigureEvent *cev = (XConfigureEvent *) ev;
 		CompWin         *cw  = comp_find_by_xid(cev->window);
 		if (cw) {
+			int resized = (cev->width != cw->w || cev->height != cw->h);
+
+			/* Mark the old position dirty so ghost images are cleared */
+			{
+				XRectangle    old_rect;
+				XserverRegion old_r;
+				old_rect.x      = (short) cw->x;
+				old_rect.y      = (short) cw->y;
+				old_rect.width  = (unsigned short) (cw->w + 2 * cw->bw);
+				old_rect.height = (unsigned short) (cw->h + 2 * cw->bw);
+				old_r           = XFixesCreateRegion(dpy, &old_rect, 1);
+				XFixesUnionRegion(dpy, comp.dirty, comp.dirty, old_r);
+				XFixesDestroyRegion(dpy, old_r);
+			}
+
 			cw->x  = cev->x;
 			cw->y  = cev->y;
 			cw->w  = cev->width;
 			cw->h  = cev->height;
 			cw->bw = cev->border_width;
-			if (cw->redirected)
+
+			/* Only re-acquire the pixmap on resize; a move reuses the old one
+			 */
+			if (cw->redirected && resized)
 				comp_refresh_pixmap(cw);
+
 			schedule_repaint();
 		}
 		return;
