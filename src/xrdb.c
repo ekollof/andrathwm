@@ -1,12 +1,12 @@
 /* AndrathWM - Xresources integration
  * See LICENSE file for copyright and license details. */
 
+#include "xrdb.h"
 #include "awm.h"
 #include "client.h"
 #include "monitor.h"
 #include "spawn.h"
 #include "systray.h"
-#include "xrdb.h"
 #include "config.h"
 
 void
@@ -33,12 +33,6 @@ loadxrdb(void)
 				XRDB_LOAD_COLOR("color6", selbordercolor);
 				XRDB_LOAD_COLOR("color1", selbgcolor);
 				XRDB_LOAD_COLOR("color0", selfgcolor);
-				// XRDB_LOAD_COLOR("awm.normbordercolor", normbordercolor);
-				// XRDB_LOAD_COLOR("awm.normbgcolor", normbgcolor);
-				// XRDB_LOAD_COLOR("awm.normfgcolor", normfgcolor);
-				// XRDB_LOAD_COLOR("awm.selbordercolor", selbordercolor);
-				// XRDB_LOAD_COLOR("awm.selbgcolor", selbgcolor);
-				// XRDB_LOAD_COLOR("awm.selfgcolor", selfgcolor);
 				XRDB_LOAD_COLOR("color0", termcol0);
 				XRDB_LOAD_COLOR("color1", termcol1);
 				XRDB_LOAD_COLOR("color2", termcol2);

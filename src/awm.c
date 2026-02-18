@@ -140,17 +140,12 @@ launchermenu(const Arg *arg)
 		return;
 
 	Monitor *m = selmon;
-	if (m) {
-		x = m->wx + (m->ww - 600) / 2;
-		y = m->wy + (m->wh - 400) / 2;
-		if (x < m->wx)
-			x = m->wx;
-		if (y < m->wy)
-			y = m->wy;
-	} else {
-		x = 100;
-		y = 100;
-	}
+	x          = m->wx + (m->ww - 600) / 2;
+	y          = m->wy + (m->wh - 400) / 2;
+	if (x < m->wx)
+		x = m->wx;
+	if (y < m->wy)
+		y = m->wy;
 
 	launcher_show(launcher, x, y);
 }

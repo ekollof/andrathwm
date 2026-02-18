@@ -49,8 +49,7 @@ static Clr        **sni_scheme = NULL;
 static unsigned int sniconsize = 22; /* Set during sni_init() */
 
 /* Shared menu instance */
-static Menu    *sni_menu      = NULL;
-static SNIItem *sni_menu_item = NULL; /* Current item showing menu */
+static Menu *sni_menu = NULL;
 
 /* Forward declarations for internal functions */
 static void sni_menu_item_activated(int item_id, SNIItem *item);
@@ -1235,44 +1234,6 @@ sni_render_item(SNIItem *item)
 	sni_queue_icon_load(item);
 }
 
-/* ============================================================================
- * Event Handling - Stubs
- * ============================================================================
- */
-
-void
-sni_button_press(SNIItem *item, int button, int x, int y)
-{
-	DBusMessage    *msg;
-	DBusMessageIter args;
-	dbus_int32_t    dx = x, dy = y;
-	const char     *method;
-
-	if (!item || !sni_watcher || !sni_watcher->conn)
-		return;
-
-	/* Determine which method to call */
-	if (button == 1)
-		method = "Activate";
-	else if (button == 2 || button == 3)
-		method = "SecondaryActivate";
-	else
-		return;
-
-	msg = dbus_message_new_method_call(
-	    item->service, item->path, ITEM_INTERFACE, method);
-	if (!msg)
-		return;
-
-	dbus_message_iter_init_append(msg, &args);
-	dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &dx);
-	dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &dy);
-
-	dbus_connection_send(sni_watcher->conn, msg, NULL);
-	dbus_connection_flush(sni_watcher->conn);
-	dbus_message_unref(msg);
-}
-
 void
 sni_scroll(SNIItem *item, int delta, const char *orientation)
 {
@@ -1295,19 +1256,6 @@ sni_scroll(SNIItem *item, int delta, const char *orientation)
 	dbus_connection_send(sni_watcher->conn, msg, NULL);
 	dbus_connection_flush(sni_watcher->conn);
 	dbus_message_unref(msg);
-}
-
-/* ============================================================================
- * Menu Support - Stubs
- * ============================================================================
- */
-
-void
-sni_fetch_menu(SNIItem *item)
-{
-	/* Placeholder - will implement DBusMenu support next */
-	if (!item)
-		return;
 }
 
 void
@@ -1699,7 +1647,6 @@ sni_show_menu(SNIItem *item, int x, int y)
 				/* Set items and show menu (menu_show handles monitor
 				 * detection) */
 				menu_set_items(sni_menu, menu_items);
-				sni_menu_item = item;
 				menu_show(sni_menu, x, y, sni_menu_activated, item);
 
 				awm_debug("DBusMenu: Menu shown");

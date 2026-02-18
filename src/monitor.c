@@ -1,10 +1,10 @@
 /* AndrathWM - monitor management
  * See LICENSE file for copyright and license details. */
 
+#include "monitor.h"
 #include "awm.h"
 #include "client.h"
 #include "ewmh.h"
-#include "monitor.h"
 #include "spawn.h"
 #include "systray.h"
 #include "xrdb.h"
@@ -114,25 +114,27 @@ createmon(void)
 	m->lt[0]                    = &layouts[0];
 	m->lt[1]                    = &layouts[1 % LENGTH(layouts)];
 	strncpy(m->ltsymbol, layouts[0].symbol, sizeof m->ltsymbol);
-	m->pertag              = ecalloc(1, sizeof(Pertag));
-	m->pertag->curtag      = m->pertag->prevtag = 1;
-	m->pertag->nmasters    = ecalloc(TAGSLENGTH + 1, sizeof(int));
-	m->pertag->mfacts      = ecalloc(TAGSLENGTH + 1, sizeof(float));
-	m->pertag->sellts      = ecalloc(TAGSLENGTH + 1, sizeof(unsigned int));
-	m->pertag->ltidxs      = ecalloc((TAGSLENGTH + 1) * 2, sizeof(Layout *));
-	m->pertag->showbars    = ecalloc(TAGSLENGTH + 1, sizeof(int));
+	m->pertag         = ecalloc(1, sizeof(Pertag));
+	m->pertag->curtag = m->pertag->prevtag = 1;
+	m->pertag->nmasters     = ecalloc(TAGSLENGTH + 1, sizeof(int));
+	m->pertag->mfacts       = ecalloc(TAGSLENGTH + 1, sizeof(float));
+	m->pertag->sellts       = ecalloc(TAGSLENGTH + 1, sizeof(unsigned int));
+	m->pertag->ltidxs       = ecalloc((TAGSLENGTH + 1) * 2, sizeof(Layout *));
+	m->pertag->showbars     = ecalloc(TAGSLENGTH + 1, sizeof(int));
 	m->pertag->drawwithgaps = ecalloc(TAGSLENGTH + 1, sizeof(int));
-	m->pertag->gappx       = ecalloc(TAGSLENGTH + 1, sizeof(unsigned int));
+	m->pertag->gappx        = ecalloc(TAGSLENGTH + 1, sizeof(unsigned int));
 
 	for (i = 0; i <= LENGTH(tags); i++) {
 		m->pertag->nmasters[i] = m->nmaster;
 		m->pertag->mfacts[i]   = m->mfact;
 
-		m->pertag->ltidxs[(i)*2+(0)] = m->lt[0];
-		m->pertag->ltidxs[(i)*2+(1)] = m->lt[1];
-		m->pertag->sellts[i]    = m->sellt;
+		m->pertag->ltidxs[(i) * 2 + (0)] = m->lt[0];
+		m->pertag->ltidxs[(i) * 2 + (1)] = m->lt[1];
+		m->pertag->sellts[i]             = m->sellt;
 
-		m->pertag->showbars[i] = m->showbar;
+		m->pertag->showbars[i]     = m->showbar;
+		m->pertag->drawwithgaps[i] = startwithgaps[0];
+		m->pertag->gappx[i]        = gappx[0];
 	}
 	for (i = 0; i <= LENGTH(tags); i++) {
 		m->pertag->drawwithgaps[i] = startwithgaps[0];
@@ -213,7 +215,7 @@ drawbar(Monitor *m)
 	/* Draw window titles with icons (awesomebar) */
 	if ((w = m->ww - tw - stw - x) > bh && n > 0) {
 		int remainder = w;
-		int tabw      = (n > 0) ? remainder / n : remainder;
+		int tabw      = remainder / n;
 
 		for (c = m->cl->clients; c; c = c->next) {
 			/* Show all windows on current tags (visible and hidden) */
@@ -446,7 +448,7 @@ togglebar(const Arg *arg)
 		XWindowChanges wc;
 		if (!selmon->showbar)
 			wc.y = -bh;
-		else if (selmon->showbar) {
+		else {
 			wc.y = 0;
 			if (!selmon->topbar)
 				wc.y = selmon->mh - bh;
@@ -662,10 +664,8 @@ updategeom(void)
 				updatebarpos(mons);
 			}
 		}
-			if (dirty) {
-				selmon = mons;
+			if (dirty)
 				selmon = wintomon(root);
-			}
 	return dirty;
 }
 

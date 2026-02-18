@@ -66,7 +66,4 @@ Client          *wintoclient(Window w);
 void             zoom(const Arg *arg);
 void             movestack(const Arg *arg);
 
-/* idle time (used in config) */
-unsigned long getidletime(void) __attribute__((unused));
-
 #endif /* CLIENT_H */

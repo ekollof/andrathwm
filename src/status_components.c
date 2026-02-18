@@ -45,7 +45,8 @@ battery_status(const char *bat)
 		icon = "❓";
 
 	/* Use our own buffer — perc points into status_buf, so status_bprintf
-	 * would overwrite it while reading from it (UB). snprintf to result is safe. */
+	 * would overwrite it while reading from it (UB). snprintf to result is
+	 * safe. */
 	snprintf(result, sizeof(result), "%s %s", icon, perc);
 	return result;
 }
@@ -57,15 +58,15 @@ battery_status(const char *bat)
 #include <limits.h>
 
 #define POWER_SUPPLY_CAPACITY "/sys/class/power_supply/%s/capacity"
-#define POWER_SUPPLY_STATUS   "/sys/class/power_supply/%s/status"
-#define POWER_SUPPLY_CHARGE   "/sys/class/power_supply/%s/charge_now"
-#define POWER_SUPPLY_ENERGY   "/sys/class/power_supply/%s/energy_now"
-#define POWER_SUPPLY_CURRENT  "/sys/class/power_supply/%s/current_now"
-#define POWER_SUPPLY_POWER    "/sys/class/power_supply/%s/power_now"
+#define POWER_SUPPLY_STATUS "/sys/class/power_supply/%s/status"
+#define POWER_SUPPLY_CHARGE "/sys/class/power_supply/%s/charge_now"
+#define POWER_SUPPLY_ENERGY "/sys/class/power_supply/%s/energy_now"
+#define POWER_SUPPLY_CURRENT "/sys/class/power_supply/%s/current_now"
+#define POWER_SUPPLY_POWER "/sys/class/power_supply/%s/power_now"
 
 static const char *
-pick(const char *bat, const char *f1, const char *f2, char *path,
-    size_t length)
+pick(
+    const char *bat, const char *f1, const char *f2, char *path, size_t length)
 {
 	if (status_esnprintf(path, length, f1, bat) > 0 && access(path, R_OK) == 0)
 		return f1;
@@ -146,8 +147,8 @@ battery_remaining(const char *bat)
 			return NULL;
 
 		timeleft = (double) charge_now / (double) current_now;
-		h = timeleft;
-		m = (timeleft - (double) h) * 60;
+		h        = timeleft;
+		m        = (timeleft - (double) h) * 60;
 
 		return status_bprintf("%juh %jum", h, m);
 	}
@@ -236,9 +237,9 @@ battery_remaining(const char *unused)
 #elif defined(__FreeBSD__)
 #include <sys/sysctl.h>
 
-#define BATTERY_LIFE  "hw.acpi.battery.life"
+#define BATTERY_LIFE "hw.acpi.battery.life"
 #define BATTERY_STATE "hw.acpi.battery.state"
-#define BATTERY_TIME  "hw.acpi.battery.time"
+#define BATTERY_TIME "hw.acpi.battery.time"
 
 const char *
 battery_perc(const char *unused)
@@ -298,8 +299,8 @@ cpu_perc(const char *unused)
 	long double        b[7], sum;
 
 	memcpy(b, a, sizeof(b));
-	if (status_pscanf("/proc/stat", "%*s %Lf %Lf %Lf %Lf %Lf %Lf %Lf",
-	        &a[0], &a[1], &a[2], &a[3], &a[4], &a[5], &a[6]) != 7)
+	if (status_pscanf("/proc/stat", "%*s %Lf %Lf %Lf %Lf %Lf %Lf %Lf", &a[0],
+	        &a[1], &a[2], &a[3], &a[4], &a[5], &a[6]) != 7)
 		return NULL;
 
 	if (b[0] == 0)
@@ -325,10 +326,10 @@ cpu_perc(const char *unused)
 const char *
 cpu_perc(const char *unused)
 {
-	int       mib[2];
+	int              mib[2];
 	static uintmax_t a[CPUSTATES];
-	uintmax_t b[CPUSTATES], sum;
-	size_t    size;
+	uintmax_t        b[CPUSTATES], sum;
+	size_t           size;
 
 	mib[0] = CTL_KERN;
 	mib[1] = KERN_CPTIME;
@@ -359,7 +360,7 @@ cpu_perc(const char *unused)
 const char *
 cpu_perc(const char *unused)
 {
-	size_t size;
+	size_t      size;
 	static long a[CPUSTATES];
 	long        b[CPUSTATES], sum;
 
@@ -402,7 +403,7 @@ const char *
 load_avg(const char *unused)
 {
 	double avgs[3];
-	int whole, frac;
+	int    whole, frac;
 
 	if (getloadavg(avgs, 3) < 0) {
 		status_warn("getloadavg failed");
@@ -410,8 +411,8 @@ load_avg(const char *unused)
 	}
 
 	/* Use integer arithmetic to avoid locale-specific decimal separator */
-	whole = (int)avgs[0];
-	frac  = (int)((avgs[0] - whole) * 10 + 0.05);
+	whole = (int) avgs[0];
+	frac  = (int) ((avgs[0] - whole) * 10 + 0.05);
 	return status_bprintf("%d.%d", whole, frac);
 }
 
@@ -430,7 +431,7 @@ ram_total(const char *unused)
 const char *
 ram_used(const char *unused)
 {
-	uintmax_t total, free, buffers, cached, used;
+	uintmax_t total, free, avail, buffers, cached, used;
 
 	if (status_pscanf("/proc/meminfo",
 	        "MemTotal: %ju kB\n"
@@ -438,7 +439,7 @@ ram_used(const char *unused)
 	        "MemAvailable: %ju kB\n"
 	        "Buffers: %ju kB\n"
 	        "Cached: %ju kB\n",
-	        &total, &free, &buffers, &buffers, &cached) != 5)
+	        &total, &free, &avail, &buffers, &cached) != 5)
 		return NULL;
 
 	used = (total - free - buffers - cached);
@@ -451,7 +452,7 @@ ram_used(const char *unused)
 #include <unistd.h>
 
 #define LOG1024 10
-#define pagetok(size, pageshift) (size_t) (size << (pageshift - LOG1024))
+#define pagetok(size, pageshift) (size_t)(size << (pageshift - LOG1024))
 
 static int
 load_uvmexp(struct uvmexp *uvmexp)
@@ -474,8 +475,8 @@ ram_total(const char *unused)
 	if (!load_uvmexp(&uvmexp))
 		return NULL;
 
-	return status_fmt_human(pagetok(uvmexp.npages, uvmexp.pageshift) * 1024,
-	    1024);
+	return status_fmt_human(
+	    pagetok(uvmexp.npages, uvmexp.pageshift) * 1024, 1024);
 }
 
 const char *
@@ -486,8 +487,8 @@ ram_used(const char *unused)
 	if (!load_uvmexp(&uvmexp))
 		return NULL;
 
-	return status_fmt_human(pagetok(uvmexp.active, uvmexp.pageshift) * 1024,
-	    1024);
+	return status_fmt_human(
+	    pagetok(uvmexp.active, uvmexp.pageshift) * 1024, 1024);
 }
 #elif defined(__FreeBSD__)
 #include <sys/sysctl.h>
@@ -516,7 +517,8 @@ ram_used(const char *unused)
 	size_t       len;
 
 	len = sizeof(active);
-	if (sysctlbyname("vm.stats.vm.v_active_count", &active, &len, NULL, 0) < 0 ||
+	if (sysctlbyname("vm.stats.vm.v_active_count", &active, &len, NULL, 0) <
+	        0 ||
 	    !len)
 		return NULL;
 
@@ -535,7 +537,7 @@ ram_used(const char *unused)
 const char *
 uptime(const char *unused)
 {
-	uintmax_t      h, m;
+	uintmax_t       h, m;
 	struct timespec uptime_ts;
 
 	if (clock_gettime(UPTIME_FLAG, &uptime_ts) < 0) {

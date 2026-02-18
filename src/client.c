@@ -387,28 +387,6 @@ getrootptr(int *x, int *y)
 	return XQueryPointer(dpy, root, &dummy, &dummy, x, y, &di, &di, &dui);
 }
 
-unsigned long getidletime(void) __attribute__((unused));
-
-unsigned long
-getidletime(void)
-{
-#ifdef XSS
-	XScreenSaverInfo *info;
-	unsigned long     idle_time = 0;
-
-	info = XScreenSaverAllocInfo();
-	if (info) {
-		if (XScreenSaverQueryInfo(dpy, root, info)) {
-			idle_time = info->idle;
-		}
-		XFree(info);
-	}
-	return idle_time;
-#else
-	return 0;
-#endif
-}
-
 long
 getstate(Window w)
 {
@@ -737,20 +715,6 @@ manage(Window w, XWindowAttributes *wa)
 		long extents[4] = { c->bw, c->bw, c->bw, c->bw };
 		XChangeProperty(dpy, c->win, netatom[NetFrameExtents], XA_CARDINAL, 32,
 		    PropModeReplace, (unsigned char *) extents, 4);
-	}
-
-	{
-		Atom           actual_type;
-		int            actual_format;
-		unsigned long  nitems, bytes_after;
-		unsigned char *prop = NULL;
-
-		if (XGetWindowProperty(dpy, c->win, netatom[NetWMPid], 0L, 1L, False,
-		        XA_CARDINAL, &actual_type, &actual_format, &nitems,
-		        &bytes_after, &prop) == Success &&
-		    prop) {
-			XFree(prop);
-		}
 	}
 
 	XMoveResizeWindow(dpy, c->win, c->x + 2 * sw, c->y, c->w, c->h);

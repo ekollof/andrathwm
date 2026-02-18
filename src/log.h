@@ -2,14 +2,6 @@
 #ifndef LOG_H
 #define LOG_H
 
-/* Log levels */
-typedef enum {
-	LOG_LEVEL_DEBUG = 0,
-	LOG_LEVEL_INFO,
-	LOG_LEVEL_WARN,
-	LOG_LEVEL_ERROR
-} LogLevel;
-
 /* Initialize logging subsystem */
 void log_init(const char *ident);
 

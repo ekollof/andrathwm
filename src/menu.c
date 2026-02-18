@@ -245,9 +245,9 @@ menu_get_monitor_geometry(
 				XRRCrtcInfo *ci = XRRGetCrtcInfo(dpy, sr, sr->crtcs[i]);
 				if (!ci)
 					continue;
-				if (ci->noutput > 0 &&
-				    x >= ci->x && x < (int)(ci->x + ci->width) &&
-				    y >= ci->y && y < (int)(ci->y + ci->height)) {
+				if (ci->noutput > 0 && x >= ci->x &&
+				    x < (int) (ci->x + ci->width) && y >= ci->y &&
+				    y < (int) (ci->y + ci->height)) {
 					*mon_x = ci->x;
 					*mon_y = ci->y;
 					*mon_w = ci->width;
@@ -380,15 +380,12 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data)
 		awm_error("Menu: Failed to grab pointer (result=%d)", grab_result);
 	}
 
-#ifdef AWM_DEBUG
-	int key_grab = XGrabKeyboard(
-	    menu->dpy, menu->win, True, GrabModeAsync, GrabModeAsync, CurrentTime);
-	if (key_grab != GrabSuccess)
-		awm_debug("Menu: Failed to grab keyboard (result=%d)", key_grab);
-#else
-	XGrabKeyboard(
-	    menu->dpy, menu->win, True, GrabModeAsync, GrabModeAsync, CurrentTime);
-#endif
+	{
+		int key_grab = XGrabKeyboard(menu->dpy, menu->win, True, GrabModeAsync,
+		    GrabModeAsync, CurrentTime);
+		if (key_grab != GrabSuccess)
+			awm_warn("Menu: Failed to grab keyboard (result=%d)", key_grab);
+	}
 }
 
 /* Show submenu for a menu item */

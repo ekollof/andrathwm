@@ -112,11 +112,9 @@ void     sni_handle_click(Window win, int button, int x, int y);
 SNIItem *sni_find_item_by_window(Window win);
 
 /* Event handling */
-void sni_button_press(SNIItem *item, int button, int x, int y);
 void sni_scroll(SNIItem *item, int delta, const char *orientation);
 
 /* Menu support */
-void sni_fetch_menu(SNIItem *item);
 void sni_show_menu(SNIItem *item, int x, int y);
 void sni_free_menu(SNIMenuItem *menu);
 int  sni_handle_menu_event(XEvent *ev);

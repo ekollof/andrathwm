@@ -59,7 +59,6 @@ static void file_read_callback(
 static void lru_remove(CacheEntry *entry);
 static void lru_push_front(CacheEntry *entry);
 static void cache_evict_lru(void);
-static void cache_print_stats(void);
 
 /* ============================================================================
  * Icon Cache
@@ -323,8 +322,6 @@ icon_pixbuf_to_surface(GdkPixbuf *orig_pixbuf, int size)
 			return NULL;
 		}
 		pixbuf = scaled;
-		width  = size;
-		height = size;
 	} else {
 		/* Keep reference if we're using the original */
 		g_object_ref(pixbuf);
@@ -400,12 +397,6 @@ icon_load_theme(const char *name, int size)
 
 	if (!name || name[0] == '\0')
 		return NULL;
-
-	/* Validate pointer looks reasonable (not obviously corrupt) */
-	if (((unsigned long) name) < 4096) {
-		awm_error("Invalid icon name pointer: %p", (void *) name);
-		return NULL;
-	}
 
 	/* If name is an absolute path, try to load directly */
 	if (name[0] == '/') {

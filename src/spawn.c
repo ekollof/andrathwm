@@ -1,10 +1,10 @@
 /* AndrathWM - process spawning
  * See LICENSE file for copyright and license details. */
 
+#include "spawn.h"
 #include "awm.h"
 #include "client.h"
 #include "monitor.h"
-#include "spawn.h"
 #include "xrdb.h"
 #include "config.h"
 
@@ -84,7 +84,7 @@ runautostart(void)
 		system(path);
 
 	/* now the non-blocking script */
-	if (snprintf(path, strlen(pathpfx) + strlen(autostartblocksh) + 2, "%s/%s",
+	if (snprintf(path, strlen(pathpfx) + strlen(autostartsh) + 2, "%s/%s",
 	        pathpfx, autostartsh) < 0) {
 		free(path);
 		free(pathpfx);
