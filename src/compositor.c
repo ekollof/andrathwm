@@ -83,6 +83,10 @@ static struct {
 	/* XRender extension codes — needed for error whitelisting */
 	int render_request_base;
 	int render_err_base;
+	/* XShape extension — optional, gracefully disabled if absent */
+	int has_xshape;
+	int shape_ev_base;
+	int shape_err_base;
 } comp;
 
 /* -------------------------------------------------------------------------
@@ -94,6 +98,7 @@ static CompWin *comp_find_by_xid(Window w);
 static CompWin *comp_find_by_client(Client *c);
 static void     comp_free_win(CompWin *cw);
 static void     comp_refresh_pixmap(CompWin *cw);
+static void     comp_apply_shape(CompWin *cw);
 static void     comp_update_wallpaper(void);
 static void     schedule_repaint(void);
 static void     comp_do_repaint(void);
@@ -213,6 +218,13 @@ compositor_init(GMainContext *ctx)
 		int op, ev_dummy, err_dummy;
 		if (XQueryExtension(dpy, "RENDER", &op, &ev_dummy, &err_dummy))
 			comp.render_request_base = op;
+	}
+
+	/* XShape — optional; used to honour ShapeBounding clip regions.
+	 * Non-fatal: compositing works without it, shaped windows just paint
+	 * their full bounding box. */
+	if (XShapeQueryExtension(dpy, &comp.shape_ev_base, &comp.shape_err_base)) {
+		comp.has_xshape = 1;
 	}
 
 	/* --- Redirect all root children ---------------------------------------
@@ -459,6 +471,52 @@ comp_refresh_pixmap(CompWin *cw)
 	    XRenderCreatePicture(dpy, cw->pixmap, fmt, CPSubwindowMode, &pa);
 	XSync(dpy, False);
 	xerror_pop();
+
+	/* Apply any existing ShapeBounding clip to the freshly-created picture */
+	comp_apply_shape(cw);
+}
+
+/* Apply the window's ShapeBounding clip region to cw->picture so that XRender
+ * compositing naturally skips pixels outside the shape (e.g. rounded corners,
+ * non-rectangular popups).  Called after every comp_refresh_pixmap() and on
+ * ShapeNotify.  Safe to call when XShape is unavailable or the window has no
+ * shape set — in both cases the picture clip is reset to None (full rect). */
+static void
+comp_apply_shape(CompWin *cw)
+{
+	int         nrects, ordering;
+	XRectangle *rects;
+
+	if (!cw->picture)
+		return;
+
+	if (!comp.has_xshape) {
+		XFixesSetPictureClipRegion(dpy, cw->picture, 0, 0, None);
+		return;
+	}
+
+	/* XShapeGetRectangles returns NULL if the window has no bounding shape
+	 * (i.e. it is an ordinary rectangle). */
+	rects =
+	    XShapeGetRectangles(dpy, cw->win, ShapeBounding, &nrects, &ordering);
+
+	if (!rects || nrects == 0) {
+		if (rects)
+			XFree(rects);
+		XFixesSetPictureClipRegion(dpy, cw->picture, 0, 0, None);
+		return;
+	}
+
+	/* The rectangles are window-interior-relative.  cw->picture covers the
+	 * interior (XCompositeNameWindowPixmap excludes the border), so no
+	 * translation is needed. */
+	{
+		XserverRegion region =
+		    XFixesCreateRegion(dpy, rects, (unsigned int) nrects);
+		XFixesSetPictureClipRegion(dpy, cw->picture, 0, 0, region);
+		XFixesDestroyRegion(dpy, region);
+	}
+	XFree(rects);
 }
 
 /* Read _XROOTPMAP_ID (or ESETROOT_PMAP_ID fallback) from the root window and
@@ -589,6 +647,11 @@ comp_add_by_xid(Window w)
 		XSync(dpy, False);
 		xerror_pop();
 	}
+
+	/* Subscribe to ShapeNotify so we can update the clip when the
+	 * window's bounding shape changes at runtime. */
+	if (comp.has_xshape)
+		XShapeSelectInput(dpy, w, ShapeNotifyMask);
 
 	/* Prepend — we'll sort by Z-order via XQueryTree at paint time */
 	cw->next     = comp.windows;
@@ -950,6 +1013,20 @@ compositor_handle_event(XEvent *ev)
 		        pev->atom == comp.atom_esetroot)) {
 			comp_update_wallpaper();
 			compositor_damage_all();
+		}
+		return;
+	}
+
+	/* ShapeNotify — window bounding shape changed; rebuild the clip region
+	 * on its picture so compositing respects the new shape immediately. */
+	if (comp.has_xshape && ev->type == comp.shape_ev_base + ShapeNotify) {
+		XShapeEvent *sev = (XShapeEvent *) ev;
+		if (sev->kind == ShapeBounding) {
+			CompWin *cw = comp_find_by_xid(sev->window);
+			if (cw && cw->picture) {
+				comp_apply_shape(cw);
+				schedule_repaint();
+			}
 		}
 		return;
 	}
