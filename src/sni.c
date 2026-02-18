@@ -987,9 +987,15 @@ sni_icon_render(SNIItem *item, int icon_size, cairo_surface_t *icon_surface)
 	    DefaultVisual(sni_dpy, DefaultScreen(sni_dpy)), icon_size, icon_size);
 
 	cr = cairo_create(pixmap_surface);
-
-	/* Clear background */
-	cairo_set_source_rgba(cr, 0, 0, 0, 0);
+	/* Fill with bar background colour — the pixmap is 24-bit (no alpha
+	 * channel) so a transparent clear would just produce opaque black. */
+	if (sni_scheme) {
+		Clr bg = sni_scheme[0][ColBg]; /* sni_scheme[SchemeNorm][ColBg] */
+		cairo_set_source_rgb(cr, bg.color.red / 65535.0,
+		    bg.color.green / 65535.0, bg.color.blue / 65535.0);
+	} else {
+		cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+	}
 	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
 	cairo_paint(cr);
 
@@ -1186,13 +1192,20 @@ sni_render_item(SNIItem *item)
 
 	cr = cairo_create(pixmap_surface);
 
-	/* Draw gray placeholder */
-	cairo_set_source_rgba(cr, 0.5, 0.5, 0.5, 0.3);
+	/* Fill with bar background colour as base — alpha is discarded on a
+	 * 24-bit pixmap so a semi-transparent paint would become opaque black. */
+	if (sni_scheme) {
+		Clr bg = sni_scheme[0][ColBg]; /* sni_scheme[SchemeNorm][ColBg] */
+		cairo_set_source_rgb(cr, bg.color.red / 65535.0,
+		    bg.color.green / 65535.0, bg.color.blue / 65535.0);
+	} else {
+		cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+	}
 	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
 	cairo_paint(cr);
 
-	/* Draw loading indicator (small circle) */
-	cairo_set_source_rgba(cr, 0.7, 0.7, 0.7, 0.8);
+	/* Draw a subtle loading indicator circle on top */
+	cairo_set_source_rgba(cr, 0.7, 0.7, 0.7, 0.5);
 	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 	cairo_arc(
 	    cr, sniconsize / 2, sniconsize / 2, sniconsize / 4, 0, 2 * 3.14159);
