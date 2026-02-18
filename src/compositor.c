@@ -74,6 +74,12 @@ static struct {
 	XserverRegion dirty;      /* accumulated dirty region            */
 	CompWin      *windows;
 	GMainContext *ctx;
+	/* Wallpaper support: picture built from _XROOTPMAP_ID / ESETROOT_PMAP_ID
+	 */
+	Atom    atom_rootpmap; /* _XROOTPMAP_ID                       */
+	Atom    atom_esetroot; /* ESETROOT_PMAP_ID                    */
+	Pixmap  wallpaper_pixmap;
+	Picture wallpaper_pict;
 } comp;
 
 /* -------------------------------------------------------------------------
@@ -85,6 +91,7 @@ static CompWin *comp_find_by_xid(Window w);
 static CompWin *comp_find_by_client(Client *c);
 static void     comp_free_win(CompWin *cw);
 static void     comp_refresh_pixmap(CompWin *cw);
+static void     comp_update_wallpaper(void);
 static void     schedule_repaint(void);
 static gboolean comp_repaint_idle(gpointer data);
 static Picture  make_alpha_picture(double a);
@@ -272,6 +279,13 @@ compositor_init(GMainContext *ctx)
 		}
 	}
 
+	/* --- Intern wallpaper atoms and read initial wallpaper ---------------
+	 */
+
+	comp.atom_rootpmap = XInternAtom(dpy, "_XROOTPMAP_ID", False);
+	comp.atom_esetroot = XInternAtom(dpy, "ESETROOT_PMAP_ID", False);
+	comp_update_wallpaper();
+
 	comp.active = 1;
 
 	/* Raise overlay so it sits above all windows */
@@ -317,6 +331,10 @@ compositor_cleanup(void)
 		if (comp.alpha_pict[i])
 			XRenderFreePicture(dpy, comp.alpha_pict[i]);
 	}
+
+	/* Free wallpaper picture (pixmap is owned by the wallpaper setter) */
+	if (comp.wallpaper_pict)
+		XRenderFreePicture(dpy, comp.wallpaper_pict);
 
 	/* Free back buffer */
 	if (comp.back)
@@ -427,6 +445,64 @@ comp_refresh_pixmap(CompWin *cw)
 	    XRenderCreatePicture(dpy, cw->pixmap, fmt, CPSubwindowMode, &pa);
 	XSync(dpy, False);
 	xerror_pop();
+}
+
+/* Read _XROOTPMAP_ID (or ESETROOT_PMAP_ID fallback) from the root window and
+ * rebuild comp.wallpaper_pict.  Called at init and whenever the property
+ * changes so that feh/nitrogen/hsetroot wallpapers are picked up live. */
+static void
+comp_update_wallpaper(void)
+{
+	Atom           actual_type;
+	int            actual_fmt;
+	unsigned long  nitems, bytes_after;
+	unsigned char *prop = NULL;
+	Pixmap         pmap = None;
+	Atom           atoms[2];
+	int            i;
+
+	/* Free the previous picture (but NOT the pixmap — it is owned by the
+	 * wallpaper setter, we must never free it). */
+	if (comp.wallpaper_pict) {
+		XRenderFreePicture(dpy, comp.wallpaper_pict);
+		comp.wallpaper_pict   = None;
+		comp.wallpaper_pixmap = None;
+	}
+
+	atoms[0] = comp.atom_rootpmap;
+	atoms[1] = comp.atom_esetroot;
+
+	for (i = 0; i < 2 && pmap == None; i++) {
+		prop = NULL;
+		if (XGetWindowProperty(dpy, root, atoms[i], 0, 1, False, XA_PIXMAP,
+		        &actual_type, &actual_fmt, &nitems, &bytes_after,
+		        &prop) == Success &&
+		    prop && actual_type == XA_PIXMAP && actual_fmt == 32 &&
+		    nitems == 1) {
+			pmap = *(Pixmap *) prop;
+		}
+		if (prop)
+			XFree(prop);
+	}
+
+	if (pmap == None)
+		return; /* no wallpaper set — back-buffer falls back to black */
+
+	{
+		XRenderPictFormat       *fmt;
+		XRenderPictureAttributes pa;
+
+		fmt       = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
+		pa.repeat = RepeatNormal; /* tile if back-buffer > wallpaper */
+		xerror_push_ignore();
+		comp.wallpaper_pict =
+		    XRenderCreatePicture(dpy, pmap, fmt, CPRepeat, &pa);
+		XSync(dpy, False);
+		xerror_pop();
+
+		if (comp.wallpaper_pict)
+			comp.wallpaper_pixmap = pmap;
+	}
 }
 
 /* Add window by X ID (used during init scan and on MapNotify). */
@@ -778,6 +854,18 @@ compositor_handle_event(XEvent *ev)
 		}
 		return;
 	}
+
+	if (ev->type == PropertyNotify) {
+		XPropertyEvent *pev = (XPropertyEvent *) ev;
+		/* Watch for wallpaper changes on the root window */
+		if (pev->window == root &&
+		    (pev->atom == comp.atom_rootpmap ||
+		        pev->atom == comp.atom_esetroot)) {
+			comp_update_wallpaper();
+			compositor_damage_all();
+		}
+		return;
+	}
 }
 
 /* -------------------------------------------------------------------------
@@ -816,10 +904,17 @@ comp_repaint_idle(gpointer data)
 	 */
 	XFixesSetPictureClipRegion(dpy, comp.back, 0, 0, comp.dirty);
 
-	/* --- 2. Clear dirty area on back-buffer -------------------------------
+	/* --- 2. Paint background onto back-buffer ----------------------------
+	 * If a wallpaper pixmap has been set via _XROOTPMAP_ID / ESETROOT_PMAP_ID,
+	 * blit it as the bottom-most layer.  Otherwise fill with opaque black.
 	 */
-	XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bg_color, 0, 0,
-	    (unsigned int) sw, (unsigned int) sh);
+	if (comp.wallpaper_pict) {
+		XRenderComposite(dpy, PictOpSrc, comp.wallpaper_pict, None, comp.back,
+		    0, 0, 0, 0, 0, 0, (unsigned int) sw, (unsigned int) sh);
+	} else {
+		XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bg_color, 0, 0,
+		    (unsigned int) sw, (unsigned int) sh);
+	}
 
 	/* --- 3. Walk root children bottom-to-top (XQueryTree Z-order) ---------
 	 */
