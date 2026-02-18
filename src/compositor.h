@@ -72,5 +72,12 @@ void compositor_raise_overlay(void);
  */
 void compositor_xrender_errors(int *req_base, int *err_base);
 
+/*
+ * Fill *err_base with the XDamage error base (BadDamage = err_base + 0).
+ * Needed by the X error handler to whitelist transient XDamage errors.
+ * Sets to -1 if the compositor is not active.
+ */
+void compositor_damage_errors(int *err_base);
+
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */

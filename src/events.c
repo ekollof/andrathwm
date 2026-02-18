@@ -645,6 +645,14 @@ xerror(Display *dpy, XErrorEvent *ee)
 		        ee->error_code == BadPixmap))
 			return 0;
 	}
+	/* Transient XDamage errors (BadDamage) arise when a window is destroyed
+	 * while we are calling XDamageDestroy on its Damage handle. */
+	{
+		int damage_err;
+		compositor_damage_errors(&damage_err);
+		if (damage_err >= 0 && ee->error_code == damage_err) /* BadDamage */
+			return 0;
+	}
 #endif
 	awm_error("X11 error: request_code=%d, error_code=%d", ee->request_code,
 	    ee->error_code);

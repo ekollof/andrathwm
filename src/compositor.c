@@ -397,7 +397,10 @@ static void
 comp_free_win(CompWin *cw)
 {
 	if (cw->damage) {
+		xerror_push_ignore();
 		XDamageDestroy(dpy, cw->damage);
+		XSync(dpy, False);
+		xerror_pop();
 		cw->damage = 0;
 	}
 	if (cw->picture) {
@@ -754,6 +757,16 @@ compositor_xrender_errors(int *req_base, int *err_base)
 	}
 	*req_base = comp.render_request_base;
 	*err_base = comp.render_err_base;
+}
+
+void
+compositor_damage_errors(int *err_base)
+{
+	if (!comp.active) {
+		*err_base = -1;
+		return;
+	}
+	*err_base = comp.damage_err_base;
 }
 
 /* -------------------------------------------------------------------------
