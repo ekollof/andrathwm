@@ -220,6 +220,7 @@ run(void)
 
 		if (barsdirty) {
 			drawbars();
+			updatesystray();
 			barsdirty = 0;
 		}
 	}
