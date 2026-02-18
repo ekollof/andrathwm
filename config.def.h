@@ -30,7 +30,7 @@ static const unsigned int iconsize =
 const unsigned int sniconsize = 22; /* size of StatusNotifier systray icons */
 const unsigned int iconcachesize = 128; /* icon cache hash table size */
 const unsigned int iconcachemaxentries =
-    256; /* max cached icons before LRU eviction */
+    128; /* max cached icons before LRU eviction */
 static const unsigned int motionfps =
     60; /* motion event throttle FPS (higher = more responsive) */
 const unsigned int dbustimeout =

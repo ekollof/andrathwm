@@ -35,7 +35,7 @@ static const unsigned int motionfps =
 #ifdef AWM_CONFIG_IMPL
 const unsigned int sniconsize          = 22;  /* StatusNotifier icon size */
 const unsigned int iconcachesize       = 128; /* icon cache hash table size */
-const unsigned int iconcachemaxentries = 256; /* max cached icons (LRU) */
+const unsigned int iconcachemaxentries = 128; /* max cached icons (LRU) */
 const unsigned int dbustimeout         = 100; /* D-Bus timeout (ms) */
 #endif
 static const char *fonts[] = {

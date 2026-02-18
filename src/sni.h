@@ -16,12 +16,6 @@
 #define SNI_STATUS_ACTIVE 1
 #define SNI_STATUS_NEEDSATTENTION 2
 
-/* StatusNotifier item category */
-#define SNI_CATEGORY_APPLICATIONSTATUS 0
-#define SNI_CATEGORY_COMMUNICATIONS 1
-#define SNI_CATEGORY_SYSTEMSERVICES 2
-#define SNI_CATEGORY_HARDWARE 3
-
 /* Icon structure for pixmap data */
 typedef struct {
 	int            width;
@@ -43,26 +37,14 @@ typedef struct SNIMenuItem {
 
 /* StatusNotifier item structure */
 typedef struct SNIItem {
-	char *service;  /* D-Bus service name */
-	char *path;     /* D-Bus object path */
-	char *id;       /* Item ID */
-	char *title;    /* Item title */
-	char *category; /* Category string */
-	int   status;   /* Passive, Active, NeedsAttention */
+	char *service; /* D-Bus service name */
+	char *path;    /* D-Bus object path */
+	int   status;  /* Passive, Active, NeedsAttention */
 
 	/* Icon data */
 	char    *icon_name;   /* Icon theme name */
 	SNIIcon *icon_pixmap; /* Icon pixmap array */
 	int      icon_pixmap_count;
-	char    *attention_icon_name;
-	SNIIcon *attention_pixmap;
-	int      attention_pixmap_count;
-
-	/* Tooltip */
-	char    *tooltip_title;
-	char    *tooltip_text;
-	SNIIcon *tooltip_icon;
-	int      tooltip_icon_count;
 
 	/* Menu */
 	char        *menu_path; /* DBusMenu object path */
@@ -73,7 +55,8 @@ typedef struct SNIItem {
 	cairo_surface_t *surface;            /* Cairo surface for rendering */
 	int              w, h;               /* Window size */
 	int              mapped;             /* Window mapped state */
-	int              properties_fetched; /* Flag to prevent infinite retry */
+	int              properties_fetched; /* Set when GetAll reply arrives */
+	int properties_fetching; /* In-flight guard: prevents re-sending GetAll */
 
 	/* Pending click: queued when click arrives before properties are ready */
 	int pending_click;  /* 1 if a click is waiting */

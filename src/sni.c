@@ -258,9 +258,12 @@ sni_handle_dbus(void)
 	    DBUS_DISPATCH_DATA_REMAINS)
 		;
 
-	/* After handling messages, fetch properties for items that need them */
+	/* After handling messages, fetch properties for items that need them.
+	 * Guard with properties_fetching to prevent multiple in-flight GetAll
+	 * requests for the same item (this function is called on every D-Bus
+	 * readable event, which can fire many times before the reply arrives). */
 	for (item = sni_watcher->items; item; item = item->next) {
-		if (!item->properties_fetched) {
+		if (!item->properties_fetched && !item->properties_fetching) {
 			sni_fetch_item_properties(item);
 			/* Properties will be fetched async, render happens in callback */
 		}
@@ -562,21 +565,11 @@ sni_remove_item(SNIItem *item)
 	/* Clean up item */
 	free(item->service);
 	free(item->path);
-	free(item->id);
-	free(item->title);
-	free(item->category);
 	free(item->icon_name);
-	free(item->attention_icon_name);
-	free(item->tooltip_title);
-	free(item->tooltip_text);
 	free(item->menu_path);
 
 	if (item->icon_pixmap)
 		sni_free_icons(item->icon_pixmap, item->icon_pixmap_count);
-	if (item->attention_pixmap)
-		sni_free_icons(item->attention_pixmap, item->attention_pixmap_count);
-	if (item->tooltip_icon)
-		sni_free_icons(item->tooltip_icon, item->tooltip_icon_count);
 
 	if (item->menu)
 		sni_free_menu(item->menu);
@@ -669,30 +662,10 @@ sni_properties_received(DBusMessage *reply, void *user_data)
 		dbus_message_iter_recurse(&entry, &variant);
 
 		/* Parse known properties */
-		if (strcmp(key, "Id") == 0) {
-			char *val = dbus_iter_get_variant_string(&variant);
-			if (val) {
-				item->id = val; /* Already strdup'd */
-			}
-		} else if (strcmp(key, "Title") == 0) {
-			char *val = dbus_iter_get_variant_string(&variant);
-			if (val) {
-				item->title = val;
-			}
-		} else if (strcmp(key, "Category") == 0) {
-			char *val = dbus_iter_get_variant_string(&variant);
-			if (val) {
-				item->category = val;
-			}
-		} else if (strcmp(key, "IconName") == 0) {
+		if (strcmp(key, "IconName") == 0) {
 			char *val = dbus_iter_get_variant_string(&variant);
 			if (val) {
 				item->icon_name = val;
-			}
-		} else if (strcmp(key, "AttentionIconName") == 0) {
-			char *val = dbus_iter_get_variant_string(&variant);
-			if (val) {
-				item->attention_icon_name = val;
 			}
 		} else if (strcmp(key, "Menu") == 0) {
 			/* Menu can be STRING or OBJECT_PATH */
@@ -805,12 +778,12 @@ sni_properties_received(DBusMessage *reply, void *user_data)
 	else
 		awm_debug("SNI: Item %s has no menu", item->service);
 
-	awm_debug("SNI: Properties fetched for %s (Id: %s, Icon: %s)",
-	    item->service, item->id ? item->id : "unknown",
+	awm_debug("SNI: Properties fetched for %s (Icon: %s)", item->service,
 	    item->icon_name ? item->icon_name : "none");
 
 	/* Mark properties as fetched */
-	item->properties_fetched = 1;
+	item->properties_fetched  = 1;
+	item->properties_fetching = 0;
 
 	/* Render icon now that we have properties */
 	sni_render_item(item);
@@ -841,6 +814,10 @@ sni_fetch_item_properties(SNIItem *item)
 		return;
 	}
 
+	/* Mark in-flight so sni_handle_dbus() won't queue another GetAll
+	 * before this reply arrives */
+	item->properties_fetching = 1;
+
 	/* Subscribe to property changes */
 	snprintf(match, sizeof(match),
 	    "type='signal',sender='%s',interface='org.freedesktop.DBus."
@@ -863,18 +840,11 @@ sni_update_item(SNIItem *item)
 	/* Free old data */
 	free(item->icon_name);
 	item->icon_name = NULL;
-	free(item->attention_icon_name);
-	item->attention_icon_name = NULL;
 
 	if (item->icon_pixmap) {
 		sni_free_icons(item->icon_pixmap, item->icon_pixmap_count);
 		item->icon_pixmap       = NULL;
 		item->icon_pixmap_count = 0;
-	}
-	if (item->attention_pixmap) {
-		sni_free_icons(item->attention_pixmap, item->attention_pixmap_count);
-		item->attention_pixmap       = NULL;
-		item->attention_pixmap_count = 0;
 	}
 
 	/* Re-fetch properties */

@@ -218,17 +218,6 @@ launcher_is_desktop_entry(const char *filename)
 	return len > 8 && strcmp(filename + len - 8, ".desktop") == 0;
 }
 
-static char *__attribute__((unused))
-launcher_get_line(char *data, size_t len)
-{
-	char *newline = strchr(data, '\n');
-	if (newline) {
-		*newline = '\0';
-		return newline + 1;
-	}
-	return NULL;
-}
-
 static char *
 launcher_get_value(char *line, const char *key)
 {
@@ -377,50 +366,6 @@ launcher_find_duplicates(LauncherItem *items, const char *name)
 			return item;
 	}
 	return NULL;
-}
-
-static LauncherItem *__attribute__((unused))
-launcher_merge_items(LauncherItem *a, LauncherItem *b)
-{
-	LauncherItem *result = NULL;
-	LauncherItem *last   = NULL;
-
-	while (a) {
-		LauncherItem *next = a->next;
-		a->next            = NULL;
-
-		LauncherItem *dup = launcher_find_duplicates(b, a->name);
-		if (dup) {
-			if (dup->exec)
-				free(dup->exec);
-			if (dup->icon)
-				cairo_surface_destroy(dup->icon);
-			free(dup->icon_name);
-			dup->exec      = a->exec;
-			dup->icon_name = a->icon_name;
-			dup->icon      = a->icon;
-			free(a->name);
-			free(a);
-		} else {
-			if (!result)
-				result = a;
-			else
-				last->next = a;
-			last = a;
-		}
-		a = next;
-	}
-
-	LauncherItem *tail = result;
-	if (tail) {
-		while (tail->next)
-			tail = tail->next;
-		tail->next = b;
-	} else {
-		result = b;
-	}
-
-	return result;
 }
 
 static LauncherItem *
