@@ -983,17 +983,20 @@ comp_repaint_idle(gpointer data)
 		if (alpha_idx > 255)
 			alpha_idx = 255;
 
+		/* XCompositeNameWindowPixmap returns a pixmap of the window
+		 * interior only (w × h), not including the X border.  Paint
+		 * at the interior origin (x+bw, y+bw) with interior size. */
 		if (cw->argb || alpha_idx < 255) {
 			mask = comp.alpha_pict[alpha_idx];
 			XRenderComposite(dpy, PictOpOver, cw->picture, mask, comp.back, 0,
 			    0,    /* src x, y */
 			    0, 0, /* mask x, y */
-			    cw->x, cw->y, (unsigned int) (cw->w + 2 * cw->bw),
-			    (unsigned int) (cw->h + 2 * cw->bw));
+			    cw->x + cw->bw, cw->y + cw->bw, (unsigned int) cw->w,
+			    (unsigned int) cw->h);
 		} else {
 			XRenderComposite(dpy, PictOpSrc, cw->picture, None, comp.back, 0,
-			    0, 0, 0, cw->x, cw->y, (unsigned int) (cw->w + 2 * cw->bw),
-			    (unsigned int) (cw->h + 2 * cw->bw));
+			    0, 0, 0, cw->x + cw->bw, cw->y + cw->bw, (unsigned int) cw->w,
+			    (unsigned int) cw->h);
 		}
 	}
 
