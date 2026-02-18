@@ -113,6 +113,9 @@ cleanup(void)
 	}
 	status_cleanup();
 	launcher_free(launcher);
+#ifdef COMPOSITOR
+	compositor_cleanup();
+#endif
 
 	for (i = 0; i < CurLast; i++)
 		drw_cur_free(drw, cursor[i]);
@@ -203,11 +206,19 @@ x_dispatch_cb(gpointer user_data)
 #endif
 				/* Handle launcher events if visible */
 				if (launcher && launcher->visible) {
+#ifdef COMPOSITOR
+					compositor_handle_event(&ev);
+#endif
 					if (!launcher_handle_event(launcher, &ev) &&
 					    ev.type < LASTEvent && handler[ev.type])
 						handler[ev.type](&ev);
-				} else if (ev.type < LASTEvent && handler[ev.type])
-					handler[ev.type](&ev);
+				} else {
+#ifdef COMPOSITOR
+					compositor_handle_event(&ev);
+#endif
+					if (ev.type < LASTEvent && handler[ev.type])
+						handler[ev.type](&ev);
+				}
 #ifdef STATUSNOTIFIER
 			}
 #endif
@@ -441,9 +452,15 @@ setup(void)
 	netatom[NetMoveResizeWindow] =
 	    XInternAtom(dpy, "_NET_MOVERESIZE_WINDOW", False);
 	netatom[NetFrameExtents] = XInternAtom(dpy, "_NET_FRAME_EXTENTS", False);
-	xatom[Manager]           = XInternAtom(dpy, "MANAGER", False);
-	xatom[Xembed]            = XInternAtom(dpy, "_XEMBED", False);
-	xatom[XembedInfo]        = XInternAtom(dpy, "_XEMBED_INFO", False);
+#ifdef COMPOSITOR
+	netatom[NetWMWindowOpacity] =
+	    XInternAtom(dpy, "_NET_WM_WINDOW_OPACITY", False);
+	netatom[NetWMBypassCompositor] =
+	    XInternAtom(dpy, "_NET_WM_BYPASS_COMPOSITOR", False);
+#endif
+	xatom[Manager]    = XInternAtom(dpy, "MANAGER", False);
+	xatom[Xembed]     = XInternAtom(dpy, "_XEMBED", False);
+	xatom[XembedInfo] = XInternAtom(dpy, "_XEMBED_INFO", False);
 	/* init cursors */
 	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
 	cursor[CurResize] = drw_cur_create(drw, XC_sizing);
@@ -499,6 +516,10 @@ setup(void)
 #endif
 	/* Initialize launcher */
 	launcher = launcher_create(dpy, root, drw, scheme, termcmd[0]);
+#ifdef COMPOSITOR
+	if (compositor_init(g_main_context_default()) < 0)
+		awm_warn("compositor: init failed, running without compositing");
+#endif
 }
 
 int

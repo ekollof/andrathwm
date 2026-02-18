@@ -35,6 +35,12 @@
 #ifdef XSS
 #include <X11/extensions/scrnsaver.h>
 #endif /* XSS */
+#ifdef COMPOSITOR
+#include <X11/extensions/Xcomposite.h>
+#include <X11/extensions/Xdamage.h>
+#include <X11/extensions/Xfixes.h>
+#include <X11/extensions/Xrender.h>
+#endif /* COMPOSITOR */
 #ifdef STATUSNOTIFIER
 #include "sni.h"
 #endif
@@ -132,6 +138,8 @@ enum {
 	NetCloseWindow,
 	NetMoveResizeWindow,
 	NetFrameExtents,
+	NetWMWindowOpacity,
+	NetWMBypassCompositor,
 	NetLast
 }; /* EWMH atoms */
 enum { Manager, Xembed, XembedInfo, XLast }; /* Xembed atoms */
@@ -186,11 +194,17 @@ struct Client {
 	int      issteam;
 	int      issni;
 	char     scratchkey;
+	double   opacity;           /* compositing opacity 0.0–1.0 */
+	int      bypass_compositor; /* _NET_WM_BYPASS_COMPOSITOR hint */
 	Client  *next;
 	Client  *snext;
 	Monitor *mon;
 	Window   win;
 };
+
+#ifdef COMPOSITOR
+#include "compositor.h"
+#endif /* COMPOSITOR */
 
 typedef struct {
 	unsigned int mod;
@@ -253,6 +267,7 @@ typedef struct {
 	int          isfloating;
 	int          monitor;
 	const char   scratchkey;
+	double       opacity; /* 0.0 = use default (1.0); otherwise 0.0–1.0 */
 } Rule;
 
 struct Clientlist {

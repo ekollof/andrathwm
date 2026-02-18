@@ -17,7 +17,7 @@ static const char broken[] = "broken";
 void
 applyrules(Client *c)
 {
-	const char *class, *instance;
+	const char  *class, *instance;
 	unsigned int i;
 	const Rule  *r;
 	Monitor     *m;
@@ -45,9 +45,11 @@ applyrules(Client *c)
 			c->isfloating = r->isfloating;
 			c->tags |= r->tags;
 			c->scratchkey = r->scratchkey;
+			if (r->opacity > 0.0)
+				c->opacity = r->opacity;
 			for (m = mons; m && (m->tagset[m->seltags] & c->tags) == 0;
-			     m = m->next)
-				;
+			    m  = m->next)
+                ;
 			if (m)
 				c->mon = m;
 		}
@@ -268,8 +270,8 @@ focusstack(const Arg *arg)
 			;
 		if (!c)
 			for (c = selmon->cl->clients; c && !ISVISIBLE(c, selmon);
-			     c = c->next)
-				;
+			    c  = c->next)
+                ;
 	} else {
 		for (i = selmon->cl->clients; i != selmon->sel; i = i->next)
 			if (ISVISIBLE(i, selmon))
@@ -295,12 +297,11 @@ focusstackhidden(const Arg *arg)
 
 	if (arg->i > 0) {
 		for (c = selmon->sel->next;
-		     c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
+		    c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
 			;
 		if (!c)
 			for (c = selmon->cl->clients;
-			     c && !(c->tags & selmon->tagset[selmon->seltags]);
-			     c = c->next)
+			    c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
 				;
 	} else {
 		for (i = selmon->cl->clients; i != selmon->sel; i = i->next)
@@ -663,8 +664,10 @@ manage(Window w, XWindowAttributes *wa)
 	c->x = c->oldx = wa->x;
 	c->y = c->oldy = wa->y;
 	c->w = c->oldw = wa->width;
-	c->h = c->oldh = wa->height;
-	c->oldbw       = wa->border_width;
+	c->h = c->oldh       = wa->height;
+	c->oldbw             = wa->border_width;
+	c->opacity           = 1.0;
+	c->bypass_compositor = 0;
 
 	updatetitle(c);
 	c->icon = getwmicon(w, 16);
@@ -675,6 +678,17 @@ manage(Window w, XWindowAttributes *wa)
 		c->mon = selmon;
 		applyrules(c);
 	}
+#ifdef COMPOSITOR
+	/* If the window already has _NET_WM_WINDOW_OPACITY set (common for apps
+	 * that manage their own translucency), let it override the rule value so
+	 * the window always wins over the rule default. */
+	{
+		unsigned long raw =
+		    (unsigned long) getatomprop(c, netatom[NetWMWindowOpacity]);
+		if (raw != 0)
+			c->opacity = (double) raw / (double) 0xFFFFFFFFUL;
+	}
+#endif
 
 	if (c->x + WIDTH(c) > c->mon->wx + c->mon->ww)
 		c->x = c->mon->wx + c->mon->ww - WIDTH(c);
@@ -726,6 +740,13 @@ manage(Window w, XWindowAttributes *wa)
 		c->mon->sel = c;
 	arrange(c->mon);
 	XMapWindow(dpy, c->win);
+#ifdef COMPOSITOR
+	compositor_add_window(c);
+	c->bypass_compositor =
+	    (int) getatomprop(c, netatom[NetWMBypassCompositor]);
+	if (c->bypass_compositor == 1)
+		compositor_bypass_window(c, 1);
+#endif
 	focus(NULL);
 }
 
@@ -779,6 +800,9 @@ movemouse(const Arg *arg)
 				togglefloating(NULL);
 			if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
 				resize(c, nx, ny, c->w, c->h, 1);
+#ifdef COMPOSITOR
+			compositor_repaint_now();
+#endif
 			break;
 		}
 	} while (ev.type != ButtonRelease);
@@ -794,7 +818,7 @@ Client *
 nexttiled(Client *c, Monitor *m)
 {
 	for (; c && (c->isfloating || !ISVISIBLE(c, m) || c->ishidden);
-	     c = c->next)
+	    c = c->next)
 		;
 	return c;
 }
@@ -843,6 +867,9 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	    dpy, c->win, CWX | CWY | CWWidth | CWHeight | CWBorderWidth, &wc);
 	configure(c);
 	XSync(dpy, False);
+#ifdef COMPOSITOR
+	compositor_configure_window(c, wc.border_width);
+#endif
 }
 
 void
@@ -892,6 +919,9 @@ resizemouse(const Arg *arg)
 			}
 			if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
 				resize(c, c->x, c->y, nw, nh, 1);
+#ifdef COMPOSITOR
+			compositor_repaint_now();
+#endif
 			break;
 		}
 	} while (ev.type != ButtonRelease);
@@ -940,6 +970,9 @@ setfullscreen(Client *c, int fullscreen)
 		c->bw           = 0;
 		c->isfloating   = 1;
 		setwmstate(c);
+#ifdef COMPOSITOR
+		compositor_bypass_window(c, 1);
+#endif
 		resizeclient(c, c->mon->mx, c->mon->my, c->mon->mw, c->mon->mh);
 		XRaiseWindow(dpy, c->win);
 	} else if (!fullscreen && c->isfullscreen) {
@@ -951,7 +984,13 @@ setfullscreen(Client *c, int fullscreen)
 		c->w            = c->oldw;
 		c->h            = c->oldh;
 		setwmstate(c);
+#ifdef COMPOSITOR
+		compositor_bypass_window(c, 0);
+#endif
 		resizeclient(c, c->x, c->y, c->w, c->h);
+#ifdef COMPOSITOR
+		compositor_raise_overlay();
+#endif
 		arrange(c->mon);
 	}
 }
@@ -1097,8 +1136,7 @@ togglescratch(const Arg *arg)
 	unsigned int found = 0;
 
 	for (c = selmon->cl->clients;
-	     c && !(found = c->scratchkey == ((char **) arg->v)[0][0]);
-	     c = c->next)
+	    c && !(found = c->scratchkey == ((char **) arg->v)[0][0]); c = c->next)
 		;
 	if (found) {
 		if (ISVISIBLE(c, selmon)) {
@@ -1160,7 +1198,7 @@ toggleview(const Arg *arg)
 					selmon_curtag = 0;
 				else {
 					for (i = 0; !(selmon->tagset[selmon->seltags] & 1 << i);
-					     i++)
+					    i++)
 						;
 					selmon_curtag = i + 1;
 				}
@@ -1308,6 +1346,9 @@ unmanage(Client *c, int destroyed)
 		XUngrabServer(dpy);
 	}
 	freeicon(c);
+#ifdef COMPOSITOR
+	compositor_remove_window(c);
+#endif
 	free(c);
 	focus(NULL);
 	updateclientlist();
@@ -1586,11 +1627,11 @@ movestack(const Arg *arg)
 	if (arg->i > 0) {
 		/* find the client after selmon->sel */
 		for (c = selmon->sel->next;
-		     c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
+		    c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
 			;
 		if (!c)
 			for (c = selmon->cl->clients;
-			     c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
+			    c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
 				;
 
 	} else {

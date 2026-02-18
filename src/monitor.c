@@ -92,8 +92,8 @@ createmon(void)
 	/* find the first tag that isn't in use */
 	for (i = 0; i < LENGTH(tags); i++) {
 		for (tm = mons; tm && !(tm->tagset[tm->seltags] & (1 << i));
-		     tm = tm->next)
-			;
+		    tm  = tm->next)
+            ;
 		if (!tm)
 			break;
 	}
@@ -302,8 +302,8 @@ monocle(Monitor *m)
 	if (n > 0) /* override layout symbol */
 		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
 	for (c = m->cl->stack; c && (!ISVISIBLE(c, m) || c->isfloating);
-	     c = c->snext)
-		;
+	    c  = c->snext)
+        ;
 	if (c && !c->isfloating) {
 		XMoveWindow(dpy, c->win, m->wx, m->wy);
 		if (selmon->pertag->drawwithgaps[selmon->pertag->curtag])
@@ -377,7 +377,7 @@ tile(Monitor *m)
 	Client      *c;
 
 	for (n = 0, c = nexttiled(m->cl->clients, m); c;
-	     c = nexttiled(c->next, m), n++)
+	    c = nexttiled(c->next, m), n++)
 		;
 
 	if (n == 0)
@@ -389,8 +389,8 @@ tile(Monitor *m)
 		else
 			mw = m->ww - m->pertag->gappx[m->pertag->curtag];
 		for (i = 0, my = ty = m->pertag->gappx[m->pertag->curtag],
-		    c     = nexttiled(m->cl->clients, m);
-		     c; c = nexttiled(c->next, m), i++)
+		    c    = nexttiled(m->cl->clients, m);
+		    c; c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i) -
 				    m->pertag->gappx[m->pertag->curtag];
@@ -419,7 +419,7 @@ tile(Monitor *m)
 		else
 			mw = m->ww;
 		for (i = my = ty = 0, c = nexttiled(m->cl->clients, m); c;
-		     c = nexttiled(c->next, m), i++)
+		    c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i);
 				if (n == 1)
@@ -462,22 +462,36 @@ togglebar(const Arg *arg)
 void
 updatebars(void)
 {
-	unsigned int         w;
-	Monitor             *m;
+	unsigned int w;
+	Monitor     *m;
+#ifdef COMPOSITOR
+	XSetWindowAttributes wa = { .override_redirect = True,
+		.background_pixel                          = 0,
+		.event_mask = ButtonPressMask | ExposureMask };
+#else
 	XSetWindowAttributes wa = { .override_redirect = True,
 		.background_pixmap                         = ParentRelative,
 		.event_mask = ButtonPressMask | ExposureMask };
-	XClassHint           ch = { "awm", "awm" };
+#endif
+	XClassHint ch = { "awm", "awm" };
 	for (m = mons; m; m = m->next) {
 		if (m->barwin)
 			continue;
 		w = m->ww;
 		if (showsystray && m == systraytomon(m))
 			w -= getsystraywidth();
+#ifdef COMPOSITOR
+		wa.background_pixel = scheme[SchemeNorm][ColBg].pixel;
+		m->barwin           = XCreateWindow(dpy, root, m->wx, m->by, w, bh, 0,
+		              DefaultDepth(dpy, screen), CopyFromParent,
+		              DefaultVisual(dpy, screen),
+		              CWOverrideRedirect | CWBackPixel | CWEventMask, &wa);
+#else
 		m->barwin = XCreateWindow(dpy, root, m->wx, m->by, w, bh, 0,
 		    DefaultDepth(dpy, screen), CopyFromParent,
 		    DefaultVisual(dpy, screen),
 		    CWOverrideRedirect | CWBackPixmap | CWEventMask, &wa);
+#endif
 		XDefineCursor(dpy, m->barwin, cursor[CurNormal]->cursor);
 		if (showsystray && m == systraytomon(m))
 			XMapRaised(dpy, systray->win);
