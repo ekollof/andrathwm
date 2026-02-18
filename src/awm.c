@@ -435,7 +435,7 @@ setup(void)
 	queue_init();
 #endif
 	/* Initialize launcher */
-	launcher = launcher_create(dpy, root, drw, scheme);
+	launcher = launcher_create(dpy, root, drw, scheme, termcmd[0]);
 }
 
 int

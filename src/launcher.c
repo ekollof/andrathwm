@@ -785,7 +785,9 @@ launcher_launch_selected(Launcher *launcher)
 			close(ConnectionNumber(launcher->dpy));
 		setsid();
 		if (item->terminal) {
-			const char *term = getenv("TERMINAL");
+			const char *term = launcher->terminal;
+			if (!term || !*term)
+				term = getenv("TERMINAL");
 			if (!term || !*term)
 				term = "st";
 			execlp(term, term, "-e", "sh", "-c", item->exec, NULL);
@@ -822,7 +824,8 @@ launcher_append_items(Launcher *launcher, LauncherItem *new_items)
 }
 
 Launcher *
-launcher_create(Display *dpy, Window root, Drw *drw, Clr **scheme)
+launcher_create(
+    Display *dpy, Window root, Drw *drw, Clr **scheme, const char *term)
 {
 	Launcher            *launcher;
 	XSetWindowAttributes wa;
@@ -839,6 +842,7 @@ launcher_create(Display *dpy, Window root, Drw *drw, Clr **scheme)
 	launcher->h         = 100;
 	launcher->input[0]  = '\0';
 	launcher->input_len = 0;
+	launcher->terminal  = (term && *term) ? term : "st";
 
 	/* Resolve history file path */
 	launcher_history_path(

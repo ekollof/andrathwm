@@ -49,13 +49,15 @@ typedef struct {
 	int          scroll_offset;
 	char         history_path[512]; /* Path to launch-history file */
 	unsigned int max_item_width; /* Widest item across all items, set once */
+	const char  *terminal; /* Terminal emulator binary for Terminal=true */
 } Launcher;
 
-Launcher *launcher_create(Display *dpy, Window root, Drw *drw, Clr **scheme);
-void      launcher_free(Launcher *launcher);
-void      launcher_show(Launcher *launcher, int x, int y);
-void      launcher_hide(Launcher *launcher);
-int       launcher_handle_event(Launcher *launcher, XEvent *ev);
-void      launcher_launch_selected(Launcher *launcher);
+Launcher *launcher_create(
+    Display *dpy, Window root, Drw *drw, Clr **scheme, const char *term);
+void launcher_free(Launcher *launcher);
+void launcher_show(Launcher *launcher, int x, int y);
+void launcher_hide(Launcher *launcher);
+int  launcher_handle_event(Launcher *launcher, XEvent *ev);
+void launcher_launch_selected(Launcher *launcher);
 
 #endif /* LAUNCHER_H */
