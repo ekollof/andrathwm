@@ -19,6 +19,7 @@ typedef struct LauncherItem {
 	char            *icon_name;  /* Icon name from .desktop */
 	cairo_surface_t *icon;       /* Loaded icon surface */
 	int              is_desktop; /* 1 if from .desktop file, 0 if from PATH */
+	int launch_count;            /* Number of times launched (from history) */
 	struct LauncherItem *next;
 } LauncherItem;
 
@@ -43,8 +44,9 @@ typedef struct {
 	unsigned int input_h;
 	unsigned int item_h;
 
-	int visible;
-	int scroll_offset;
+	int  visible;
+	int  scroll_offset;
+	char history_path[512]; /* Path to launch-history file */
 } Launcher;
 
 Launcher *launcher_create(Display *dpy, Window root, Drw *drw, Clr **scheme);

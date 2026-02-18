@@ -9,6 +9,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -472,6 +473,129 @@ launcher_scan_path(void)
 	return items;
 }
 
+/*
+ * History: persist launch counts in a plain-text file.
+ * Format: one entry per line — "name\tcount\n".
+ * Location: $XDG_STATE_HOME/awm/launcher_history
+ *           (falls back to ~/.local/state/awm/launcher_history)
+ */
+
+#define LAUNCHER_HISTORY_TOP 10 /* items ranked above alphabetic block */
+
+static void
+launcher_history_path(char *out, size_t sz)
+{
+	const char *state = getenv("XDG_STATE_HOME");
+	const char *home  = getenv("HOME");
+
+	if (state && *state)
+		snprintf(out, sz, "%s/awm/launcher_history", state);
+	else if (home && *home)
+		snprintf(out, sz, "%s/.local/state/awm/launcher_history", home);
+	else
+		snprintf(out, sz, "/tmp/awm_launcher_history");
+}
+
+static void
+launcher_history_load(Launcher *launcher)
+{
+	FILE         *f;
+	char          line[512];
+	char         *tab;
+	LauncherItem *item;
+
+	f = fopen(launcher->history_path, "r");
+	if (!f)
+		return;
+
+	while (fgets(line, sizeof(line), f)) {
+		/* strip trailing newline */
+		size_t len = strlen(line);
+		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+			line[--len] = '\0';
+
+		tab = strchr(line, '\t');
+		if (!tab)
+			continue;
+		*tab      = '\0';
+		int count = atoi(tab + 1);
+		if (count <= 0)
+			continue;
+
+		for (item = launcher->items; item; item = item->next) {
+			if (strcmp(item->name, line) == 0) {
+				item->launch_count = count;
+				break;
+			}
+		}
+	}
+	fclose(f);
+}
+
+static void
+launcher_history_save(Launcher *launcher)
+{
+	FILE         *f;
+	LauncherItem *item;
+	char          tmp[512];
+	int           n;
+
+	/* Ensure parent directory exists */
+	n = snprintf(tmp, sizeof(tmp), "%s", launcher->history_path);
+	/* strip filename component */
+	while (n > 0 && tmp[n - 1] != '/')
+		n--;
+	if (n > 0) {
+		tmp[n] = '\0';
+		/* mkdir -p: create each component */
+		for (int i = 1; i <= n; i++) {
+			if (tmp[i] == '/' || tmp[i] == '\0') {
+				char save = tmp[i];
+				tmp[i]    = '\0';
+				mkdir(tmp, 0700);
+				tmp[i] = save;
+			}
+		}
+	}
+
+	f = fopen(launcher->history_path, "w");
+	if (!f)
+		return;
+
+	for (item = launcher->items; item; item = item->next) {
+		if (item->launch_count > 0)
+			fprintf(f, "%s\t%d\n", item->name, item->launch_count);
+	}
+	fclose(f);
+}
+
+/*
+ * Sort comparator for the filtered array.
+ * Items with a positive launch_count are ranked by count descending
+ * (up to LAUNCHER_HISTORY_TOP entries); everything else is alphabetic.
+ */
+static int
+launcher_item_cmp(const void *a, const void *b)
+{
+	const LauncherItem *ia = *(const LauncherItem *const *) a;
+	const LauncherItem *ib = *(const LauncherItem *const *) b;
+	int                 ca = ia->launch_count > 0 ? ia->launch_count : 0;
+	int                 cb = ib->launch_count > 0 ? ib->launch_count : 0;
+
+	/* Both have history: sort by count descending */
+	if (ca > 0 && cb > 0)
+		return (cb > ca) - (ca > cb);
+
+	/* Only one has history: it floats to the top */
+	if (ca > 0)
+		return -1;
+	if (cb > 0)
+		return 1;
+
+	/* Neither has history: alphabetic by name */
+	return strcasecmp(ia->name, ib->name);
+}
+
 static void
 launcher_filter_items(Launcher *launcher)
 {
@@ -503,9 +627,14 @@ launcher_filter_items(Launcher *launcher)
 	}
 	launcher->filtered[count] = NULL;
 	launcher->visible_count   = count;
-	launcher->selected        = 0;
 	launcher->scroll_offset   = 0;
 
+	/* Sort: top LAUNCHER_HISTORY_TOP items by launch count float first,
+	 * then everything (including lower-ranked history) is alphabetic. */
+	qsort(
+	    launcher->filtered, count, sizeof(LauncherItem *), launcher_item_cmp);
+
+	launcher->selected = 0;
 	if (launcher->selected >= launcher->visible_count)
 		launcher->selected = launcher->visible_count - 1;
 }
@@ -647,6 +776,10 @@ launcher_launch_selected(Launcher *launcher)
 	if (!item || !item->exec)
 		return;
 
+	/* Record the launch before hiding/forking */
+	item->launch_count++;
+	launcher_history_save(launcher);
+
 	launcher_hide(launcher);
 
 	if (fork() == 0) {
@@ -702,6 +835,10 @@ launcher_create(Display *dpy, Window root, Drw *drw, Clr **scheme)
 	launcher->input[0]  = '\0';
 	launcher->input_len = 0;
 
+	/* Resolve history file path */
+	launcher_history_path(
+	    launcher->history_path, sizeof(launcher->history_path));
+
 	home = getenv("HOME");
 	if (!home)
 		home = "/root";
@@ -728,6 +865,9 @@ launcher_create(Display *dpy, Window root, Drw *drw, Clr **scheme)
 
 	LauncherItem *path_items = launcher_scan_path();
 	launcher_append_items(launcher, path_items);
+
+	/* Load launch history so counts are available before first filter/sort */
+	launcher_history_load(launcher);
 
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);

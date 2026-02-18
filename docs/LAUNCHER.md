@@ -35,6 +35,41 @@ case-insensitively as you type.
 | Scroll wheel | Move selection up/down |
 | Click input area | Dismiss launcher |
 
+## Sort Order
+
+The launcher sorts results using launch history:
+
+- The **top 10 most-launched** applications float to the top, sorted by launch
+  count descending.
+- Everything else (including items ranked 11th and beyond in history) is sorted
+  **alphabetically by name**, case-insensitive.
+
+This means that after a few days of use, your most-reached-for apps appear
+immediately without any typing.
+
+### Persistence
+
+Launch counts are written to disk on every successful launch:
+
+```
+$XDG_STATE_HOME/awm/launcher_history
+```
+
+If `XDG_STATE_HOME` is not set, the path falls back to:
+
+```
+~/.local/state/awm/launcher_history
+```
+
+The file is plain text, one entry per line:
+
+```
+name<TAB>count
+```
+
+It is safe to delete; the launcher will recreate it from scratch. The directory
+is created automatically on first launch.
+
 ## Application Sources
 
 The launcher searches two sources, in this order:
@@ -82,6 +117,7 @@ at the top of `src/launcher.c`:
 | `LAUNCHER_ICON_SIZE` | 20 | Icon size in pixels |
 | `LAUNCHER_PADDING` | 8 | Internal padding (px) |
 | `LAUNCHER_SCROLL_BAR_WIDTH` | 6 | Scrollbar width (px) |
+| `LAUNCHER_HISTORY_TOP` | 10 | Number of most-used apps that float above alphabetic order |
 
 To change these, edit `src/launcher.c` and recompile.
 
