@@ -218,6 +218,48 @@ launcher_is_desktop_entry(const char *filename)
 	return len > 8 && strcmp(filename + len - 8, ".desktop") == 0;
 }
 
+/*
+ * Strip XDG desktop file field codes from an Exec string in-place.
+ * Per spec (XDG Desktop Entry 1.5 §11): field codes are %x where x is one of
+ * u U f F d D n N i c k v m.  When not launched with a URI/file argument
+ * (which a launcher never provides) they must be removed entirely.
+ * %% is a literal '%' and is preserved as a single '%'.
+ */
+static void
+exec_strip_field_codes(char *s)
+{
+	char *r = s, *w = s;
+
+	while (*r) {
+		if (*r == '%' && *(r + 1) != '\0') {
+			char code = *(r + 1);
+			if (code == '%') {
+				/* %% -> literal % */
+				*w++ = '%';
+				r += 2;
+			} else if (code == 'u' || code == 'U' || code == 'f' ||
+			    code == 'F' || code == 'd' || code == 'D' || code == 'n' ||
+			    code == 'N' || code == 'v' || code == 'm' || code == 'k' ||
+			    code == 'c' || code == 'i') {
+				/* Skip the %x token and any surrounding whitespace */
+				r += 2;
+				/* Eat one trailing space so we don't leave a double-space */
+				if (*r == ' ')
+					r++;
+			} else {
+				/* Unknown %x: pass through unchanged */
+				*w++ = *r++;
+			}
+		} else {
+			*w++ = *r++;
+		}
+	}
+	/* Trim any trailing spaces left by removed tokens */
+	while (w > s && *(w - 1) == ' ')
+		w--;
+	*w = '\0';
+}
+
 static char *
 launcher_get_value(char *line, const char *key)
 {
@@ -263,6 +305,7 @@ launcher_parse_desktop_file(const char *path)
 	char         *exec_cmd   = NULL;
 	char         *icon       = NULL;
 	int           no_display = 0;
+	int           terminal   = 0;
 	LauncherItem *item       = NULL;
 
 	fp = fopen(path, "r");
@@ -283,8 +326,11 @@ launcher_parse_desktop_file(const char *path)
 		}
 		if (!exec_cmd) {
 			char *v = launcher_get_value(line, "Exec");
-			if (v)
+			if (v) {
 				exec_cmd = strdup(v);
+				if (exec_cmd)
+					exec_strip_field_codes(exec_cmd);
+			}
 		}
 		if (!icon) {
 			char *v = launcher_get_value(line, "Icon");
@@ -297,6 +343,9 @@ launcher_parse_desktop_file(const char *path)
 		v = launcher_get_value(line, "Hidden");
 		if (v && strcmp(v, "true") == 0)
 			no_display = 1;
+		v = launcher_get_value(line, "Terminal");
+		if (v && strcmp(v, "true") == 0)
+			terminal = 1;
 	}
 
 	free(line);
@@ -320,6 +369,7 @@ launcher_parse_desktop_file(const char *path)
 	if (icon && !item->icon)
 		awm_debug("Launcher: failed to load icon '%s'", icon);
 	item->is_desktop = 1;
+	item->terminal   = terminal;
 
 	return item;
 }
@@ -734,7 +784,14 @@ launcher_launch_selected(Launcher *launcher)
 		if (launcher->dpy)
 			close(ConnectionNumber(launcher->dpy));
 		setsid();
-		execlp("sh", "sh", "-c", item->exec, NULL);
+		if (item->terminal) {
+			const char *term = getenv("TERMINAL");
+			if (!term || !*term)
+				term = "st";
+			execlp(term, term, "-e", "sh", "-c", item->exec, NULL);
+		} else {
+			execlp("sh", "sh", "-c", item->exec, NULL);
+		}
 		exit(1);
 	}
 }

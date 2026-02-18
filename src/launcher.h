@@ -19,6 +19,7 @@ typedef struct LauncherItem {
 	char            *icon_name;  /* Icon name from .desktop */
 	cairo_surface_t *icon;       /* Loaded icon surface */
 	int              is_desktop; /* 1 if from .desktop file, 0 if from PATH */
+	int              terminal;   /* 1 if Terminal=true in .desktop */
 	int launch_count;            /* Number of times launched (from history) */
 	struct LauncherItem *next;
 } LauncherItem;
