@@ -23,24 +23,26 @@
 #include <stdint.h>
 
 #include "awm.h"
-#include "monitor.h"
 #include "client.h"
-#include "spawn.h"
 #include "events.h"
 #include "ewmh.h"
+#include "launcher.h"
+#include "monitor.h"
+#include "spawn.h"
+#include "status.h"
 #include "systray.h"
 #include "xrdb.h"
-#include "status.h"
 #define AWM_CONFIG_IMPL
 #include "config.h"
 
 /* variables */
-Systray *systray = NULL;
-char     stext[STATUS_TEXT_LEN];
-int      screen;
-int      sw, sh; /* X display screen geometry width, height */
-int      bh;     /* bar height */
-int      lrpad;  /* sum of left and right padding for text */
+Systray  *systray  = NULL;
+Launcher *launcher = NULL;
+char      stext[STATUS_TEXT_LEN];
+int       screen;
+int       sw, sh; /* X display screen geometry width, height */
+int       bh;     /* bar height */
+int       lrpad;  /* sum of left and right padding for text */
 int (*xerrorxlib)(Display *, XErrorEvent *);
 unsigned int numlockmask = 0;
 #ifdef XRANDR
@@ -102,6 +104,7 @@ cleanup(void)
 		free(systray);
 	}
 	status_cleanup();
+	launcher_free(launcher);
 
 	for (i = 0; i < CurLast; i++)
 		drw_cur_free(drw, cursor[i]);
@@ -125,6 +128,30 @@ quit(const Arg *arg)
 	if (arg->i)
 		restart = 1;
 	running = 0;
+}
+
+void
+launchermenu(const Arg *arg)
+{
+	int x, y;
+
+	if (!launcher)
+		return;
+
+	Monitor *m = selmon;
+	if (m) {
+		x = m->wx + (m->ww - 600) / 2;
+		y = m->wy + (m->wh - 400) / 2;
+		if (x < m->wx)
+			x = m->wx;
+		if (y < m->wy)
+			y = m->wy;
+	} else {
+		x = 100;
+		y = 100;
+	}
+
+	launcher_show(launcher, x, y);
 }
 
 void
@@ -205,11 +232,20 @@ run(void)
 				} else
 #endif
 #ifdef STATUSNOTIFIER
-					/* Handle menu events BEFORE normal handlers if menu is visible */
-					if (!sni_handle_menu_event(&ev))
+					/* Handle menu events BEFORE normal handlers if menu is
+					 * visible */
+					if (!sni_handle_menu_event(&ev)) {
 #endif
-						if (ev.type < LASTEvent && handler[ev.type])
+						/* Handle launcher events if visible */
+						if (launcher && launcher->visible) {
+							if (!launcher_handle_event(launcher, &ev) &&
+							    ev.type < LASTEvent && handler[ev.type])
+								handler[ev.type](&ev);
+						} else if (ev.type < LASTEvent && handler[ev.type])
 							handler[ev.type](&ev);
+#ifdef STATUSNOTIFIER
+					}
+#endif
 			}
 		}
 
@@ -400,6 +436,8 @@ setup(void)
 		awm_warn("Failed to initialize StatusNotifier support");
 	queue_init();
 #endif
+	/* Initialize launcher */
+	launcher = launcher_create(dpy, root, drw, scheme);
 }
 
 int

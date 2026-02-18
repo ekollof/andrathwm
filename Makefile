@@ -9,7 +9,7 @@ BUILDDIR = build
 
 SRC = drw.c awm.c util.c menu.c dbus.c icon.c queue.c sni.c log.c \
 	client.c monitor.c events.c ewmh.c systray.c spawn.c xrdb.c \
-	status.c status_util.c status_components.c
+	status.c status_util.c status_components.c launcher.c
 SRCS = $(addprefix $(SRCDIR)/,$(SRC))
 OBJ = $(addprefix $(BUILDDIR)/,$(SRC:.c=.o))
 

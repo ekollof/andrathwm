@@ -314,6 +314,7 @@ extern void (*handler[LASTEvent])(XEvent *);
 
 /* core WM functions (defined in awm.c) */
 void quit(const Arg *arg);
+void launchermenu(const Arg *arg);
 
 /* The Pertag struct uses LENGTH(tags) so must be defined after config.h.
  * It is defined in awm.c after the #include "config.h". */

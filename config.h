@@ -163,7 +163,7 @@ static const char *musiccmd[]  = { "m", "st", "-t", musicname, "-g", "120x34",
 
 static const Key keys[] = {
 	/* modifier                     key        function        argument */
-	{ MODKEY, XK_p, spawn, { .v = dmenucmd } },
+	{ MODKEY, XK_p, launchermenu, { 0 } },
 	{ MODKEY, XK_Return, spawn, { .v = termcmd } },
 	{ MODKEY | ShiftMask, XK_p, spawn, { .v = passmenu } },
 	{ MODKEY | ShiftMask, XK_l, spawn, { .v = lpassmenu } },
