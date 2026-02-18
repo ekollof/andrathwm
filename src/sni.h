@@ -49,6 +49,7 @@ typedef struct SNIItem {
 	/* Menu */
 	char        *menu_path; /* DBusMenu object path */
 	SNIMenuItem *menu;      /* Parsed menu structure */
+	int item_is_menu;       /* ItemIsMenu=true: icon is a pure menu trigger */
 
 	/* Internal state */
 	Window           win;                /* X11 window for this item */

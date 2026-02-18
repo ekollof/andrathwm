@@ -675,6 +675,13 @@ sni_properties_received(DBusMessage *reply, void *user_data)
 				dbus_message_iter_get_basic(&variant, &val);
 				item->menu_path = strdup(val);
 			}
+		} else if (strcmp(key, "ItemIsMenu") == 0) {
+			if (dbus_message_iter_get_arg_type(&variant) ==
+			    DBUS_TYPE_BOOLEAN) {
+				dbus_bool_t val;
+				dbus_message_iter_get_basic(&variant, &val);
+				item->item_is_menu = val ? 1 : 0;
+			}
 		} else if (strcmp(key, "Status") == 0) {
 			char *val = dbus_iter_get_variant_string(&variant);
 			if (val) {
@@ -1322,19 +1329,24 @@ sni_handle_click(Window win, int button, int x, int y)
 
 	awm_debug("SNI: %s on %s at (%d,%d)", method, item->service, x, y);
 
-	/* For right-click, show menu or call ContextMenu */
+	/* For right-click, decide between native ContextMenu and our DBusMenu.
+	 *
+	 * Per the SNI spec, ItemIsMenu=true means the icon is a pure menu
+	 * trigger with no meaningful Activate action — the DBusMenu IS the
+	 * intended UI.  In all other cases (including Electron apps that set
+	 * a Menu path but also respond to ContextMenu) prefer the app's own
+	 * native menu by sending ContextMenu and letting the app render it.
+	 */
 	if (button == Button3) {
-		if (item->menu_path) {
-			/* App provides DBusMenu - show it ourselves, don't call
-			 * ContextMenu */
-			awm_debug("SNI: Showing DBusMenu for %s", item->service);
+		if (item->menu_path && item->item_is_menu) {
+			/* ItemIsMenu=true: show our DBusMenu popup */
+			awm_debug(
+			    "SNI: ItemIsMenu — showing DBusMenu for %s", item->service);
 			sni_show_menu(item, x, y);
-			return; /* Don't send ContextMenu call */
-		} else {
-			awm_debug("SNI: No DBusMenu, app will handle ContextMenu itself");
-			/* ContextMenu was already called above, app will show its own menu
-			 */
+			return;
 		}
+		/* Otherwise fall through: send ContextMenu to the app */
+		awm_debug("SNI: Sending ContextMenu to %s", item->service);
 	}
 
 	/* Send D-Bus method call for Activate/SecondaryActivate/ContextMenu */
