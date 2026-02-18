@@ -15,9 +15,12 @@
 #include <unistd.h>
 
 #include "drw.h"
+#include "icon.h"
 #include "launcher.h"
 #include "log.h"
 #include "util.h"
+
+#include <gtk/gtk.h>
 
 #define LAUNCHER_INPUT_HEIGHT 28
 #define LAUNCHER_ITEM_HEIGHT 24
@@ -40,6 +43,139 @@ static const char *skip_prefixes[] = {
 	"MIMEType",
 	"Encoding",
 };
+
+/*
+ * Build a one-time lookup table: lowercase(last dot component) -> full icon
+ * name. Used to resolve icon names like "Alacritty" ->
+ * "com.alacritty.Alacritty".
+ */
+typedef struct IconAlias {
+	char             *short_lower; /* lowercase last component */
+	char             *full_name;   /* actual theme icon name */
+	struct IconAlias *next;
+} IconAlias;
+
+#define ICON_ALIAS_BUCKETS 256
+static IconAlias *icon_alias_table[ICON_ALIAS_BUCKETS];
+static int        icon_alias_built = 0;
+
+static unsigned int
+icon_alias_hash(const char *s)
+{
+	unsigned int h = 5381;
+	int          c;
+	while ((c = *s++))
+		h = ((h << 5) + h) + (unsigned char) tolower(c);
+	return h % ICON_ALIAS_BUCKETS;
+}
+
+static void
+icon_alias_build(void)
+{
+	GtkIconTheme *theme;
+	GList        *all, *l;
+
+	if (icon_alias_built)
+		return;
+	icon_alias_built = 1;
+
+	theme = gtk_icon_theme_get_default();
+	if (!theme)
+		return;
+
+	all = gtk_icon_theme_list_icons(theme, NULL);
+	for (l = all; l; l = l->next) {
+		const char *name = (const char *) l->data;
+		const char *dot  = strrchr(name, '.');
+		/* only reverse-DNS style names (contain a dot) */
+		if (!dot)
+			continue;
+		const char *last = dot + 1;
+		char        lower[128];
+		size_t      i;
+		for (i = 0; last[i] && i < sizeof(lower) - 1; i++)
+			lower[i] = (char) tolower((unsigned char) last[i]);
+		lower[i] = '\0';
+
+		unsigned int bucket = icon_alias_hash(lower);
+		IconAlias   *a      = malloc(sizeof(IconAlias));
+		if (!a)
+			continue;
+		a->short_lower           = strdup(lower);
+		a->full_name             = strdup(name);
+		a->next                  = icon_alias_table[bucket];
+		icon_alias_table[bucket] = a;
+	}
+	g_list_free_full(all, g_free);
+}
+
+static void
+icon_alias_free(void)
+{
+	int        i;
+	IconAlias *a, *next;
+
+	for (i = 0; i < ICON_ALIAS_BUCKETS; i++) {
+		for (a = icon_alias_table[i]; a; a = next) {
+			next = a->next;
+			free(a->short_lower);
+			free(a->full_name);
+			free(a);
+		}
+		icon_alias_table[i] = NULL;
+	}
+	icon_alias_built = 0;
+}
+
+static const char *
+icon_alias_lookup(const char *short_name)
+{
+	char         lower[128];
+	size_t       i;
+	unsigned int bucket;
+	IconAlias   *a;
+
+	for (i = 0; short_name[i] && i < sizeof(lower) - 1; i++)
+		lower[i] = (char) tolower((unsigned char) short_name[i]);
+	lower[i] = '\0';
+
+	bucket = icon_alias_hash(lower);
+	for (a = icon_alias_table[bucket]; a; a = a->next) {
+		if (strcmp(a->short_lower, lower) == 0)
+			return a->full_name;
+	}
+	return NULL;
+}
+
+static cairo_surface_t *
+launcher_load_icon(const char *icon_name, int size)
+{
+	cairo_surface_t *surface;
+	const char      *resolved;
+
+	if (!icon_name || !*icon_name)
+		return NULL;
+
+	/* Try direct load first (handles absolute paths and exact theme names) */
+	surface = icon_load(icon_name, size);
+	if (surface)
+		return surface;
+
+	/*
+	 * Fallback: resolve via alias table.
+	 * Many apps use reverse-DNS icon names (e.g. com.alacritty.Alacritty)
+	 * while the .desktop file just says Icon=Alacritty.
+	 * Use icon_load() for the resolved name so SVG files go through
+	 * icon_load_svg() rather than gdk_pixbuf_new_from_file(), which
+	 * would bake in a white background.
+	 */
+	icon_alias_build();
+	resolved = icon_alias_lookup(icon_name);
+	if (!resolved)
+		return NULL;
+
+	return icon_load(resolved, size);
+}
 
 static int
 launcher_item_matches(LauncherItem *item, const char *input)
@@ -98,7 +234,12 @@ launcher_get_value(char *line, const char *key)
 {
 	size_t keylen = strlen(key);
 	if (strncmp(line, key, keylen) == 0 && line[keylen] == '=') {
-		return line + keylen + 1;
+		char *val = line + keylen + 1;
+		/* Strip trailing newline/carriage-return in place */
+		size_t vlen = strlen(val);
+		while (vlen > 0 && (val[vlen - 1] == '\n' || val[vlen - 1] == '\r'))
+			val[--vlen] = '\0';
+		return val;
 	}
 	return NULL;
 }
@@ -174,10 +315,13 @@ launcher_parse_desktop_file(const char *path)
 		return NULL;
 	}
 
-	item             = ecalloc(1, sizeof(LauncherItem));
-	item->name       = name;
-	item->exec       = exec_cmd;
-	item->icon       = icon;
+	item            = ecalloc(1, sizeof(LauncherItem));
+	item->name      = name;
+	item->exec      = exec_cmd;
+	item->icon_name = icon;
+	item->icon = icon ? launcher_load_icon(icon, LAUNCHER_ICON_SIZE) : NULL;
+	if (icon && !item->icon)
+		awm_debug("Launcher: failed to load icon '%s'", icon);
 	item->is_desktop = 1;
 
 	return item;
@@ -376,6 +520,9 @@ launcher_calculate_size(Launcher *launcher)
 	     i++) {
 		item           = launcher->filtered[i];
 		unsigned int w = drw_fontset_getwidth(launcher->drw, item->name);
+		/* Add icon width if item has icon */
+		if (item->icon)
+			w += LAUNCHER_ICON_SIZE + 6;
 		if (w > maxw)
 			maxw = w;
 	}
@@ -447,10 +594,24 @@ launcher_render(Launcher *launcher)
 		else
 			drw_setscheme(launcher->drw, launcher->scheme[0]);
 
-		drw_rect(launcher->drw, 0, y, launcher->w, LAUNCHER_ITEM_HEIGHT, 1, 0);
+		drw_rect(launcher->drw, 0, y, launcher->w, LAUNCHER_ITEM_HEIGHT, 1, 1);
 
-		drw_text(launcher->drw, x, y, launcher->w - LAUNCHER_PADDING * 2,
-		    LAUNCHER_ITEM_HEIGHT, 0, item->name, 0);
+		/* Draw icon if available */
+		if (item->icon) {
+			int icon_x = x + 2;
+			int icon_y = y + (LAUNCHER_ITEM_HEIGHT - LAUNCHER_ICON_SIZE) / 2;
+			/* Paint background behind icon so alpha edges blend correctly */
+			drw_rect(launcher->drw, icon_x, icon_y, LAUNCHER_ICON_SIZE,
+			    LAUNCHER_ICON_SIZE, 1, 1);
+			drw_pic(launcher->drw, icon_x, icon_y, LAUNCHER_ICON_SIZE,
+			    LAUNCHER_ICON_SIZE, item->icon);
+			drw_text(launcher->drw, x + LAUNCHER_ICON_SIZE + 6, y,
+			    launcher->w - LAUNCHER_PADDING * 2 - LAUNCHER_ICON_SIZE - 4,
+			    LAUNCHER_ITEM_HEIGHT, 0, item->name, 0);
+		} else {
+			drw_text(launcher->drw, x, y, launcher->w - LAUNCHER_PADDING * 2,
+			    LAUNCHER_ITEM_HEIGHT, 0, item->name, 0);
+		}
 
 		y += LAUNCHER_ITEM_HEIGHT;
 	}
@@ -609,11 +770,14 @@ launcher_free(Launcher *launcher)
 		next = item->next;
 		free(item->name);
 		free(item->exec);
-		free(item->icon);
+		free(item->icon_name);
+		if (item->icon)
+			cairo_surface_destroy(item->icon);
 		free(item);
 	}
 
 	free(launcher);
+	icon_alias_free();
 }
 
 void
@@ -921,6 +1085,28 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 	}
 
 	if (ev->type == ButtonPress || ev->type == ButtonRelease) {
+		/* Swallow all wheel events — Button4/5 generate both press and
+		 * release; if we only handle press, the release falls through to
+		 * the launch path. */
+		if (ev->xbutton.button == Button4 || ev->xbutton.button == Button5) {
+			if (ev->type == ButtonPress) {
+				if (ev->xbutton.button == Button4) {
+					if (launcher->selected > 0)
+						launcher->selected--;
+					if (launcher->selected < launcher->scroll_offset)
+						launcher_scroll(launcher, -1);
+				} else {
+					if (launcher->selected < launcher->visible_count - 1)
+						launcher->selected++;
+					if (launcher->selected >=
+					    launcher->scroll_offset + LAUNCHER_MAX_VISIBLE)
+						launcher_scroll(launcher, 1);
+				}
+				launcher_render(launcher);
+			}
+			return 1;
+		}
+
 		if (ev->xbutton.y <
 		    (int) (LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING * 2)) {
 			launcher_hide(launcher);

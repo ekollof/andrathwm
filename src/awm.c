@@ -26,6 +26,7 @@
 #include "client.h"
 #include "events.h"
 #include "ewmh.h"
+#include "icon.h"
 #include "launcher.h"
 #include "monitor.h"
 #include "spawn.h"
@@ -430,6 +431,8 @@ setup(void)
 	XSelectInput(dpy, root, wa.event_mask);
 	grabkeys();
 	focus(NULL);
+	/* Initialize icon subsystem (GTK, cache) unconditionally */
+	icon_init();
 #ifdef STATUSNOTIFIER
 	/* Initialize StatusNotifier support */
 	if (!sni_init(dpy, root, drw, scheme, sniconsize))

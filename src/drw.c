@@ -249,6 +249,9 @@ drw_rect(Drw *drw, int x, int y, unsigned int w, unsigned int h, int filled,
 		XFillRectangle(drw->dpy, drw->drawable, drw->gc, x, y, w, h);
 	else
 		XDrawRectangle(drw->dpy, drw->drawable, drw->gc, x, y, w - 1, h - 1);
+	/* Notify Cairo that X11 has modified the drawable */
+	if (drw->cairo_surface)
+		cairo_surface_mark_dirty_rectangle(drw->cairo_surface, x, y, w, h);
 }
 
 int
@@ -418,6 +421,10 @@ drw_map(Drw *drw, Window win, int x, int y, unsigned int w, unsigned int h)
 	if (!drw)
 		return;
 
+	/* Flush any pending Cairo operations to the drawable before X copies it */
+	if (drw->cairo_surface)
+		cairo_surface_flush(drw->cairo_surface);
+
 	XCopyArea(drw->dpy, drw->drawable, win, drw->gc, x, y, w, h, x, y);
 	XSync(drw->dpy, False);
 }
@@ -482,36 +489,17 @@ drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
     cairo_surface_t *surface)
 {
 	cairo_t *cr;
-	int      icon_w, icon_h;
 
 	if (!drw || !surface || !drw->cairo_surface)
 		return;
 
-	/* Debug: check surface status */
-	cairo_status_t status = cairo_surface_status(surface);
-	if (status != CAIRO_STATUS_SUCCESS) {
-		awm_error("icon surface error: %s", cairo_status_to_string(status));
+	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
 		return;
-	}
 
-	icon_w = cairo_image_surface_get_width(surface);
-	icon_h = cairo_image_surface_get_height(surface);
-	awm_debug("rendering icon %dx%d at (%d,%d) size %ux%u", icon_w, icon_h, x,
-	    y, w, h);
-
-	/* Create Cairo context from cached surface */
 	cr = cairo_create(drw->cairo_surface);
-
-	/* Use OVER operator to composite icon onto existing background
-	 * This is correct because the bar background has already been drawn,
-	 * and we want to composite the icon (with its alpha channel) on top.
-	 * Using SOURCE would copy transparent pixels as-is, which shows garbage
-	 * in the X11 pixmap (which doesn't support transparency). */
 	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 	cairo_set_source_surface(cr, surface, x, y);
 	cairo_rectangle(cr, x, y, w, h);
 	cairo_fill(cr);
-
-	/* Cleanup only the context - surface is cached */
 	cairo_destroy(cr);
 }

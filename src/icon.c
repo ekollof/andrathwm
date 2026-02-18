@@ -148,7 +148,7 @@ cache_print_stats(void)
 static void
 cache_init(void)
 {
-	if (!iconcachesize)
+	if (!iconcachesize || icon_cache)
 		return;
 	icon_cache = calloc(iconcachesize, sizeof(CacheEntry *));
 }

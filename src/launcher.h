@@ -9,12 +9,16 @@
 
 #include "drw.h"
 #include <X11/Xlib.h>
+#include <cairo/cairo.h>
+
+#define LAUNCHER_ICON_SIZE 20
 
 typedef struct LauncherItem {
-	char *name;       /* Display name */
-	char *exec;       /* Command to execute */
-	char *icon;       /* Icon name (for future use) */
-	int   is_desktop; /* 1 if from .desktop file, 0 if from PATH */
+	char            *name;       /* Display name */
+	char            *exec;       /* Command to execute */
+	char            *icon_name;  /* Icon name from .desktop */
+	cairo_surface_t *icon;       /* Loaded icon surface */
+	int              is_desktop; /* 1 if from .desktop file, 0 if from PATH */
 	struct LauncherItem *next;
 } LauncherItem;
 
