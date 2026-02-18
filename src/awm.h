@@ -262,8 +262,10 @@ struct Clientlist {
 
 typedef struct Systray Systray;
 struct Systray {
-	Window  win;
-	Client *icons;
+	Window   win;
+	Client  *icons;
+	Visual  *visual;   /* 32-bit ARGB visual for the container window */
+	Colormap colormap; /* colormap matching visual */
 };
 
 /* extern globals — defined in awm.c */

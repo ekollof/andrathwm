@@ -175,7 +175,7 @@ clientmessage(XEvent *e)
 				return;
 			}
 			/* use bar background so icon blends with the bar */
-			swa.background_pixel = scheme[SchemeNorm][ColBg].pixel;
+			swa.background_pixel = clr_to_argb(&scheme[SchemeNorm][ColBg]);
 			XChangeWindowAttributes(dpy, c->win, CWBackPixel, &swa);
 			/* Send XEMBED_EMBEDDED_NOTIFY to complete embedding per spec.
 			 * data1 = embedder window, data2 = protocol version */

@@ -6,14 +6,15 @@
 
 #include "awm.h"
 
-unsigned int getsystraywidth(void);
-void         removesystrayicon(Client *i);
-void         updatesystray(void);
-void         updatesystrayiconcolors(void);
-void         updatesystrayicongeom(Client *i, int w, int h);
-void         updatesystrayiconstate(Client *i, XPropertyEvent *ev);
-Client      *wintosystrayicon(Window w);
-void         addsniiconsystray(Window w, int width, int height);
-void         removesniiconsystray(Window w);
+unsigned long clr_to_argb(Clr *clr);
+unsigned int  getsystraywidth(void);
+void          removesystrayicon(Client *i);
+void          updatesystray(void);
+void          updatesystrayiconcolors(void);
+void          updatesystrayicongeom(Client *i, int w, int h);
+void          updatesystrayiconstate(Client *i, XPropertyEvent *ev);
+Client       *wintosystrayicon(Window w);
+void          addsniiconsystray(Window w, int width, int height);
+void          removesniiconsystray(Window w);
 
 #endif /* SYSTRAY_H */

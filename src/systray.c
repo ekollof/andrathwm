@@ -1,14 +1,28 @@
 /* AndrathWM - XEMBED systray functions
  * See LICENSE file for copyright and license details. */
 
+#include "systray.h"
 #include "awm.h"
 #include "client.h"
 #include "ewmh.h"
 #include "monitor.h"
 #include "spawn.h"
-#include "systray.h"
 #include "xrdb.h"
 #include "config.h"
+
+/* Convert a Clr (allocated in the default colormap) to a 32-bit ARGB pixel
+ * suitable for use with the systray's ARGB visual and colormap. */
+unsigned long
+clr_to_argb(Clr *clr)
+{
+	XColor xc;
+	xc.pixel = clr->pixel;
+	XQueryColor(dpy, DefaultColormap(dpy, DefaultScreen(dpy)), &xc);
+	/* XColor channels are 16-bit; shift down to 8-bit and pack ARGB */
+	return 0xFF000000UL | ((unsigned long) (xc.red >> 8) << 16) |
+	    ((unsigned long) (xc.green >> 8) << 8) |
+	    ((unsigned long) (xc.blue >> 8));
+}
 
 unsigned int
 getsystraywidth(void)
@@ -122,32 +136,46 @@ updatesystray(void)
 		/* init systray */
 		if (!(systray = (Systray *) calloc(1, sizeof(Systray))))
 			die("fatal: could not malloc() %u bytes\n", sizeof(Systray));
-		systray->win = XCreateSimpleWindow(
-		    dpy, root, x, m->by, w, bh, 0, 0, scheme[SchemeSel][ColBg].pixel);
+
+		/* Prefer a 32-bit ARGB visual so XEMBED clients that use one
+		 * (e.g. nm-applet, pasystray) share the same visual depth and
+		 * colormap context.  Fall back to the default visual if unavailable.
+		 */
+		{
+			XVisualInfo vinfo;
+			if (XMatchVisualInfo(
+			        dpy, DefaultScreen(dpy), 32, TrueColor, &vinfo)) {
+				systray->visual = vinfo.visual;
+				systray->colormap =
+				    XCreateColormap(dpy, root, systray->visual, AllocNone);
+			} else {
+				systray->visual   = DefaultVisual(dpy, DefaultScreen(dpy));
+				systray->colormap = DefaultColormap(dpy, DefaultScreen(dpy));
+			}
+		}
+
+		unsigned long bgpix  = clr_to_argb(&scheme[SchemeNorm][ColBg]);
 		wa.event_mask        = ButtonPressMask | ExposureMask;
 		wa.override_redirect = True;
-		wa.background_pixel  = scheme[SchemeNorm][ColBg].pixel;
+		wa.background_pixel  = bgpix;
+		wa.border_pixel      = 0;
+		wa.colormap          = systray->colormap;
+		systray->win         = XCreateWindow(dpy, root, x, m->by, w, bh, 0, 32,
+		            InputOutput, systray->visual,
+		            CWEventMask | CWOverrideRedirect | CWBackPixel | CWBorderPixel |
+		                CWColormap,
+		            &wa);
 		XSelectInput(dpy, systray->win, SubstructureNotifyMask);
 		XChangeProperty(dpy, systray->win, netatom[NetSystemTrayOrientation],
 		    XA_CARDINAL, 32, PropModeReplace,
 		    (unsigned char *) &netatom[NetSystemTrayOrientationHorz], 1);
 		{
-			XVisualInfo vinfo;
-			VisualID    visual_id;
-			if (XMatchVisualInfo(
-			        dpy, DefaultScreen(dpy), 32, TrueColor, &vinfo)) {
-				visual_id = vinfo.visualid;
-			} else {
-				visual_id = XVisualIDFromVisual(
-				    DefaultVisual(dpy, DefaultScreen(dpy)));
-			}
+			VisualID visual_id = XVisualIDFromVisual(systray->visual);
 			XChangeProperty(dpy, systray->win, netatom[NetSystemTrayVisual],
 			    XA_VISUALID, 32, PropModeReplace, (unsigned char *) &visual_id,
 			    1);
 		}
 		updatesystrayiconcolors();
-		XChangeWindowAttributes(dpy, systray->win,
-		    CWEventMask | CWOverrideRedirect | CWBackPixel, &wa);
 		XMapRaised(dpy, systray->win);
 		XSetSelectionOwner(
 		    dpy, netatom[NetSystemTray], systray->win, CurrentTime);
@@ -164,7 +192,7 @@ updatesystray(void)
 	}
 	for (w = 0, i = systray->icons; i; i = i->next) {
 		if (!i->issni) {
-			wa.background_pixel = scheme[SchemeNorm][ColBg].pixel;
+			wa.background_pixel = clr_to_argb(&scheme[SchemeNorm][ColBg]);
 			XChangeWindowAttributes(dpy, i->win, CWBackPixel, &wa);
 		}
 		XMapRaised(dpy, i->win);
@@ -189,7 +217,7 @@ updatesystray(void)
 	XMapWindow(dpy, systray->win);
 	XMapSubwindows(dpy, systray->win);
 	/* redraw background */
-	XSetForeground(dpy, drw->gc, scheme[SchemeNorm][ColBg].pixel);
+	XSetForeground(dpy, drw->gc, clr_to_argb(&scheme[SchemeNorm][ColBg]));
 	XFillRectangle(dpy, systray->win, drw->gc, 0, 0, w, bh);
 	XSync(dpy, False);
 }
