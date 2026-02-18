@@ -216,9 +216,10 @@ updatesystray(void)
 	    CWX | CWY | CWWidth | CWHeight | CWSibling | CWStackMode, &wc);
 	XMapWindow(dpy, systray->win);
 	XMapSubwindows(dpy, systray->win);
-	/* redraw background */
-	XSetForeground(dpy, drw->gc, clr_to_argb(&scheme[SchemeNorm][ColBg]));
-	XFillRectangle(dpy, systray->win, drw->gc, 0, 0, w, bh);
+	/* redraw background — XClearWindow uses the window's own background
+	 * pixel, avoiding a BadMatch from using drw->gc (depth-24) on a
+	 * depth-32 window. */
+	XClearWindow(dpy, systray->win);
 	XSync(dpy, False);
 }
 
