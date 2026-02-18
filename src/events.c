@@ -556,6 +556,13 @@ propertynotify(XEvent *e)
 		}
 		if (ev->atom == netatom[NetWMWindowType])
 			updatewindowtype(c);
+#ifdef COMPOSITOR
+		if (ev->atom == netatom[NetWMWindowOpacity]) {
+			unsigned long raw =
+			    (unsigned long) getatomprop(c, netatom[NetWMWindowOpacity]);
+			compositor_set_opacity(c, raw);
+		}
+#endif
 	}
 }
 
