@@ -672,8 +672,8 @@ updategeom(void)
 void
 updatestatus(void)
 {
-	if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext)))
-		strcpy(stext, "awm-" VERSION);
+	if (stext[0] == '\0')
+		snprintf(stext, sizeof(stext), "awm-" VERSION);
 	drawbar(selmon);
 	updatesystray();
 }

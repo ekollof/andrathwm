@@ -63,6 +63,8 @@
 #define TAGSLENGTH (LENGTH(tags))
 #define TEXTW(X) (drw_fontset_getwidth(drw, (X)) + lrpad)
 
+#define STATUS_TEXT_LEN 512
+
 #define GAP_TOGGLE 100
 #define GAP_RESET 0
 
@@ -294,7 +296,7 @@ extern Monitor     *mons, *selmon;
 extern Clientlist  *cl;
 extern Systray     *systray;
 extern Atom         wmatom[WMLast], netatom[NetLast], xatom[XLast];
-extern char         stext[256];
+extern char         stext[STATUS_TEXT_LEN];
 extern int          running;
 extern int          restart;
 extern int          barsdirty;

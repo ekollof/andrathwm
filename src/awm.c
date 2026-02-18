@@ -20,6 +20,8 @@
  *
  * To understand everything else, start reading main().
  */
+#include <stdint.h>
+
 #include "awm.h"
 #include "monitor.h"
 #include "client.h"
@@ -28,12 +30,13 @@
 #include "ewmh.h"
 #include "systray.h"
 #include "xrdb.h"
+#include "status.h"
 #define AWM_CONFIG_IMPL
 #include "config.h"
 
 /* variables */
 Systray *systray = NULL;
-char     stext[256];
+char     stext[STATUS_TEXT_LEN];
 int      screen;
 int      sw, sh; /* X display screen geometry width, height */
 int      bh;     /* bar height */
@@ -62,6 +65,7 @@ Atom        wmatom[WMLast], netatom[NetLast], xatom[XLast];
 int         restart   = 0;
 int         running   = 1;
 int         barsdirty = 0;
+static int  status_fd = -1;
 Cur        *cursor[CurLast];
 Clr       **scheme;
 Display    *dpy;
@@ -97,6 +101,7 @@ cleanup(void)
 		XDestroyWindow(dpy, systray->win);
 		free(systray);
 	}
+	status_cleanup();
 
 	for (i = 0; i < CurLast; i++)
 		drw_cur_free(drw, cursor[i]);
@@ -127,10 +132,11 @@ run(void)
 {
 	XEvent ev;
 	int    xfd;
-#ifdef STATUSNOTIFIER
-	int    dbus_fd = -1;
 	int    select_ret;
+	int    max_fd;
 	fd_set fds;
+#ifdef STATUSNOTIFIER
+	int dbus_fd = -1;
 #endif
 
 	/* main event loop */
@@ -141,16 +147,22 @@ run(void)
 #ifdef STATUSNOTIFIER
 		/* Re-query D-Bus FD each iteration in case of reconnection */
 		dbus_fd = sni_get_fd();
-
-		/* Use select() to monitor both X11 and D-Bus */
+#endif
 		FD_ZERO(&fds);
 		FD_SET(xfd, &fds);
-		if (dbus_fd >= 0)
+		max_fd = xfd;
+		if (status_fd >= 0) {
+			FD_SET(status_fd, &fds);
+			if (status_fd > max_fd)
+				max_fd = status_fd;
+		}
+#ifdef STATUSNOTIFIER
+		if (dbus_fd >= 0) {
 			FD_SET(dbus_fd, &fds);
-
-		int max_fd = xfd;
-		if (dbus_fd >= 0 && dbus_fd > max_fd)
-			max_fd = dbus_fd;
+			if (dbus_fd > max_fd)
+				max_fd = dbus_fd;
+		}
+#endif
 
 		select_ret = select(max_fd + 1, &fds, NULL, NULL, NULL);
 		if (select_ret < 0) {
@@ -160,70 +172,56 @@ run(void)
 			continue;
 		}
 
-		if (select_ret > 0) {
-			if (dbus_fd >= 0 && FD_ISSET(dbus_fd, &fds)) {
-				/* Handle D-Bus events */
-				sni_handle_dbus();
-			}
+		if (status_fd >= 0 && FD_ISSET(status_fd, &fds)) {
+			uint64_t expirations;
+			if (read(status_fd, &expirations, sizeof(expirations)) > 0)
+				status_resume();
+		}
+#ifdef STATUSNOTIFIER
+		if (dbus_fd >= 0 && FD_ISSET(dbus_fd, &fds))
+			sni_handle_dbus();
 
-			/* Process deferred icon loading (one per iteration) */
-			queue_process(1);
-
-			if (FD_ISSET(xfd, &fds)) {
-				/* Handle X11 events */
-				while (XPending(dpy)) {
-					XNextEvent(dpy, &ev);
-#else
-		/* Original blocking event loop */
-		if (!XNextEvent(dpy, &ev)) {
+		/* Process deferred icon loading (one per iteration) */
+		queue_process(1);
 #endif
+
+		if (FD_ISSET(xfd, &fds)) {
+			while (XPending(dpy)) {
+				XNextEvent(dpy, &ev);
 #ifdef XRANDR
-					if (ev.type == randrbase + RRScreenChangeNotify) {
-						XRRUpdateConfiguration(&ev);
-						updategeom();
-						drw_resize(drw, sw, bh);
-						updatebars();
-						for (Monitor *m = mons; m; m = m->next) {
-							for (Client *c = m->cl->clients; c; c = c->next)
-								if (c->isfullscreen)
-									resizeclient(
-									    c, m->mx, m->my, m->mw, m->mh);
-							resizebarwin(m);
-						}
-						focus(NULL);
-						arrange(NULL);
-					} else
+				if (ev.type == randrbase + RRScreenChangeNotify) {
+					XRRUpdateConfiguration(&ev);
+					updategeom();
+					drw_resize(drw, sw, bh);
+					updatebars();
+					for (Monitor *m = mons; m; m = m->next) {
+						for (Client *c = m->cl->clients; c; c = c->next)
+							if (c->isfullscreen)
+								resizeclient(c, m->mx, m->my, m->mw, m->mh);
+						resizebarwin(m);
+					}
+					focus(NULL);
+					arrange(NULL);
+				} else
 #endif
 #ifdef STATUSNOTIFIER
-						/* Handle menu events BEFORE normal handlers if menu is
-						 * visible */
-						if (!sni_handle_menu_event(&ev))
+					/* Handle menu events BEFORE normal handlers if menu is visible */
+					if (!sni_handle_menu_event(&ev))
 #endif
-							if (ev.type < LASTEvent && handler[ev.type])
-								handler[ev.type](&ev); /* call handler */
-#ifdef STATUSNOTIFIER
-
-					/* Process pending GTK events (for icon theme) */
-					while (gtk_events_pending())
-						gtk_main_iteration_do(FALSE);
-				}
-
-				/* Process deferred bar redraws (batching optimization) */
-				if (barsdirty) {
-					drawbars();
-					barsdirty = 0;
-				}
+						if (ev.type < LASTEvent && handler[ev.type])
+							handler[ev.type](&ev);
 			}
 		}
-#else
-		}
 
-		/* Process deferred bar redraws (batching optimization) */
+#ifdef STATUSNOTIFIER
+		while (gtk_events_pending())
+			gtk_main_iteration_do(FALSE);
+#endif
+
 		if (barsdirty) {
 			drawbars();
 			barsdirty = 0;
 		}
-#endif
 	}
 }
 
@@ -357,6 +355,8 @@ setup(void)
 	scheme = ecalloc(LENGTH(colors), sizeof(Clr *));
 	for (i = 0; i < LENGTH(colors); i++)
 		scheme[i] = drw_scm_create(drw, colors[i], 3);
+	if (status_init(&status_fd) < 0)
+		awm_warn("status module failed to initialize");
 	/* init system tray */
 	updatesystray();
 	/* init bars */

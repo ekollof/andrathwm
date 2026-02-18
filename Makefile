@@ -8,7 +8,8 @@ SRCDIR = src
 BUILDDIR = build
 
 SRC = drw.c awm.c util.c menu.c dbus.c icon.c queue.c sni.c log.c \
-      client.c monitor.c events.c ewmh.c systray.c spawn.c xrdb.c
+	client.c monitor.c events.c ewmh.c systray.c spawn.c xrdb.c \
+	status.c status_util.c status_components.c
 SRCS = $(addprefix $(SRCDIR)/,$(SRC))
 OBJ = $(addprefix $(BUILDDIR)/,$(SRC:.c=.o))
 
@@ -18,7 +19,7 @@ $(BUILDDIR):
 	mkdir -p $(BUILDDIR)
 
 # Compile object files
-$(BUILDDIR)/%.o: $(SRCDIR)/%.c config.h config.mk | $(BUILDDIR)
+$(BUILDDIR)/%.o: $(SRCDIR)/%.c config.h status_config.h config.mk | $(BUILDDIR)
 	${CC} -c ${CFLAGS} -o $@ $<
 
 config.h:
@@ -40,8 +41,8 @@ clean:
 
 dist: clean
 	mkdir -p awm-${VERSION}
-	cp -R LICENSE Makefile README.md config.def.h config.mk\
-		awm.1 awm.png src docs examples awm-${VERSION}
+	cp -R LICENSE THIRD_PARTY Makefile README.md config.def.h status_config.h \
+		config.mk awm.1 awm.png src docs examples third_party awm-${VERSION}
 	tar -cf awm-${VERSION}.tar awm-${VERSION}
 	gzip awm-${VERSION}.tar
 	rm -rf awm-${VERSION}

@@ -35,7 +35,7 @@ FREETYPEINC = /usr/include/freetype2
 MANPREFIX = ${PREFIX}/man
 
 # includes and libs
-INCS = -I. -Isrc -I${X11INC} -I${FREETYPEINC} ${SNIINC}
+INCS = -I. -Isrc -Ithird_party -I${X11INC} -I${FREETYPEINC} ${SNIINC}
 LIBS = -L${X11LIB} -lX11 ${XINERAMALIBS} ${RANDRLIBS} ${XSSLIBS} ${FREETYPELIBS} ${SNILIBS}
 
 # flags
