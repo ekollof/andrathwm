@@ -32,7 +32,7 @@ loadxrdb(void)
 				XRDB_LOAD_COLOR("color8", normfgcolor);
 				XRDB_LOAD_COLOR("color6", selbordercolor);
 				XRDB_LOAD_COLOR("color1", selbgcolor);
-				XRDB_LOAD_COLOR("color0", selfgcolor);
+				XRDB_LOAD_COLOR("color7", selfgcolor);
 				XRDB_LOAD_COLOR("color0", termcol0);
 				XRDB_LOAD_COLOR("color1", termcol1);
 				XRDB_LOAD_COLOR("color2", termcol2);
