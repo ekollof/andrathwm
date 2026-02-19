@@ -261,6 +261,11 @@ focus(Client *c)
 	if (selmon->lt[selmon->sellt]->arrange == monocle)
 		arrangemon(selmon);
 	barsdirty = 1;
+#ifdef COMPOSITOR
+	/* Dirty the border region of both the newly focused and previously
+	 * focused client so the compositor repaints them in the correct colour. */
+	compositor_focus_window(c);
+#endif
 }
 
 void
@@ -748,6 +753,12 @@ manage(Window w, XWindowAttributes *wa)
 	XMapWindow(dpy, c->win);
 #ifdef COMPOSITOR
 	compositor_add_window(c);
+	/* Force-sync the CompWin geometry to the client struct.  During a
+	 * restart, arrange() runs before the CompWin exists (comp_add_by_xid
+	 * skips unmapped windows), so compositor_configure_window() was a
+	 * no-op.  If comp_add_by_xid later captured stale X server geometry,
+	 * this call corrects it. */
+	compositor_configure_window(c, c->bw);
 	c->bypass_compositor =
 	    (int) getatomprop(c, netatom[NetWMBypassCompositor]);
 	if (c->bypass_compositor == 1)
@@ -1326,6 +1337,9 @@ unfocus(Client *c, int setfocus)
 		return;
 	grabbuttons(c, 0);
 	XSetWindowBorder(dpy, c->win, scheme[SchemeNorm][ColBorder].pixel);
+#ifdef COMPOSITOR
+	compositor_focus_window(c);
+#endif
 	if (setfocus) {
 		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
 		XDeleteProperty(dpy, root, netatom[NetActiveWindow]);

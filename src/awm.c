@@ -491,8 +491,7 @@ setup(void)
 	scheme = ecalloc(LENGTH(colors), sizeof(Clr *));
 	for (i = 0; i < LENGTH(colors); i++)
 		scheme[i] = drw_scm_create(drw, colors[i], 3);
-	if (status_init(g_main_context_default()) < 0)
-		awm_warn("status module failed to initialize");
+	status_init(g_main_context_default());
 	/* init system tray */
 	updatesystray();
 	/* init bars */
