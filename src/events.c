@@ -3,6 +3,7 @@
 
 #include "events.h"
 #include "awm.h"
+#include <X11/XKBlib.h>
 #include "client.h"
 #include "ewmh.h"
 #include "monitor.h"
@@ -411,7 +412,7 @@ keypress(XEvent *e)
 
 	ev              = &e->xkey;
 	last_event_time = ev->time;
-	keysym          = XKeycodeToKeysym(dpy, (KeyCode) ev->keycode, 0);
+	keysym          = XkbKeycodeToKeysym(dpy, (KeyCode) ev->keycode, 0, 0);
 	for (i = 0; i < LENGTH(keys); i++)
 		if (keysym == keys[i].keysym &&
 		    CLEANMASK(keys[i].mod) == CLEANMASK(ev->state) && keys[i].func)

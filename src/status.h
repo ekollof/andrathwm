@@ -15,10 +15,8 @@
  * Creates a GTimeout source and attaches it to @ctx so that status_resume()
  * is called automatically at each tick without the caller needing to watch
  * any file descriptor.
- *
- * Returns 0 on success, -1 on failure.
  */
-int  status_init(GMainContext *ctx);
+void status_init(GMainContext *ctx);
 void status_cleanup(void);
 void status_resume(void);
 

@@ -111,7 +111,7 @@ status_timer_cb(gpointer user_data)
 	return G_SOURCE_CONTINUE;
 }
 
-int
+void
 status_init(GMainContext *ctx)
 {
 	unsigned int interval_ms = status_interval_ms ? status_interval_ms : 1000;
@@ -131,7 +131,6 @@ status_init(GMainContext *ctx)
 
 	/* Fire once immediately so the bar shows data before the first tick. */
 	status_resume();
-	return 0;
 }
 
 void

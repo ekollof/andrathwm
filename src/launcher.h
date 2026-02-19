@@ -42,8 +42,6 @@ typedef struct {
 
 	int          x, y;
 	unsigned int w, h;
-	unsigned int input_h;
-	unsigned int item_h;
 
 	int          visible;
 	int          scroll_offset;

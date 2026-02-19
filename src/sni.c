@@ -321,8 +321,6 @@ sni_register_host(void)
 	sni_watcher->host_registered = 1;
 }
 
-/* To be continued in next part... */
-
 /* ============================================================================
  * D-Bus Message Handlers (used by dispatcher)
  * ============================================================================
@@ -1117,17 +1115,8 @@ sni_queue_icon_load(SNIItem *item)
 		}
 	}
 
-	if (icon_path) {
-		SNIIconLoadData *data = malloc(sizeof(SNIIconLoadData));
-		if (data) {
-			data->item = item;
-			data->size = sniconsize;
-			icon_load_async(icon_path, sniconsize, sni_icon_loaded_cb, data);
-		}
-	} else {
-		awm_debug("SNI: No icon path found for %s, keeping placeholder",
-		    item->service);
-	}
+	awm_debug(
+	    "SNI: No icon path found for %s, keeping placeholder", item->service);
 }
 
 /* ============================================================================
