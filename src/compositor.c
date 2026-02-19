@@ -102,6 +102,13 @@ static struct {
 	PFNGLXRELEASETEXIMAGEEXTPROC glx_release_tex;
 	/* swap control (vsync) */
 	PFNGLXSWAPINTERVALMESAPROC glx_swap_interval;
+	/* GLX_EXT_buffer_age partial repaint ring buffer.
+	 * Each slot holds the bounding box of one past frame's dirty region.
+	 * ring_idx is the slot that will be written after the *next* swap. */
+#define DAMAGE_RING_SIZE 6
+	XRectangle damage_ring[DAMAGE_RING_SIZE];
+	int        ring_idx; /* next write position (0..DAMAGE_RING_SIZE-1) */
+	int        has_buffer_age; /* 1 if GLX_EXT_buffer_age is available    */
 
 	/* ---- XRender path (fallback) ---- */
 	Picture target; /* XRenderPicture on overlay                   */
@@ -252,15 +259,9 @@ static const char *frag_src =
     "        frag_color = u_color;\n"
     "    } else {\n"
     "        vec4 c = texture(u_tex, v_uv).rgba;\n"
-    /* TFP textures use the native RGBA layout once we enforce an 8bpc
-     * FBConfig.  Pre-multiplied alpha: un-premultiply before applying
-     * opacity then re-premultiply for the GL pre-multiplied blend equation.
-     * For fully opaque windows (opacity==1) the opacity path is a no-op. */
-    "        if (u_opacity < 1.0) {\n"
-    "            if (c.a > 0.0) c.rgb /= c.a;\n"
-    "            c.a *= u_opacity;\n"
-    "            c.rgb *= c.a;\n"
-    "        }\n"
+    /* Straight alpha: just scale alpha by opacity.  The blend equation
+     * GL_SRC_ALPHA/GL_ONE_MINUS_SRC_ALPHA handles the rest. */
+    "        c.a *= u_opacity;\n"
     "        frag_color = c;\n"
     "    }\n"
     "}\n";
@@ -553,8 +554,19 @@ comp_init_gl(void)
 	glViewport(0, 0, sw, sh);
 
 	comp.use_gl = 1;
-	awm_debug("compositor: GL/TFP path initialised (renderer: %s)",
-	    (const char *) glGetString(GL_RENDERER));
+
+	/* Detect GLX_EXT_buffer_age for partial repaints */
+	{
+		const char *glx_exts = glXQueryExtensionsString(dpy, screen);
+		comp.has_buffer_age =
+		    (glx_exts && strstr(glx_exts, "GLX_EXT_buffer_age") != NULL);
+	}
+	memset(comp.damage_ring, 0, sizeof(comp.damage_ring));
+	comp.ring_idx = 0;
+
+	awm_debug("compositor: GL/TFP path initialised (renderer: %s, "
+	          "buffer_age=%d)",
+	    (const char *) glGetString(GL_RENDERER), comp.has_buffer_age);
 	return 0;
 }
 
@@ -1659,6 +1671,60 @@ comp_do_repaint(void)
  * GL repaint path
  * ---------------------------------------------------------------------- */
 
+/*
+ * Fetch the bounding box of comp.dirty as a single XRectangle.
+ * Returns 1 on success, 0 if the region is empty or the fetch fails.
+ * On failure *out is set to the full screen rect.
+ */
+static int
+dirty_get_bbox(XRectangle *out)
+{
+	int         nrects = 0;
+	XRectangle *rects  = XFixesFetchRegion(dpy, comp.dirty, &nrects);
+
+	if (!rects || nrects == 0) {
+		if (rects)
+			XFree(rects);
+		out->x = out->y = 0;
+		out->width      = (unsigned short) sw;
+		out->height     = (unsigned short) sh;
+		return 0;
+	}
+
+	/* Union all returned rects into a single bounding box */
+	int x1 = rects[0].x, y1 = rects[0].y;
+	int x2 = x1 + rects[0].width, y2 = y1 + rects[0].height;
+	for (int r = 1; r < nrects; r++) {
+		if (rects[r].x < x1)
+			x1 = rects[r].x;
+		if (rects[r].y < y1)
+			y1 = rects[r].y;
+		int ex = rects[r].x + rects[r].width;
+		int ey = rects[r].y + rects[r].height;
+		if (ex > x2)
+			x2 = ex;
+		if (ey > y2)
+			y2 = ey;
+	}
+	XFree(rects);
+
+	/* Clamp to screen */
+	if (x1 < 0)
+		x1 = 0;
+	if (y1 < 0)
+		y1 = 0;
+	if (x2 > sw)
+		x2 = sw;
+	if (y2 > sh)
+		y2 = sh;
+
+	out->x      = (short) x1;
+	out->y      = (short) y1;
+	out->width  = (unsigned short) (x2 - x1);
+	out->height = (unsigned short) (y2 - y1);
+	return (out->width > 0 && out->height > 0);
+}
+
 static void
 comp_do_repaint_gl(void)
 {
@@ -1666,6 +1732,80 @@ comp_do_repaint_gl(void)
 	Window      *children  = NULL;
 	unsigned int nchildren = 0, i;
 	GLint        u_rect, u_screen;
+	XRectangle   scissor;
+	int          use_scissor = 0;
+
+	/* --- Partial repaint via GLX_EXT_buffer_age + glScissor ------------- */
+	if (comp.has_buffer_age) {
+		unsigned int age = 0;
+		glXQueryDrawable(dpy, comp.glx_win, GLX_BACK_BUFFER_AGE_EXT, &age);
+
+		/* age==0 means undefined (e.g. first frame or after resize);
+		 * fall back to full repaint.  age==1 means back buffer is one
+		 * frame old — only this frame's dirty rect needs repainting. */
+		if (age > 0 && age <= (unsigned int) DAMAGE_RING_SIZE) {
+			/* Collect current dirty bbox */
+			XRectangle cur;
+			dirty_get_bbox(&cur);
+
+			/* Union current dirty with the past (age-1) frames */
+			int x1 = cur.x, y1 = cur.y;
+			int x2 = x1 + cur.width, y2 = y1 + cur.height;
+			for (unsigned int a = 1; a < age; a++) {
+				int slot = ((comp.ring_idx - (int) a) + DAMAGE_RING_SIZE * 2) %
+				    DAMAGE_RING_SIZE;
+				XRectangle *r = &comp.damage_ring[slot];
+				if (r->width == 0 || r->height == 0)
+					continue;
+				if (r->x < x1)
+					x1 = r->x;
+				if (r->y < y1)
+					y1 = r->y;
+				int ex = r->x + r->width;
+				int ey = r->y + r->height;
+				if (ex > x2)
+					x2 = ex;
+				if (ey > y2)
+					y2 = ey;
+			}
+
+			/* Store this frame's bbox into ring before swap */
+			comp.damage_ring[comp.ring_idx] = cur;
+			comp.ring_idx = (comp.ring_idx + 1) % DAMAGE_RING_SIZE;
+
+			/* Clamp to screen */
+			if (x1 < 0)
+				x1 = 0;
+			if (y1 < 0)
+				y1 = 0;
+			if (x2 > sw)
+				x2 = sw;
+			if (y2 > sh)
+				y2 = sh;
+
+			scissor.x      = (short) x1;
+			scissor.y      = (short) y1;
+			scissor.width  = (unsigned short) (x2 - x1);
+			scissor.height = (unsigned short) (y2 - y1);
+
+			if (scissor.width > 0 && scissor.height > 0)
+				use_scissor = 1;
+		} else {
+			/* Full repaint — record full screen in ring */
+			comp.damage_ring[comp.ring_idx].x      = 0;
+			comp.damage_ring[comp.ring_idx].y      = 0;
+			comp.damage_ring[comp.ring_idx].width  = (unsigned short) sw;
+			comp.damage_ring[comp.ring_idx].height = (unsigned short) sh;
+			comp.ring_idx = (comp.ring_idx + 1) % DAMAGE_RING_SIZE;
+		}
+	}
+
+	if (use_scissor) {
+		/* GL scissor is in bottom-left origin; flip Y */
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(scissor.x, sh - scissor.y - scissor.height, scissor.width,
+		    scissor.height);
+	}
 
 	u_rect   = glGetUniformLocation(comp.prog, "u_rect");
 	u_screen = glGetUniformLocation(comp.prog, "u_screen");
@@ -1828,7 +1968,10 @@ comp_do_repaint_gl(void)
 
 	glUseProgram(0);
 
-	/* Reset dirty region — GL always presents a complete frame */
+	if (use_scissor)
+		glDisable(GL_SCISSOR_TEST);
+
+	/* Reset dirty region */
 	XFixesSetRegion(dpy, comp.dirty, NULL, 0);
 
 	/* Present — glXSwapBuffers is vsync-aware (swap interval = 1) */
