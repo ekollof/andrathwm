@@ -189,20 +189,23 @@ attachstack(Client *c)
 void
 configure(Client *c)
 {
-	XConfigureEvent ce;
+	xcb_configure_notify_event_t ce;
 
-	ce.type              = ConfigureNotify;
-	ce.display           = dpy;
+	ce.response_type     = XCB_CONFIGURE_NOTIFY;
+	ce.pad0              = 0;
+	ce.sequence          = 0;
 	ce.event             = c->win;
 	ce.window            = c->win;
-	ce.x                 = c->x;
-	ce.y                 = c->y;
-	ce.width             = c->w;
-	ce.height            = c->h;
-	ce.border_width      = c->bw;
-	ce.above             = None;
-	ce.override_redirect = False;
-	XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *) &ce);
+	ce.above_sibling     = XCB_NONE;
+	ce.x                 = (int16_t) c->x;
+	ce.y                 = (int16_t) c->y;
+	ce.width             = (uint16_t) c->w;
+	ce.height            = (uint16_t) c->h;
+	ce.border_width      = (uint16_t) c->bw;
+	ce.override_redirect = 0;
+	ce.pad1              = 0;
+	xcb_send_event(XGetXCBConnection(dpy), 0, c->win,
+	    XCB_EVENT_MASK_STRUCTURE_NOTIFY, (const char *) &ce);
 }
 
 void

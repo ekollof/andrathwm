@@ -32,10 +32,9 @@ int
 sendevent(Window w, Atom proto, int mask, long d0, long d1, long d2, long d3,
     long d4)
 {
-	int    n;
-	Atom  *protocols, mt;
-	int    exists = 0;
-	XEvent ev;
+	int   n;
+	Atom *protocols, mt;
+	int   exists = 0;
 
 	if (proto == wmatom[WMTakeFocus] || proto == wmatom[WMDelete]) {
 		mt = wmatom[WMProtocols];
@@ -50,16 +49,19 @@ sendevent(Window w, Atom proto, int mask, long d0, long d1, long d2, long d3,
 	}
 
 	if (exists) {
-		ev.type                 = ClientMessage;
-		ev.xclient.window       = w;
-		ev.xclient.message_type = mt;
-		ev.xclient.format       = 32;
-		ev.xclient.data.l[0]    = d0;
-		ev.xclient.data.l[1]    = d1;
-		ev.xclient.data.l[2]    = d2;
-		ev.xclient.data.l[3]    = d3;
-		ev.xclient.data.l[4]    = d4;
-		XSendEvent(dpy, w, False, mask, &ev);
+		xcb_client_message_event_t ev;
+		ev.response_type  = XCB_CLIENT_MESSAGE;
+		ev.format         = 32;
+		ev.sequence       = 0;
+		ev.window         = (xcb_window_t) w;
+		ev.type           = (xcb_atom_t) mt;
+		ev.data.data32[0] = (uint32_t) d0;
+		ev.data.data32[1] = (uint32_t) d1;
+		ev.data.data32[2] = (uint32_t) d2;
+		ev.data.data32[3] = (uint32_t) d3;
+		ev.data.data32[4] = (uint32_t) d4;
+		xcb_send_event(XGetXCBConnection(dpy), 0, (xcb_window_t) w,
+		    (uint32_t) mask, (const char *) &ev);
 	}
 	return exists;
 }
