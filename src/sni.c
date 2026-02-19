@@ -1075,8 +1075,11 @@ sni_queue_icon_load(SNIItem *item)
 			cairo_surface_t *abs_surface =
 			    icon_load(item->icon_name, sniconsize);
 			if (abs_surface) {
+				/* sni_icon_render() consumes the reference — do not
+				 * cairo_surface_destroy here, that would double-free
+				 * the surface still held by the icon cache and corrupt
+				 * the cache entry for this path. */
 				sni_icon_render(item, sniconsize, abs_surface);
-				cairo_surface_destroy(abs_surface);
 			} else {
 				awm_debug("SNI: Failed to load absolute icon %s for %s",
 				    item->icon_name, item->service);
