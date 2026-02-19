@@ -63,8 +63,9 @@ cleanupmon(Monitor *mon)
 			;
 		m->next = mon->next;
 	}
-	XUnmapWindow(dpy, mon->barwin);
-	XDestroyWindow(dpy, mon->barwin);
+	xcb_connection_t *xc = XGetXCBConnection(dpy);
+	xcb_unmap_window(xc, mon->barwin);
+	xcb_destroy_window(xc, mon->barwin);
 	free(mon->pertag->nmasters);
 	free(mon->pertag->mfacts);
 	free(mon->pertag->sellts);
@@ -324,7 +325,10 @@ monocle(Monitor *m)
 	for (; c; c = c->snext)
 		if (!c->isfloating && ISVISIBLE(c, m)) {
 			compositor_set_hidden(c, 1);
-			XMoveWindow(dpy, c->win, WIDTH(c) * -2, c->y);
+			uint32_t xy[2] = { (uint32_t) (int32_t) (WIDTH(c) * -2),
+				(uint32_t) (int32_t) c->y };
+			xcb_configure_window(XGetXCBConnection(dpy), c->win,
+			    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, xy);
 		}
 }
 
@@ -348,28 +352,38 @@ resizebarwin(Monitor *m)
 	unsigned int w = m->ww;
 	if (showsystray && m == systraytomon(m) && !systrayonleft)
 		w -= getsystraywidth();
-	XMoveResizeWindow(dpy, m->barwin, m->wx, m->by, w, bh);
+	uint32_t xywh[4] = { (uint32_t) (int32_t) m->wx,
+		(uint32_t) (int32_t) m->by, w, (uint32_t) bh };
+	xcb_configure_window(XGetXCBConnection(dpy), m->barwin,
+	    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_WIDTH |
+	        XCB_CONFIG_WINDOW_HEIGHT,
+	    xywh);
 }
 
 void
 restack(Monitor *m)
 {
-	Client        *c;
-	XEvent         ev;
-	XWindowChanges wc;
+	Client           *c;
+	XEvent            ev;
+	xcb_connection_t *xc = XGetXCBConnection(dpy);
 
 	drawbar(m);
 	if (!m->sel)
 		return;
-	if (m->sel->isfloating || !m->lt[m->sellt]->arrange)
-		XRaiseWindow(dpy, m->sel->win);
+	if (m->sel->isfloating || !m->lt[m->sellt]->arrange) {
+		uint32_t stack = XCB_STACK_MODE_ABOVE;
+		xcb_configure_window(
+		    xc, m->sel->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+	}
 	if (m->lt[m->sellt]->arrange) {
-		wc.stack_mode = Below;
-		wc.sibling    = m->barwin;
+		uint32_t sibling = (uint32_t) m->barwin;
 		for (c = m->cl->stack; c; c = c->snext)
 			if (!c->isfloating && ISVISIBLE(c, m)) {
-				XConfigureWindow(dpy, c->win, CWSibling | CWStackMode, &wc);
-				wc.sibling = c->win;
+				uint32_t vals[2] = { sibling, XCB_STACK_MODE_BELOW };
+				xcb_configure_window(xc, c->win,
+				    XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE,
+				    vals);
+				sibling = (uint32_t) c->win;
 			}
 	}
 	if (m == selmon && (m->tagset[m->seltags] & m->sel->tags) &&
@@ -456,15 +470,18 @@ togglebar(const Arg *arg)
 	updatebarpos(selmon);
 	resizebarwin(selmon);
 	if (showsystray) {
-		XWindowChanges wc;
+		int32_t  newy;
+		uint32_t y;
 		if (!selmon->showbar)
-			wc.y = -bh;
+			newy = -bh;
 		else {
-			wc.y = 0;
+			newy = 0;
 			if (!selmon->topbar)
-				wc.y = selmon->mh - bh;
+				newy = selmon->mh - bh;
 		}
-		XConfigureWindow(dpy, systray->win, CWY, &wc);
+		y = (uint32_t) newy;
+		xcb_configure_window(
+		    XGetXCBConnection(dpy), systray->win, XCB_CONFIG_WINDOW_Y, &y);
 	}
 	updateworkarea(selmon);
 	arrange(selmon);
@@ -473,41 +490,72 @@ togglebar(const Arg *arg)
 void
 updatebars(void)
 {
-	unsigned int w;
-	Monitor     *m;
-#ifdef COMPOSITOR
-	XSetWindowAttributes wa = { .override_redirect = True,
-		.background_pixel                          = 0,
-		.event_mask = ButtonPressMask | ExposureMask };
-#else
-	XSetWindowAttributes wa = { .override_redirect = True,
-		.background_pixmap                         = ParentRelative,
-		.event_mask = ButtonPressMask | ExposureMask };
-#endif
-	XClassHint ch = { "awm", "awm" };
+	unsigned int      w;
+	Monitor          *m;
+	xcb_connection_t *xc    = XGetXCBConnection(dpy);
+	int               depth = DefaultDepth(dpy, screen);
+
+	/* WM_CLASS value: "awm\0awm" (instance NUL class) */
+	static const char wm_class[] = "awm\0awm";
+
 	for (m = mons; m; m = m->next) {
 		if (m->barwin)
 			continue;
 		w = m->ww;
 		if (showsystray && m == systraytomon(m))
 			w -= getsystraywidth();
+
 #ifdef COMPOSITOR
-		wa.background_pixel = scheme[SchemeNorm][ColBg].pixel;
-		m->barwin           = XCreateWindow(dpy, root, m->wx, m->by, w, bh, 0,
-		              DefaultDepth(dpy, screen), CopyFromParent,
-		              DefaultVisual(dpy, screen),
-		              CWOverrideRedirect | CWBackPixel | CWEventMask, &wa);
+		{
+			uint32_t vals[3] = {
+				(uint32_t) scheme[SchemeNorm][ColBg].pixel, /* back_pixel */
+				1,                              /* override_redirect */
+				ButtonPressMask | ExposureMask, /* event_mask */
+			};
+			m->barwin = xcb_generate_id(xc);
+			xcb_create_window(xc, (uint8_t) depth, m->barwin, root,
+			    (int16_t) m->wx, (int16_t) m->by, (uint16_t) w, (uint16_t) bh,
+			    0, XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT,
+			    XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT |
+			        XCB_CW_EVENT_MASK,
+			    vals);
+		}
 #else
-		m->barwin = XCreateWindow(dpy, root, m->wx, m->by, w, bh, 0,
-		    DefaultDepth(dpy, screen), CopyFromParent,
-		    DefaultVisual(dpy, screen),
-		    CWOverrideRedirect | CWBackPixmap | CWEventMask, &wa);
+		{
+			uint32_t vals[3] = {
+				XCB_BACK_PIXMAP_PARENT_RELATIVE, /* back_pixmap =
+				                                    ParentRelative */
+				1,                               /* override_redirect */
+				ButtonPressMask | ExposureMask,  /* event_mask */
+			};
+			m->barwin = xcb_generate_id(xc);
+			xcb_create_window(xc, (uint8_t) depth, m->barwin, root,
+			    (int16_t) m->wx, (int16_t) m->by, (uint16_t) w, (uint16_t) bh,
+			    0, XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT,
+			    XCB_CW_BACK_PIXMAP | XCB_CW_OVERRIDE_REDIRECT |
+			        XCB_CW_EVENT_MASK,
+			    vals);
+		}
 #endif
-		XDefineCursor(dpy, m->barwin, cursor[CurNormal]->cursor);
-		if (showsystray && m == systraytomon(m))
-			XMapRaised(dpy, systray->win);
-		XMapRaised(dpy, m->barwin);
-		XSetClassHint(dpy, m->barwin, &ch);
+		{
+			uint32_t cur = (uint32_t) cursor[CurNormal]->cursor;
+			xcb_change_window_attributes(xc, m->barwin, XCB_CW_CURSOR, &cur);
+		}
+		if (showsystray && m == systraytomon(m)) {
+			uint32_t stack = XCB_STACK_MODE_ABOVE;
+			xcb_map_window(xc, systray->win);
+			xcb_configure_window(
+			    xc, systray->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		}
+		{
+			uint32_t stack = XCB_STACK_MODE_ABOVE;
+			xcb_map_window(xc, m->barwin);
+			xcb_configure_window(
+			    xc, m->barwin, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		}
+		/* WM_CLASS: instance + class both "awm", separated by NUL */
+		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, m->barwin,
+		    XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, sizeof(wm_class), wm_class);
 	}
 }
 
