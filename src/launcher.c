@@ -988,7 +988,13 @@ launcher_show(Launcher *launcher, int x, int y)
 	launcher->visible = 1;
 	launcher_render(launcher);
 
+	/* Release any existing grabs first, then flush so the releases are
+	 * processed by the X server before we attempt new active grabs.
+	 * This ensures the WM's own passive keybinding grab (which delivered
+	 * the keypress that triggered us) is fully released before we try to
+	 * establish the active keyboard grab. */
 	XUngrabPointer(launcher->dpy, last_event_time);
+	XUngrabKeyboard(launcher->dpy, last_event_time);
 	XSync(launcher->dpy, False);
 	{
 		int grab_result = XGrabPointer(launcher->dpy, launcher->win, False,
