@@ -1713,7 +1713,30 @@ compositor_check_unredirect(void)
 		XLowerWindow(dpy, comp.overlay);
 		awm_debug("compositor: suspended (fullscreen unredirect)");
 	} else {
-		/* Resume: raise overlay and repaint everything. */
+		/* Resume: re-redirect any fullscreen windows that were bypassed
+		 * while the compositor was paused.  Without this, focusing away
+		 * from a fullscreen window raises the overlay but leaves the
+		 * fullscreen window unredirected (cw->redirected==0), so the
+		 * compositor skips it and paints the wallpaper over it instead. */
+		CompWin *cw;
+		for (cw = comp.windows; cw; cw = cw->next) {
+			if (cw->client && cw->client->isfullscreen && !cw->redirected) {
+				xerror_push_ignore();
+				XCompositeRedirectWindow(
+				    dpy, cw->win, CompositeRedirectManual);
+				cw->redirected = 1;
+				comp_refresh_pixmap(cw);
+				if (cw->pixmap && !cw->damage)
+					cw->damage =
+					    XDamageCreate(dpy, cw->win, XDamageReportNonEmpty);
+				XSync(dpy, False);
+				xerror_pop();
+				awm_debug("compositor: re-redirected fullscreen "
+				          "window 0x%lx on resume",
+				    cw->win);
+			}
+		}
+		/* Raise overlay and repaint everything. */
 		XRaiseWindow(dpy, comp.overlay);
 		compositor_damage_all();
 		awm_debug("compositor: resumed");
