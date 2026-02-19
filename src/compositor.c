@@ -91,11 +91,14 @@ static struct {
 
 /* ---- compositor compile-time invariants ---- */
 _Static_assert(sizeof(unsigned short) == 2,
-    "unsigned short must be 16 bits for XRenderColor alpha/channel field scaling");
+    "unsigned short must be 16 bits for XRenderColor alpha/channel field "
+    "scaling");
 _Static_assert(sizeof(short) == 2,
-    "short must be 16 bits to match XRectangle.x and XRectangle.y field types");
+    "short must be 16 bits to match XRectangle.x and XRectangle.y field "
+    "types");
 _Static_assert(sizeof(Pixmap) == sizeof(unsigned long),
-    "Pixmap (XID) must equal unsigned long in size for format-32 property reads");
+    "Pixmap (XID) must equal unsigned long in size for format-32 property "
+    "reads");
 _Static_assert(sizeof(comp.alpha_pict) / sizeof(comp.alpha_pict[0]) == 256,
     "alpha_pict must have exactly 256 entries for 8-bit opacity quantization");
 
@@ -711,6 +714,18 @@ compositor_remove_window(Client *c)
 	prev = NULL;
 	for (cw = comp.windows; cw; cw = cw->next) {
 		if (cw->client == c || cw->win == c->win) {
+			/* Dirty the old footprint so the repaint erases the ghost. */
+			{
+				XRectangle    r;
+				XserverRegion sr;
+				r.x      = (short) cw->x;
+				r.y      = (short) cw->y;
+				r.width  = (unsigned short) (cw->w + 2 * cw->bw);
+				r.height = (unsigned short) (cw->h + 2 * cw->bw);
+				sr       = XFixesCreateRegion(dpy, &r, 1);
+				XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
+				XFixesDestroyRegion(dpy, sr);
+			}
 			if (prev)
 				prev->next = cw->next;
 			else
@@ -934,8 +949,22 @@ compositor_handle_event(XEvent *ev)
 		XUnmapEvent *uev = (XUnmapEvent *) ev;
 		CompWin     *cw  = comp_find_by_xid(uev->window);
 		if (cw && !cw->client) {
-			/* Override-redirect window unmapped — remove from tracking */
+			/* Only override_redirect windows (cw->client==NULL) are removed
+			 * here. Managed clients are removed via compositor_remove_window()
+			 * from unmanage(). */
 			CompWin *prev = NULL, *cur;
+			/* Dirty the old footprint before removal. */
+			{
+				XRectangle    r;
+				XserverRegion sr;
+				r.x      = (short) cw->x;
+				r.y      = (short) cw->y;
+				r.width  = (unsigned short) (cw->w + 2 * cw->bw);
+				r.height = (unsigned short) (cw->h + 2 * cw->bw);
+				sr       = XFixesCreateRegion(dpy, &r, 1);
+				XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
+				XFixesDestroyRegion(dpy, sr);
+			}
 			for (cur = comp.windows; cur; cur = cur->next) {
 				if (cur == cw) {
 					if (prev)
@@ -1001,6 +1030,18 @@ compositor_handle_event(XEvent *ev)
 		CompWin             *prev = NULL, *cw;
 		for (cw = comp.windows; cw; cw = cw->next) {
 			if (cw->win == dev->window) {
+				/* Dirty the old footprint so the ghost gets painted over. */
+				{
+					XRectangle    r;
+					XserverRegion sr;
+					r.x      = (short) cw->x;
+					r.y      = (short) cw->y;
+					r.width  = (unsigned short) (cw->w + 2 * cw->bw);
+					r.height = (unsigned short) (cw->h + 2 * cw->bw);
+					sr       = XFixesCreateRegion(dpy, &r, 1);
+					XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
+					XFixesDestroyRegion(dpy, sr);
+				}
 				if (prev)
 					prev->next = cw->next;
 				else
