@@ -267,7 +267,8 @@ focus(Client *c)
 		}
 		setfocus(c);
 	} else {
-		XSetInputFocus(dpy, selmon->barwin, RevertToPointerRoot, CurrentTime);
+		xcb_set_input_focus(XGetXCBConnection(dpy),
+		    XCB_INPUT_FOCUS_POINTER_ROOT, selmon->barwin, XCB_CURRENT_TIME);
 		xcb_delete_property(
 		    XGetXCBConnection(dpy), root, netatom[NetActiveWindow]);
 	}
@@ -408,11 +409,16 @@ getatomprop(Client *c, Atom prop)
 int
 getrootptr(int *x, int *y)
 {
-	int          di;
-	unsigned int dui;
-	Window       dummy;
-
-	return XQueryPointer(dpy, root, &dummy, &dummy, x, y, &di, &di, &dui);
+	xcb_query_pointer_cookie_t ck =
+	    xcb_query_pointer(XGetXCBConnection(dpy), root);
+	xcb_query_pointer_reply_t *r =
+	    xcb_query_pointer_reply(XGetXCBConnection(dpy), ck, NULL);
+	if (!r)
+		return 0;
+	*x = r->root_x;
+	*y = r->root_y;
+	free(r);
+	return 1;
 }
 
 long
@@ -564,19 +570,27 @@ grabbuttons(Client *c, int focused)
 {
 	updatenumlockmask();
 	{
-		unsigned int i, j;
-		unsigned int modifiers[] = { 0, LockMask, numlockmask,
-			numlockmask | LockMask };
-		XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
+		unsigned int      i, j;
+		unsigned int      modifiers[] = { 0, LockMask, numlockmask,
+			     numlockmask | LockMask };
+		xcb_connection_t *xc          = XGetXCBConnection(dpy);
+
+		xcb_ungrab_button(xc, XCB_BUTTON_INDEX_ANY, c->win, XCB_MOD_MASK_ANY);
 		if (!focused)
-			XGrabButton(dpy, AnyButton, AnyModifier, c->win, False, BUTTONMASK,
-			    GrabModeSync, GrabModeSync, None, None);
+			xcb_grab_button(xc, 0 /*owner_events*/, c->win,
+			    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE,
+			    XCB_GRAB_MODE_SYNC, XCB_GRAB_MODE_SYNC, XCB_WINDOW_NONE,
+			    XCB_CURSOR_NONE, XCB_BUTTON_INDEX_ANY, XCB_MOD_MASK_ANY);
 		for (i = 0; i < LENGTH(buttons); i++)
 			if (buttons[i].click == ClkClientWin)
 				for (j = 0; j < LENGTH(modifiers); j++)
-					XGrabButton(dpy, buttons[i].button,
-					    buttons[i].mask | modifiers[j], c->win, False,
-					    BUTTONMASK, GrabModeAsync, GrabModeSync, None, None);
+					xcb_grab_button(xc, 0 /*owner_events*/, c->win,
+					    XCB_EVENT_MASK_BUTTON_PRESS |
+					        XCB_EVENT_MASK_BUTTON_RELEASE,
+					    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_SYNC,
+					    XCB_WINDOW_NONE, XCB_CURSOR_NONE,
+					    (uint8_t) buttons[i].button,
+					    (uint16_t) (buttons[i].mask | modifiers[j]));
 	}
 }
 
@@ -586,25 +600,36 @@ hide(Client *c)
 	if (!c || c->ishidden)
 		return;
 
-	Window                   w = c->win;
-	static XWindowAttributes ra, ca;
+	Window            w  = c->win;
+	xcb_connection_t *xc = XGetXCBConnection(dpy);
 
 	XGrabServer(dpy);
-	XGetWindowAttributes(dpy, root, &ra);
-	XGetWindowAttributes(dpy, w, &ca);
 	{
-		xcb_connection_t *xcb = XGetXCBConnection(dpy);
-		uint32_t          mask;
-		mask = (uint32_t) (ra.your_event_mask & ~SubstructureNotifyMask);
-		xcb_change_window_attributes(xcb, root, XCB_CW_EVENT_MASK, &mask);
-		mask = (uint32_t) (ca.your_event_mask & ~StructureNotifyMask);
-		xcb_change_window_attributes(xcb, w, XCB_CW_EVENT_MASK, &mask);
-		xcb_unmap_window(xcb, w);
+		xcb_get_window_attributes_cookie_t rck =
+		    xcb_get_window_attributes(xc, root);
+		xcb_get_window_attributes_cookie_t cck =
+		    xcb_get_window_attributes(xc, w);
+		xcb_get_window_attributes_reply_t *rr =
+		    xcb_get_window_attributes_reply(xc, rck, NULL);
+		xcb_get_window_attributes_reply_t *cr =
+		    xcb_get_window_attributes_reply(xc, cck, NULL);
+
+		uint32_t root_em = rr ? rr->your_event_mask : 0;
+		uint32_t win_em  = cr ? cr->your_event_mask : 0;
+		free(rr);
+		free(cr);
+
+		uint32_t mask;
+		mask = root_em & ~(uint32_t) SubstructureNotifyMask;
+		xcb_change_window_attributes(xc, root, XCB_CW_EVENT_MASK, &mask);
+		mask = win_em & ~(uint32_t) StructureNotifyMask;
+		xcb_change_window_attributes(xc, w, XCB_CW_EVENT_MASK, &mask);
+		xcb_unmap_window(xc, w);
 		setclientstate(c, IconicState);
-		mask = (uint32_t) ra.your_event_mask;
-		xcb_change_window_attributes(xcb, root, XCB_CW_EVENT_MASK, &mask);
-		mask = (uint32_t) ca.your_event_mask;
-		xcb_change_window_attributes(xcb, w, XCB_CW_EVENT_MASK, &mask);
+		mask = root_em;
+		xcb_change_window_attributes(xc, root, XCB_CW_EVENT_MASK, &mask);
+		mask = win_em;
+		xcb_change_window_attributes(xc, w, XCB_CW_EVENT_MASK, &mask);
 	}
 	XUngrabServer(dpy);
 
@@ -680,8 +705,8 @@ killclient(const Arg *arg)
 		XGrabServer(dpy);
 		XSetErrorHandler(xerrordummy);
 		XSetCloseDownMode(dpy, DestroyAll);
-		XKillClient(dpy, selmon->sel->win);
-		XSync(dpy, False);
+		xcb_kill_client(XGetXCBConnection(dpy), selmon->sel->win);
+		xflush(dpy);
 		XSetErrorHandler(xerror);
 		XUngrabServer(dpy);
 	}
@@ -1418,7 +1443,8 @@ unfocus(Client *c, int setfocus)
 	compositor_focus_window(c);
 #endif
 	if (setfocus) {
-		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+		xcb_set_input_focus(XGetXCBConnection(dpy),
+		    XCB_INPUT_FOCUS_POINTER_ROOT, root, XCB_CURRENT_TIME);
 		xcb_delete_property(
 		    XGetXCBConnection(dpy), root, netatom[NetActiveWindow]);
 	}
@@ -1427,20 +1453,27 @@ unfocus(Client *c, int setfocus)
 void
 unmanage(Client *c, int destroyed)
 {
-	Monitor       *m = c->mon;
-	XWindowChanges wc;
+	Monitor *m = c->mon;
 
 	detach(c);
 	detachstack(c);
 	if (!destroyed) {
-		wc.border_width = c->oldbw;
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
 		XGrabServer(dpy);
 		XSetErrorHandler(xerrordummy);
-		XSelectInput(dpy, c->win, NoEventMask);
-		XConfigureWindow(dpy, c->win, CWBorderWidth, &wc);
-		XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
+		{
+			uint32_t no_events = XCB_EVENT_MASK_NO_EVENT;
+			xcb_change_window_attributes(
+			    xc, c->win, XCB_CW_EVENT_MASK, &no_events);
+		}
+		{
+			uint32_t bw = (uint32_t) c->oldbw;
+			xcb_configure_window(
+			    xc, c->win, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
+		}
+		xcb_ungrab_button(xc, XCB_BUTTON_INDEX_ANY, c->win, XCB_MOD_MASK_ANY);
 		setclientstate(c, WithdrawnState);
-		XSync(dpy, False);
+		xflush(dpy);
 		XSetErrorHandler(xerror);
 		XUngrabServer(dpy);
 	}
