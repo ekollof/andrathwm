@@ -84,11 +84,17 @@ updatesystrayiconstate(Client *i, XPropertyEvent *ev)
 	/* Per XEMBED spec: track XEMBED_MAPPED flag and map/unmap accordingly. */
 	if (flags & XEMBED_MAPPED && !i->tags) {
 		i->tags = 1;
-		XMapRaised(dpy, i->win);
+		{
+			xcb_connection_t *xc    = XGetXCBConnection(dpy);
+			uint32_t          above = XCB_STACK_MODE_ABOVE;
+			xcb_map_window(xc, i->win);
+			xcb_configure_window(
+			    xc, i->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+		}
 		setclientstate(i, NormalState);
 	} else if (!(flags & XEMBED_MAPPED) && i->tags) {
 		i->tags = 0;
-		XUnmapWindow(dpy, i->win);
+		xcb_unmap_window(XGetXCBConnection(dpy), i->win);
 		setclientstate(i, WithdrawnState);
 	}
 }
@@ -96,16 +102,16 @@ updatesystrayiconstate(Client *i, XPropertyEvent *ev)
 void
 updatesystrayiconcolors(void)
 {
-	unsigned long colors[12];
-	unsigned long r, g, b;
+	uint32_t colors[12];
+	uint32_t r, g, b;
 
 	if (!showsystray || !systray)
 		return;
 
 	/* XftColor already carries XRenderColor channels — no X roundtrip. */
-	r = scheme[SchemeNorm][ColFg].color.red;
-	g = scheme[SchemeNorm][ColFg].color.green;
-	b = scheme[SchemeNorm][ColFg].color.blue;
+	r = (uint32_t) scheme[SchemeNorm][ColFg].color.red;
+	g = (uint32_t) scheme[SchemeNorm][ColFg].color.green;
+	b = (uint32_t) scheme[SchemeNorm][ColFg].color.blue;
 
 	/* foreground color from bar scheme */
 	colors[0] = r;
@@ -115,20 +121,19 @@ updatesystrayiconcolors(void)
 	colors[3] = colors[6] = colors[9] = r;
 	colors[4] = colors[7] = colors[10] = g;
 	colors[5] = colors[8] = colors[11] = b;
-	XChangeProperty(dpy, systray->win, netatom[NetSystemTrayColors],
-	    XA_CARDINAL, 32, PropModeReplace, (unsigned char *) colors, 12);
+	xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE,
+	    systray->win, (xcb_atom_t) netatom[NetSystemTrayColors],
+	    XCB_ATOM_CARDINAL, 32, 12, colors);
 }
 
 void
 updatesystray(void)
 {
-	XSetWindowAttributes wa;
-	XWindowChanges       wc;
-	Client              *i;
-	Monitor             *m  = systraytomon(NULL);
-	unsigned int         x  = m->mx + m->mw;
-	unsigned int         sw = TEXTW(stext) - lrpad + systrayspacing;
-	unsigned int         w  = 1;
+	Client      *i;
+	Monitor     *m  = systraytomon(NULL);
+	unsigned int x  = m->mx + m->mw;
+	unsigned int sw = TEXTW(stext) - lrpad + systrayspacing;
+	unsigned int w  = 1;
 
 	if (!showsystray)
 		return;
@@ -156,33 +161,63 @@ updatesystray(void)
 			}
 		}
 
-		unsigned long bgpix  = clr_to_argb(&scheme[SchemeNorm][ColBg]);
-		wa.event_mask        = ButtonPressMask | ExposureMask;
-		wa.override_redirect = True;
-		wa.background_pixel  = bgpix;
-		wa.border_pixel      = 0;
-		wa.colormap          = systray->colormap;
-		systray->win         = XCreateWindow(dpy, root, x, m->by, w, bh, 0, 32,
-		            InputOutput, systray->visual,
-		            CWEventMask | CWOverrideRedirect | CWBackPixel | CWBorderPixel |
-		                CWColormap,
-		            &wa);
 		{
-			uint32_t mask = SubstructureNotifyMask;
-			xcb_change_window_attributes(XGetXCBConnection(dpy), systray->win,
-			    XCB_CW_EVENT_MASK, &mask);
+			xcb_connection_t *xc = XGetXCBConnection(dpy);
+			uint32_t          bgpix =
+			    (uint32_t) clr_to_argb(&scheme[SchemeNorm][ColBg]);
+			uint32_t evmask = ButtonPressMask | ExposureMask;
+			uint32_t one    = 1; /* override_redirect */
+			uint32_t cmap   = (uint32_t) systray->colormap;
+			uint32_t border = 0;
+			/* CW values must be in ascending bit-position order:
+			 * CWBackPixel(2), CWBorderPixel(4), CWOverrideRedirect(512),
+			 * CWColormap(8192), CWEventMask(2048) — sorted: back(2),
+			 * border(4), event(2048), override(512), colormap(8192).
+			 * XCB mask bits: BACK_PIXEL=2, BORDER_PIXEL=4,
+			 * OVERRIDE_REDIRECT=512, EVENT_MASK=2048, COLORMAP=8192.
+			 * Ascending order: BACK_PIXEL, BORDER_PIXEL, OVERRIDE_REDIRECT,
+			 * EVENT_MASK, COLORMAP */
+			uint32_t cw_vals[5] = { bgpix, border, one, evmask, cmap };
+			systray->win        = xcb_generate_id(xc);
+			xcb_create_window(xc, 32, systray->win, root, (int16_t) x,
+			    (int16_t) m->by, (uint16_t) w, (uint16_t) bh, 0,
+			    XCB_WINDOW_CLASS_INPUT_OUTPUT,
+			    (xcb_visualid_t) XVisualIDFromVisual(systray->visual),
+			    XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL |
+			        XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK |
+			        XCB_CW_COLORMAP,
+			    cw_vals);
+			/* SubstructureNotifyMask for icon embed events */
+			{
+				uint32_t mask = SubstructureNotifyMask;
+				xcb_change_window_attributes(
+				    xc, systray->win, XCB_CW_EVENT_MASK, &mask);
+			}
+			/* _NET_SYSTEM_TRAY_ORIENTATION */
+			{
+				uint32_t horz =
+				    (uint32_t) netatom[NetSystemTrayOrientationHorz];
+				xcb_change_property(xc, XCB_PROP_MODE_REPLACE, systray->win,
+				    (xcb_atom_t) netatom[NetSystemTrayOrientation],
+				    XCB_ATOM_CARDINAL, 32, 1, &horz);
+			}
+			/* _NET_SYSTEM_TRAY_VISUAL */
+			{
+				uint32_t vis_id =
+				    (uint32_t) XVisualIDFromVisual(systray->visual);
+				xcb_change_property(xc, XCB_PROP_MODE_REPLACE, systray->win,
+				    (xcb_atom_t) netatom[NetSystemTrayVisual],
+				    XCB_ATOM_VISUALID, 32, 1, &vis_id);
+			}
+			updatesystrayiconcolors();
+			/* XMapRaised equivalent */
+			{
+				uint32_t above = XCB_STACK_MODE_ABOVE;
+				xcb_map_window(xc, systray->win);
+				xcb_configure_window(
+				    xc, systray->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+			}
 		}
-		XChangeProperty(dpy, systray->win, netatom[NetSystemTrayOrientation],
-		    XA_CARDINAL, 32, PropModeReplace,
-		    (unsigned char *) &netatom[NetSystemTrayOrientationHorz], 1);
-		{
-			VisualID visual_id = XVisualIDFromVisual(systray->visual);
-			XChangeProperty(dpy, systray->win, netatom[NetSystemTrayVisual],
-			    XA_VISUALID, 32, PropModeReplace, (unsigned char *) &visual_id,
-			    1);
-		}
-		updatesystrayiconcolors();
-		XMapRaised(dpy, systray->win);
 		XSetSelectionOwner(
 		    dpy, netatom[NetSystemTray], systray->win, CurrentTime);
 		if (XGetSelectionOwner(dpy, netatom[NetSystemTray]) == systray->win) {
@@ -196,32 +231,68 @@ updatesystray(void)
 			return;
 		}
 	}
-	for (w = 0, i = systray->icons; i; i = i->next) {
-		if (!i->issni) {
-			wa.background_pixel = clr_to_argb(&scheme[SchemeNorm][ColBg]);
-			XChangeWindowAttributes(dpy, i->win, CWBackPixel, &wa);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
+		for (w = 0, i = systray->icons; i; i = i->next) {
+			if (!i->issni) {
+				uint32_t bg =
+				    (uint32_t) clr_to_argb(&scheme[SchemeNorm][ColBg]);
+				xcb_change_window_attributes(
+				    xc, i->win, XCB_CW_BACK_PIXEL, &bg);
+			}
+			/* XMapRaised equivalent */
+			{
+				uint32_t above = XCB_STACK_MODE_ABOVE;
+				xcb_map_window(xc, i->win);
+				xcb_configure_window(
+				    xc, i->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+			}
+			w += systrayspacing;
+			i->x = w;
+			{
+				uint32_t xywh[4] = {
+					(uint32_t) (int32_t) i->x,
+					0,
+					(uint32_t) i->w,
+					(uint32_t) i->h,
+				};
+				xcb_configure_window(xc, i->win,
+				    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+				        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+				    xywh);
+			}
+			w += i->w;
+			if (i->mon != m)
+				i->mon = m;
 		}
-		XMapRaised(dpy, i->win);
-		w += systrayspacing;
-		i->x = w;
-		XMoveResizeWindow(dpy, i->win, i->x, 0, i->w, i->h);
-		w += i->w;
-		if (i->mon != m)
-			i->mon = m;
+		w = w ? w + systrayspacing : 1;
+		x -= w;
+		/* Move/resize systray container */
+		{
+			uint32_t xywh[4] = {
+				(uint32_t) (int32_t) x,
+				(uint32_t) (int32_t) m->by,
+				(uint32_t) w,
+				(uint32_t) bh,
+			};
+			xcb_configure_window(xc, systray->win,
+			    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+			        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+			    xywh);
+		}
+		/* Stack systray above barwin */
+		{
+			uint32_t stack_vals[3] = {
+				(uint32_t) m->barwin, /* sibling */
+				XCB_STACK_MODE_ABOVE, /* stack_mode */
+			};
+			xcb_configure_window(xc, systray->win,
+			    XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE,
+			    stack_vals);
+		}
+		xcb_map_window(xc, systray->win);
+		xcb_map_subwindows(xc, systray->win);
 	}
-	w = w ? w + systrayspacing : 1;
-	x -= w;
-	XMoveResizeWindow(dpy, systray->win, x, m->by, w, bh);
-	wc.x          = x;
-	wc.y          = m->by;
-	wc.width      = w;
-	wc.height     = bh;
-	wc.stack_mode = Above;
-	wc.sibling    = m->barwin;
-	XConfigureWindow(dpy, systray->win,
-	    CWX | CWY | CWWidth | CWHeight | CWSibling | CWStackMode, &wc);
-	XMapWindow(dpy, systray->win);
-	XMapSubwindows(dpy, systray->win);
 	/* Flush buffered requests to the X server without blocking for
 	 * completion.  xcb_flush avoids the round-trip overhead of XSync/XFlush.
 	 * The window background is filled automatically from background_pixel set
@@ -271,7 +342,7 @@ addsniiconsystray(Window w, int width, int height)
 	awm_debug("SNI icon geometry after geom update: %dx%d", i->w, i->h);
 
 	/* Reparent to systray container */
-	XReparentWindow(dpy, i->win, systray->win, 0, 0);
+	xcb_reparent_window(XGetXCBConnection(dpy), i->win, systray->win, 0, 0);
 
 	/* Update systray layout */
 	updatesystray();
