@@ -19,13 +19,18 @@
  *     was used for opacity; opacity is now handled by the GL blend equation
  *     directly (no XRender needed at runtime).
  *
- * Why EGL instead of GLX:
- *   EGL has zero Xlib/XCB sequence-number involvement.  The old GLX path
- *   used a separate Display* for all GLX calls; Mesa's DRI3 backend sends
- *   kernel DRM fence requests that bypass Xlib's sequence counter, causing
- *   "Xlib: sequence lost" warnings.  EGL's eglSwapBuffers and
- *   eglCreateImageKHR are entirely outside Xlib's request/reply machinery,
- *   eliminating the root cause.
+ * Why EGL with a dedicated second Display* (gl_dpy):
+ *   Mesa's DRI3/gallium backend (libgallium, libxcb-dri3, libxcb-present)
+ *   sends XCB requests directly on the underlying xcb_connection_t,
+ *   bypassing Xlib's dpy->request counter.  When the wire sequence
+ *   crosses a 65535 boundary, Xlib's widening arithmetic in
+ *   _XSetLastRequestRead sees the gap and prints "Xlib: sequence lost".
+ *   Fix: open a dedicated second Display* for all EGL/GL operations and
+ *   call XSetEventQueueOwner(gl_dpy, XCBOwnsEventQueue) immediately after.
+ *   XCB then owns the authoritative sequence counter for that connection,
+ *   so Xlib's widening always stays consistent.  The main dpy is never
+ *   touched by Mesa.  EGL wraps gl_dpy; pixmap XIDs are valid across both
+ *   connections (same X server), so EGLImageKHR creation works unchanged.
  *
  * Fallback:
  *   - If EGL_KHR_image_pixmap is unavailable the compositor falls back to
@@ -44,6 +49,7 @@
 
 #include <X11/Xlib.h>
 #include <X11/Xlibint.h>
+#include <X11/Xlib-xcb.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/shape.h>
 #include <X11/extensions/Xcomposite.h>
@@ -97,8 +103,11 @@ static struct {
 	Window overlay;
 
 	/* ---- GL path (primary) ---- */
-	int        use_gl;  /* 1 if EGL_KHR_image_pixmap available and ctx ok */
-	EGLDisplay egl_dpy; /* EGL display wrapping the main X connection      */
+	int      use_gl;    /* 1 if EGL_KHR_image_pixmap available and ctx ok */
+	Display *gl_dpy;    /* dedicated Display* for EGL/Mesa; XCBOwnsEventQueue
+	                     * is set on it so Mesa's DRI3 XCB calls don't
+	                     * corrupt the main dpy's Xlib sequence counter    */
+	EGLDisplay egl_dpy; /* EGL display wrapping gl_dpy                    */
 	EGLContext egl_ctx; /* EGL/GL context                                  */
 	EGLSurface egl_win; /* EGL surface wrapping comp.overlay               */
 	GLuint     prog;    /* shader program                                  */
@@ -405,8 +414,8 @@ comp_init_gl(void)
 		1.0f,
 	};
 
-	/* --- Get EGL display wrapping the main X connection ----------------*/
-	comp.egl_dpy = eglGetDisplay((EGLNativeDisplayType) dpy);
+	/* --- Get EGL display wrapping the dedicated GL connection ----------*/
+	comp.egl_dpy = eglGetDisplay((EGLNativeDisplayType) comp.gl_dpy);
 	if (comp.egl_dpy == EGL_NO_DISPLAY) {
 		awm_warn("compositor: eglGetDisplay failed, "
 		         "falling back to XRender");
@@ -771,12 +780,21 @@ compositor_init(GMainContext *ctx)
 	XFixesDestroyRegion(dpy, empty);
 
 	/* --- Try to initialise the EGL/GL path --------------------------------
-	 * EGL wraps the main X connection — no separate Display* needed.
-	 * eglSwapBuffers and eglCreateImageKHR bypass Xlib's request/reply
-	 * machinery entirely, so no "Xlib: sequence lost" warnings occur.
+	 * A dedicated Display* (gl_dpy) is opened for all EGL/Mesa operations.
+	 * XSetEventQueueOwner hands XCB ownership of its event queue so Mesa's
+	 * DRI3 XCB calls don't corrupt the main dpy's Xlib sequence counter.
+	 * EGL wraps gl_dpy; pixmap XIDs are server-side and valid on both
+	 * connections (same X server), so EGLImageKHR creation works unchanged.
 	 */
+	comp.gl_dpy = XOpenDisplay(NULL);
+	if (!comp.gl_dpy) {
+		awm_warn("compositor: XOpenDisplay for GL failed, "
+		         "GL path unavailable");
+	} else {
+		XSetEventQueueOwner(comp.gl_dpy, XCBOwnsEventQueue);
+	}
 
-	if (comp_init_gl() != 0) {
+	if (comp.gl_dpy && comp_init_gl() != 0) {
 		/* GL path unavailable — set up XRender back-buffer + target */
 		fmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
 		pa.subwindow_mode = IncludeInferiors;
@@ -951,6 +969,11 @@ compositor_cleanup(void)
 
 	XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
 	XFlush(dpy);
+
+	/* Close the dedicated EGL/GL display connection last — after all EGL
+	 * objects have been destroyed by eglTerminate above. */
+	if (comp.gl_dpy)
+		XCloseDisplay(comp.gl_dpy);
 
 	comp.active = 0;
 }
