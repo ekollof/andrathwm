@@ -24,21 +24,30 @@
 #define MENU_PADDING 4
 #define MENU_MIN_WIDTH 150
 #define SEPARATOR_HEIGHT 8
+#define MENU_TOGGLE_COL 16 /* width reserved for toggle indicator */
 
 /* Internal helper to calculate menu dimensions */
 static void
 menu_calculate_size(Menu *menu)
 {
 	MenuItem    *item;
-	unsigned int maxw   = MENU_MIN_WIDTH;
-	unsigned int totalh = MENU_PADDING * 2;
-	int          count  = 0;
+	unsigned int maxw       = MENU_MIN_WIDTH;
+	unsigned int totalh     = MENU_PADDING * 2;
+	int          count      = 0;
+	int          has_toggle = 0;
+
+	for (item = menu->items; item; item = item->next) {
+		if (!item->is_separator && item->toggle_type != MENU_TOGGLE_NONE)
+			has_toggle = 1;
+	}
 
 	for (item = menu->items; item; item = item->next) {
 		if (item->is_separator) {
 			totalh += SEPARATOR_HEIGHT;
 		} else if (item->label) {
 			unsigned int w = drw_fontset_getwidth(menu->drw, item->label);
+			if (has_toggle)
+				w += MENU_TOGGLE_COL;
 			if (w > maxw)
 				maxw = w;
 			totalh += MENU_ITEM_HEIGHT;
@@ -89,11 +98,20 @@ static void
 menu_render(Menu *menu)
 {
 	MenuItem *item;
-	int       y   = MENU_PADDING;
-	int       idx = 0;
+	int       y          = MENU_PADDING;
+	int       idx        = 0;
+	int       has_toggle = 0;
 
 	if (!menu->drw || !menu->scheme)
 		return;
+
+	/* Check if any item has a toggle type (determines left-column layout) */
+	for (item = menu->items; item; item = item->next) {
+		if (!item->is_separator && item->toggle_type != MENU_TOGGLE_NONE) {
+			has_toggle = 1;
+			break;
+		}
+	}
 
 	/* Ensure drawable is large enough for menu */
 	if (menu->drw->w < menu->w || menu->drw->h < menu->h)
@@ -113,6 +131,8 @@ menu_render(Menu *menu)
 			y += SEPARATOR_HEIGHT;
 		} else if (item->label) {
 			int is_selected = (idx == menu->selected);
+			int text_x      = MENU_PADDING * 2;
+			int text_w      = menu->w - MENU_PADDING * 4;
 
 			/* Draw item background */
 			if (is_selected && item->enabled) {
@@ -122,15 +142,42 @@ menu_render(Menu *menu)
 			}
 			drw_rect(menu->drw, 0, y, menu->w, MENU_ITEM_HEIGHT, 1, 0);
 
+			/* Draw toggle indicator in the left gutter */
+			if (has_toggle) {
+				const char *glyph = NULL;
+				if (item->toggle_type == MENU_TOGGLE_CHECKMARK)
+					glyph = item->toggle_state ? "✓" : " ";
+				else if (item->toggle_type == MENU_TOGGLE_RADIO)
+					glyph = item->toggle_state ? "●" : "○";
+				if (glyph && glyph[0] != ' ')
+					drw_text(menu->drw, MENU_PADDING, y, MENU_TOGGLE_COL,
+					    MENU_ITEM_HEIGHT, 0, glyph, !item->enabled);
+				text_x = MENU_PADDING + MENU_TOGGLE_COL;
+				text_w = menu->w - text_x - MENU_PADDING * 2;
+			}
+
 			/* Draw item text */
-			drw_text(menu->drw, MENU_PADDING * 2, y,
-			    menu->w - MENU_PADDING * 4, MENU_ITEM_HEIGHT, 0, item->label,
-			    !item->enabled);
+			drw_text(menu->drw, text_x, y, text_w, MENU_ITEM_HEIGHT, 0,
+			    item->label, !item->enabled);
 
 			/* Draw submenu indicator if item has submenu */
 			if (item->submenu) {
 				const char *arrow =
 				    menu_submenu_opens_right(menu, item) ? "►" : "◄";
+				drw_text(menu->drw, menu->w - MENU_PADDING * 3, y,
+				    MENU_PADDING * 2, MENU_ITEM_HEIGHT, 0, arrow,
+				    !item->enabled);
+			}
+
+			/* Draw item text */
+			drw_text(menu->drw, text_x, y, text_w, MENU_ITEM_HEIGHT, 0,
+			    item->label, !item->enabled);
+
+			/* Draw submenu indicator if item has submenu */
+			if (item->submenu) {
+				const char *arrow = menu_submenu_opens_right(menu, item)
+				    ? "\xe2\x96\xba"
+				    : "\xe2\x97\x84";
 				drw_text(menu->drw, menu->w - MENU_PADDING * 3, y,
 				    MENU_PADDING * 2, MENU_ITEM_HEIGHT, 0, arrow,
 				    !item->enabled);

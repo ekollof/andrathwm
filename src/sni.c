@@ -1409,9 +1409,11 @@ sni_menu_item_activated(int item_id, SNIItem *item)
 
 /* Helper structure for parsing menu item properties */
 struct MenuItemProperties {
-	char *label;
-	int   enabled;
-	int   visible;
+	char          *label;
+	int            enabled;
+	int            visible;
+	MenuToggleType toggle_type;
+	int            toggle_state;
 };
 
 /* Callback for parsing menu item property dict */
@@ -1427,6 +1429,25 @@ sni_parse_menu_property(
 		dbus_iter_get_variant_bool(value, &props->enabled);
 	} else if (strcmp(key, "visible") == 0) {
 		dbus_iter_get_variant_bool(value, &props->visible);
+	} else if (strcmp(key, "toggle-type") == 0) {
+		char *s = dbus_iter_get_variant_string(value);
+		if (s) {
+			if (strcmp(s, "checkmark") == 0)
+				props->toggle_type = MENU_TOGGLE_CHECKMARK;
+			else if (strcmp(s, "radio") == 0)
+				props->toggle_type = MENU_TOGGLE_RADIO;
+			free(s);
+		}
+	} else if (strcmp(key, "toggle-state") == 0) {
+		/* toggle-state is an INT32: 0=off, 1=on, -1=indeterminate */
+		DBusMessageIter inner = *value;
+		if (dbus_message_iter_get_arg_type(&inner) == DBUS_TYPE_VARIANT)
+			dbus_message_iter_recurse(&inner, &inner);
+		if (dbus_message_iter_get_arg_type(&inner) == DBUS_TYPE_INT32) {
+			dbus_int32_t v = 0;
+			dbus_message_iter_get_basic(&inner, &v);
+			props->toggle_state = (v == 1) ? 1 : 0;
+		}
 	}
 }
 
@@ -1486,7 +1507,7 @@ sni_build_menu_from_layout(SNIItem *item, DBusMessageIter *iter, int depth)
 		}
 
 		/* Parse properties dictionary using helper */
-		struct MenuItemProperties props = { NULL, 1, 1 };
+		struct MenuItemProperties props = { NULL, 1, 1, MENU_TOGGLE_NONE, 0 };
 		if (dbus_message_iter_get_arg_type(&struct_iter) == DBUS_TYPE_ARRAY) {
 			DBusMessageIter dict_iter;
 			dbus_message_iter_recurse(&struct_iter, &dict_iter);
@@ -1510,6 +1531,10 @@ sni_build_menu_from_layout(SNIItem *item, DBusMessageIter *iter, int depth)
 			mi = menu_separator_create();
 		} else {
 			mi = menu_item_create(id, label, enabled);
+			if (mi) {
+				mi->toggle_type  = props.toggle_type;
+				mi->toggle_state = props.toggle_state;
+			}
 		}
 
 		/* Free the label string now that menu_item_create has copied it */

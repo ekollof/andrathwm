@@ -10,12 +10,21 @@
 #include "drw.h"
 #include <X11/Xlib.h>
 
+/* Toggle types for DBusMenu checkbox/radio items */
+typedef enum {
+	MENU_TOGGLE_NONE      = 0,
+	MENU_TOGGLE_CHECKMARK = 1,
+	MENU_TOGGLE_RADIO     = 2
+} MenuToggleType;
+
 /* Menu item structure */
 typedef struct MenuItem {
 	int              id;
 	char            *label;
 	int              enabled;
 	int              is_separator;
+	MenuToggleType   toggle_type;  /* checkmark, radio, or none */
+	int              toggle_state; /* 1 = checked/on, 0 = unchecked/off */
 	struct MenuItem *submenu;
 	struct MenuItem *next;
 } MenuItem;
