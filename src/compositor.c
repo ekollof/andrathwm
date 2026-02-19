@@ -186,19 +186,23 @@ comp_xerror_ignore(Display *d, XErrorEvent *e)
 }
 
 static int (*prev_xerror)(Display *, XErrorEvent *) = NULL;
+static int xerror_ignore_depth                      = 0;
 
 static void
 xerror_push_ignore(void)
 {
-	prev_xerror = XSetErrorHandler(comp_xerror_ignore);
+	if (xerror_ignore_depth++ == 0)
+		prev_xerror = XSetErrorHandler(comp_xerror_ignore);
 }
 
 static void
 xerror_pop(void)
 {
 	XSync(dpy, False);
-	XSetErrorHandler(prev_xerror);
-	prev_xerror = NULL;
+	if (--xerror_ignore_depth == 0) {
+		XSetErrorHandler(prev_xerror);
+		prev_xerror = NULL;
+	}
 }
 
 /* -------------------------------------------------------------------------
@@ -1579,7 +1583,11 @@ compositor_handle_event(XEvent *ev)
 		XserverRegion       r;
 		XRectangle          rect;
 
+		/* XDamageSubtract on a stale handle (window destroyed before the
+		 * notify was processed) generates BadDamage — suppress it. */
+		xerror_push_ignore();
 		XDamageSubtract(dpy, dev->damage, None, None);
+		xerror_pop();
 
 		{
 			CompWin *dcw = comp_find_by_xid(dev->drawable);
