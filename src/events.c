@@ -132,8 +132,6 @@ checkotherwm(void)
 void
 clientmessage(XEvent *e)
 {
-	XWindowAttributes    wa;
-	XSetWindowAttributes swa;
 	XClientMessageEvent *cme = &e->xclient;
 	Client              *c   = wintoclient(cme->window);
 	unsigned int         i;
@@ -151,22 +149,29 @@ clientmessage(XEvent *e)
 			c->mon         = selmon;
 			c->next        = systray->icons;
 			systray->icons = c;
-			if (!XGetWindowAttributes(dpy, c->win, &wa)) {
-				/* use sane defaults */
-				wa.width        = bh;
-				wa.height       = bh;
-				wa.border_width = 0;
+			{
+				xcb_get_geometry_cookie_t ck =
+				    xcb_get_geometry(XGetXCBConnection(dpy), c->win);
+				xcb_get_geometry_reply_t *gr =
+				    xcb_get_geometry_reply(XGetXCBConnection(dpy), ck, NULL);
+				if (gr) {
+					c->w = c->oldw = gr->width;
+					c->h = c->oldh = gr->height;
+					c->oldbw       = gr->border_width;
+					free(gr);
+				} else {
+					c->w = c->oldw = bh;
+					c->h = c->oldh = bh;
+					c->oldbw       = 0;
+				}
 			}
 			c->x = c->oldx = c->y = c->oldy = 0;
-			c->w = c->oldw = wa.width;
-			c->h = c->oldh = wa.height;
-			c->oldbw       = wa.border_width;
-			c->bw          = 0;
-			c->isfloating  = True;
+			c->bw                           = 0;
+			c->isfloating                   = True;
 			/* reuse tags field as mapped status */
 			c->tags = 1;
 			updatesizehints(c);
-			updatesystrayicongeom(c, wa.width, wa.height);
+			updatesystrayicongeom(c, c->w, c->h);
 			XAddToSaveSet(dpy, c->win);
 			{
 				uint32_t mask = StructureNotifyMask | PropertyChangeMask |
@@ -174,15 +179,14 @@ clientmessage(XEvent *e)
 				xcb_change_window_attributes(
 				    XGetXCBConnection(dpy), c->win, XCB_CW_EVENT_MASK, &mask);
 			}
-			if (XReparentWindow(dpy, c->win, systray->win, 0, 0) ==
-			    BadWindow) {
-				awm_error("Failed to reparent systray window 0x%lx", c->win);
-				free(c);
-				return;
-			}
+			xcb_reparent_window(
+			    XGetXCBConnection(dpy), c->win, systray->win, 0, 0);
 			/* use bar background so icon blends with the bar */
-			swa.background_pixel = clr_to_argb(&scheme[SchemeNorm][ColBg]);
-			XChangeWindowAttributes(dpy, c->win, CWBackPixel, &swa);
+			{
+				uint32_t bg = clr_to_argb(&scheme[SchemeNorm][ColBg]);
+				xcb_change_window_attributes(
+				    XGetXCBConnection(dpy), c->win, XCB_CW_BACK_PIXEL, &bg);
+			}
 			/* Send XEMBED_EMBEDDED_NOTIFY to complete embedding per spec.
 			 * data1 = embedder window, data2 = protocol version */
 			sendevent(c->win, netatom[Xembed], StructureNotifyMask,
@@ -222,8 +226,8 @@ clientmessage(XEvent *e)
 			XGrabServer(dpy);
 			XSetErrorHandler(xerrordummy);
 			XSetCloseDownMode(dpy, DestroyAll);
-			XKillClient(dpy, c->win);
-			XSync(dpy, False);
+			xcb_kill_client(XGetXCBConnection(dpy), c->win);
+			xflush(dpy);
 			XSetErrorHandler(xerror);
 			XUngrabServer(dpy);
 		}
@@ -275,7 +279,6 @@ configurerequest(XEvent *e)
 	Client                 *c;
 	Monitor                *m;
 	XConfigureRequestEvent *ev = &e->xconfigurerequest;
-	XWindowChanges          wc;
 
 	if ((c = wintoclient(ev->window))) {
 		if (ev->value_mask & CWBorderWidth)
@@ -309,19 +312,42 @@ configurerequest(XEvent *e)
 			if ((ev->value_mask & (CWX | CWY)) &&
 			    !(ev->value_mask & (CWWidth | CWHeight)))
 				configure(c);
-			if (ISVISIBLE(c, m))
-				XMoveResizeWindow(dpy, c->win, c->x, c->y, c->w, c->h);
+			if (ISVISIBLE(c, m)) {
+				uint32_t xywh[4] = {
+					(uint32_t) (int32_t) c->x,
+					(uint32_t) (int32_t) c->y,
+					(uint32_t) c->w,
+					(uint32_t) c->h,
+				};
+				xcb_configure_window(XGetXCBConnection(dpy), c->win,
+				    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+				        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+				    xywh);
+			}
 		} else
 			configure(c);
 	} else {
-		wc.x            = ev->x;
-		wc.y            = ev->y;
-		wc.width        = ev->width;
-		wc.height       = ev->height;
-		wc.border_width = ev->border_width;
-		wc.sibling      = ev->above;
-		wc.stack_mode   = ev->detail;
-		XConfigureWindow(dpy, ev->window, ev->value_mask, &wc);
+		/* Pass unmanaged window configure requests straight through.
+		 * Build the XCB value array in ascending bit-position order. */
+		uint32_t vals[7];
+		int      n = 0;
+		if (ev->value_mask & CWX)
+			vals[n++] = (uint32_t) (int32_t) ev->x;
+		if (ev->value_mask & CWY)
+			vals[n++] = (uint32_t) (int32_t) ev->y;
+		if (ev->value_mask & CWWidth)
+			vals[n++] = (uint32_t) ev->width;
+		if (ev->value_mask & CWHeight)
+			vals[n++] = (uint32_t) ev->height;
+		if (ev->value_mask & CWBorderWidth)
+			vals[n++] = (uint32_t) ev->border_width;
+		if (ev->value_mask & CWSibling)
+			vals[n++] = (uint32_t) ev->above;
+		if (ev->value_mask & CWStackMode)
+			vals[n++] = (uint32_t) ev->detail;
+		if (n > 0)
+			xcb_configure_window(XGetXCBConnection(dpy), ev->window,
+			    (uint16_t) ev->value_mask, vals);
 	}
 	xflush(dpy);
 }
@@ -418,13 +444,14 @@ grabkeys(void)
 {
 	updatenumlockmask();
 	{
-		unsigned int i, j, k;
-		unsigned int modifiers[] = { 0, LockMask, numlockmask,
-			numlockmask | LockMask };
-		int          start, end, skip;
-		KeySym      *syms;
+		unsigned int      i, j, k;
+		unsigned int      modifiers[] = { 0, LockMask, numlockmask,
+			     numlockmask | LockMask };
+		int               start, end, skip;
+		KeySym           *syms;
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
 
-		XUngrabKey(dpy, AnyKey, AnyModifier, root);
+		xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
 		XDisplayKeycodes(dpy, &start, &end);
 		syms = XGetKeyboardMapping(dpy, start, end - start + 1, &skip);
 		if (!syms)
@@ -434,8 +461,10 @@ grabkeys(void)
 				/* skip modifier codes, we do that ourselves */
 				if (keys[i].keysym == syms[(k - start) * skip])
 					for (j = 0; j < LENGTH(modifiers); j++)
-						XGrabKey(dpy, k, keys[i].mod | modifiers[j], root,
-						    True, GrabModeAsync, GrabModeAsync);
+						xcb_grab_key(xc, 1, root,
+						    (uint16_t) (keys[i].mod | modifiers[j]),
+						    (xcb_keycode_t) k, XCB_GRAB_MODE_ASYNC,
+						    XCB_GRAB_MODE_ASYNC);
 		XFree(syms);
 	}
 }
@@ -514,8 +543,7 @@ mappingnotify(XEvent *e)
 void
 maprequest(XEvent *e)
 {
-	static XWindowAttributes wa;
-	XMapRequestEvent        *ev = &e->xmaprequest;
+	XMapRequestEvent *ev = &e->xmaprequest;
 
 	Client *i;
 	if ((i = wintosystrayicon(ev->window))) {
@@ -525,10 +553,23 @@ maprequest(XEvent *e)
 		return;
 	}
 
-	if (!XGetWindowAttributes(dpy, ev->window, &wa) || wa.override_redirect)
-		return;
-	if (!wintoclient(ev->window))
-		manage(ev->window, &wa);
+	{
+		xcb_get_window_attributes_cookie_t ck =
+		    xcb_get_window_attributes(XGetXCBConnection(dpy), ev->window);
+		xcb_get_window_attributes_reply_t *r =
+		    xcb_get_window_attributes_reply(XGetXCBConnection(dpy), ck, NULL);
+		if (!r)
+			return;
+		int override = r->override_redirect;
+		free(r);
+		if (override)
+			return;
+	}
+	if (!wintoclient(ev->window)) {
+		static XWindowAttributes wa;
+		if (XGetWindowAttributes(dpy, ev->window, &wa))
+			manage(ev->window, &wa);
+	}
 }
 
 void
@@ -632,7 +673,13 @@ unmapnotify(XEvent *e)
 	} else if ((c = wintosystrayicon(ev->window))) {
 		/* KLUDGE! sometimes icons occasionally unmap their windows, but do
 		 * _not_ destroy them. We map those windows back */
-		XMapRaised(dpy, c->win);
+		{
+			xcb_connection_t *xc    = XGetXCBConnection(dpy);
+			uint32_t          above = XCB_STACK_MODE_ABOVE;
+			xcb_map_window(xc, c->win);
+			xcb_configure_window(
+			    xc, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+		}
 		updatesystray();
 	}
 }
