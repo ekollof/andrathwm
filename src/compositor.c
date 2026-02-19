@@ -698,7 +698,7 @@ comp_bind_tfp(CompWin *cw)
 		xerror_push_ignore();
 		cw->glx_pixmap =
 		    glXCreatePixmap(comp.gl_dpy, cfg, cw->pixmap, tfp_attr);
-		XSync(dpy, False);
+		XSync(comp.gl_dpy, False);
 		xerror_pop();
 	}
 
@@ -718,7 +718,7 @@ comp_bind_tfp(CompWin *cw)
 	/* Bind the TFP pixmap as the texture's image */
 	xerror_push_ignore();
 	comp.glx_bind_tex(comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
-	XSync(dpy, False);
+	XSync(comp.gl_dpy, False);
 	xerror_pop();
 
 	glBindTexture(GL_TEXTURE_2D, 0);
@@ -1286,7 +1286,7 @@ comp_update_wallpaper(void)
 			xerror_push_ignore();
 			comp.wallpaper_glx_pixmap = glXCreatePixmap(
 			    comp.gl_dpy, wp_cfg, comp.wallpaper_pixmap, tfp_attr);
-			XSync(dpy, False);
+			XSync(comp.gl_dpy, False);
 			xerror_pop();
 
 			if (comp.wallpaper_glx_pixmap) {
@@ -1303,8 +1303,9 @@ comp_update_wallpaper(void)
 				xerror_push_ignore();
 				comp.glx_bind_tex(comp.gl_dpy, comp.wallpaper_glx_pixmap,
 				    GLX_FRONT_LEFT_EXT, NULL);
-				XSync(dpy, False);
+				XSync(comp.gl_dpy, False);
 				xerror_pop();
+
 				glBindTexture(GL_TEXTURE_2D, 0);
 			}
 			XFree(fbc);
@@ -2382,6 +2383,10 @@ comp_do_repaint_gl(void)
 	}
 
 	glBindVertexArray(0);
+	/* Drain pending GLX replies from the per-window TFP rebind calls above
+	 * before popping the error handler, so any errors on gl_dpy are
+	 * processed before Xlib's sequence counter advances further. */
+	XSync(comp.gl_dpy, False);
 	xerror_pop();
 
 	glUseProgram(0);
@@ -2399,6 +2404,9 @@ comp_do_repaint_gl(void)
 	 * Skipping the swap is safe — the dirty region is already cleared. */
 	if (!comp.paused)
 		glXSwapBuffers(comp.gl_dpy, comp.glx_win);
+	/* Drain any pending GLX replies so Xlib's 16-bit sequence counter on
+	 * gl_dpy does not wrap and trigger "Xlib: sequence lost" warnings. */
+	XSync(comp.gl_dpy, False);
 }
 
 /* -------------------------------------------------------------------------
