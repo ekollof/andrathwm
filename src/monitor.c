@@ -92,8 +92,8 @@ createmon(void)
 	/* find the first tag that isn't in use */
 	for (i = 0; i < LENGTH(tags); i++) {
 		for (tm = mons; tm && !(tm->tagset[tm->seltags] & (1 << i));
-		    tm  = tm->next)
-            ;
+		     tm = tm->next)
+			;
 		if (!tm)
 			break;
 	}
@@ -302,14 +302,16 @@ monocle(Monitor *m)
 	if (n > 0) /* override layout symbol */
 		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
 	for (c = m->cl->stack; c && (!ISVISIBLE(c, m) || c->isfloating);
-	    c  = c->snext)
-        ;
+	     c = c->snext)
+		;
 	if (c && !c->isfloating) {
-		XMoveWindow(dpy, c->win, m->wx, m->wy);
-		if (selmon->pertag->drawwithgaps[selmon->pertag->curtag])
-			resize(c, m->wx, m->wy, m->ww - 2 * c->bw, m->wh - 2 * c->bw, 0);
-		else
+		if (m->pertag->drawwithgaps[m->pertag->curtag]) {
+			unsigned int gp = m->pertag->gappx[m->pertag->curtag];
+			resize(c, m->wx + gp, m->wy + gp, m->ww - 2 * gp - 2 * c->bw,
+			    m->wh - 2 * gp - 2 * c->bw, 0);
+		} else {
 			resize(c, m->wx - c->bw, m->wy, m->ww, m->wh, False);
+		}
 		c = c->snext;
 	}
 	for (; c; c = c->snext)
@@ -377,7 +379,7 @@ tile(Monitor *m)
 	Client      *c;
 
 	for (n = 0, c = nexttiled(m->cl->clients, m); c;
-	    c = nexttiled(c->next, m), n++)
+	     c = nexttiled(c->next, m), n++)
 		;
 
 	if (n == 0)
@@ -389,8 +391,8 @@ tile(Monitor *m)
 		else
 			mw = m->ww - m->pertag->gappx[m->pertag->curtag];
 		for (i = 0, my = ty = m->pertag->gappx[m->pertag->curtag],
-		    c    = nexttiled(m->cl->clients, m);
-		    c; c = nexttiled(c->next, m), i++)
+		    c     = nexttiled(m->cl->clients, m);
+		     c; c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i) -
 				    m->pertag->gappx[m->pertag->curtag];
@@ -419,7 +421,7 @@ tile(Monitor *m)
 		else
 			mw = m->ww;
 		for (i = my = ty = 0, c = nexttiled(m->cl->clients, m); c;
-		    c = nexttiled(c->next, m), i++)
+		     c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i);
 				if (n == 1)
