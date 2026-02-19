@@ -87,7 +87,11 @@ static struct {
 	Window overlay;
 
 	/* ---- GL path (primary) ---- */
-	int        use_gl; /* 1 if TFP is available and context ok  */
+	int      use_gl; /* 1 if TFP is available and context ok  */
+	Display *gl_dpy; /* separate X connection used for all GLX calls;
+	                  * keeps GLX/Mesa XCB sequence numbering isolated
+	                  * from the WM's Xlib connection to prevent
+	                  * "Xlib: sequence lost" warnings on DRI3/Intel */
 	GLXContext glx_ctx;
 	GLXWindow  glx_win; /* GLX drawable wrapping comp.overlay    */
 	GLuint     prog;    /* shader program                        */
@@ -339,10 +343,10 @@ gl_pick_8bpc(GLXFBConfig *fbc, int nfbc, int need_alpha)
 	int i;
 	for (i = 0; i < nfbc; i++) {
 		int r = 0, g = 0, b = 0, a = 0;
-		glXGetFBConfigAttrib(dpy, fbc[i], GLX_RED_SIZE, &r);
-		glXGetFBConfigAttrib(dpy, fbc[i], GLX_GREEN_SIZE, &g);
-		glXGetFBConfigAttrib(dpy, fbc[i], GLX_BLUE_SIZE, &b);
-		glXGetFBConfigAttrib(dpy, fbc[i], GLX_ALPHA_SIZE, &a);
+		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_RED_SIZE, &r);
+		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_GREEN_SIZE, &g);
+		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_BLUE_SIZE, &b);
+		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_ALPHA_SIZE, &a);
 		if (r == 8 && g == 8 && b == 8 && (!need_alpha || a == 8))
 			return fbc[i];
 	}
@@ -422,7 +426,7 @@ comp_init_gl(void)
 	};
 
 	/* --- Check for GLX_EXT_texture_from_pixmap -------------------------*/
-	exts = glXQueryExtensionsString(dpy, screen);
+	exts = glXQueryExtensionsString(comp.gl_dpy, screen);
 	if (!exts || !strstr(exts, "GLX_EXT_texture_from_pixmap")) {
 		awm_warn("compositor: GLX_EXT_texture_from_pixmap unavailable, "
 		         "falling back to XRender");
@@ -456,7 +460,7 @@ comp_init_gl(void)
 			GLX_WINDOW_BIT | GLX_PIXMAP_BIT, GLX_DOUBLEBUFFER, True,
 			GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8,
 			GLX_ALPHA_SIZE, 8, GLX_DEPTH_SIZE, 0, GLX_STENCIL_SIZE, 0, None };
-		fbc        = glXChooseFBConfig(dpy, screen, attr, &nfbc);
+		fbc        = glXChooseFBConfig(comp.gl_dpy, screen, attr, &nfbc);
 	}
 
 	if (!fbc || nfbc == 0) {
@@ -471,15 +475,15 @@ comp_init_gl(void)
 	 * producing badly garbled colours.  We must insist on r==g==b==8. */
 	for (i = 0; i < nfbc; i++) {
 		int rgb_ok = 0, rgba_ok = 0, r = 0, g = 0, b = 0;
-		glXGetFBConfigAttrib(dpy, fbc[i], GLX_RED_SIZE, &r);
-		glXGetFBConfigAttrib(dpy, fbc[i], GLX_GREEN_SIZE, &g);
-		glXGetFBConfigAttrib(dpy, fbc[i], GLX_BLUE_SIZE, &b);
+		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_RED_SIZE, &r);
+		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_GREEN_SIZE, &g);
+		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_BLUE_SIZE, &b);
 		if (r != 8 || g != 8 || b != 8)
 			continue;
 		glXGetFBConfigAttrib(
-		    dpy, fbc[i], GLX_BIND_TO_TEXTURE_RGB_EXT, &rgb_ok);
+		    comp.gl_dpy, fbc[i], GLX_BIND_TO_TEXTURE_RGB_EXT, &rgb_ok);
 		glXGetFBConfigAttrib(
-		    dpy, fbc[i], GLX_BIND_TO_TEXTURE_RGBA_EXT, &rgba_ok);
+		    comp.gl_dpy, fbc[i], GLX_BIND_TO_TEXTURE_RGBA_EXT, &rgba_ok);
 		if (rgb_ok && rgba_ok) {
 			chosen = fbc[i];
 			break;
@@ -504,13 +508,14 @@ comp_init_gl(void)
 		        (const GLubyte *) "glXCreateContextAttribsARB");
 		if (create_ctx) {
 			xerror_push_ignore();
-			comp.glx_ctx = create_ctx(dpy, chosen, NULL, True, ctx_attr);
+			comp.glx_ctx =
+			    create_ctx(comp.gl_dpy, chosen, NULL, True, ctx_attr);
 			xerror_pop();
 		}
 		if (!comp.glx_ctx) {
 			/* Fall back to legacy glXCreateNewContext */
-			comp.glx_ctx =
-			    glXCreateNewContext(dpy, chosen, GLX_RGBA_TYPE, NULL, True);
+			comp.glx_ctx = glXCreateNewContext(
+			    comp.gl_dpy, chosen, GLX_RGBA_TYPE, NULL, True);
 		}
 	}
 	if (!comp.glx_ctx) {
@@ -520,20 +525,20 @@ comp_init_gl(void)
 	}
 
 	/* --- Wrap the overlay window as a GLX drawable ---------------------*/
-	comp.glx_win = glXCreateWindow(dpy, chosen, comp.overlay, NULL);
+	comp.glx_win = glXCreateWindow(comp.gl_dpy, chosen, comp.overlay, NULL);
 	if (!comp.glx_win) {
 		awm_warn("compositor: glXCreateWindow failed, "
 		         "falling back to XRender");
-		glXDestroyContext(dpy, comp.glx_ctx);
+		glXDestroyContext(comp.gl_dpy, comp.glx_ctx);
 		comp.glx_ctx = NULL;
 		return -1;
 	}
 
-	if (!glXMakeCurrent(dpy, comp.glx_win, comp.glx_ctx)) {
+	if (!glXMakeCurrent(comp.gl_dpy, comp.glx_win, comp.glx_ctx)) {
 		awm_warn("compositor: glXMakeCurrent failed, "
 		         "falling back to XRender");
-		glXDestroyWindow(dpy, comp.glx_win);
-		glXDestroyContext(dpy, comp.glx_ctx);
+		glXDestroyWindow(comp.gl_dpy, comp.glx_win);
+		glXDestroyContext(comp.gl_dpy, comp.glx_ctx);
 		comp.glx_ctx = 0;
 		comp.glx_win = 0;
 		return -1;
@@ -551,9 +556,9 @@ comp_init_gl(void)
 			glDeleteShader(vert);
 		if (frag)
 			glDeleteShader(frag);
-		glXMakeCurrent(dpy, None, NULL);
-		glXDestroyWindow(dpy, comp.glx_win);
-		glXDestroyContext(dpy, comp.glx_ctx);
+		glXMakeCurrent(comp.gl_dpy, None, NULL);
+		glXDestroyWindow(comp.gl_dpy, comp.glx_win);
+		glXDestroyContext(comp.gl_dpy, comp.glx_ctx);
 		comp.glx_ctx = 0;
 		comp.glx_win = 0;
 		return -1;
@@ -563,9 +568,9 @@ comp_init_gl(void)
 	glDeleteShader(vert);
 	glDeleteShader(frag);
 	if (!comp.prog) {
-		glXMakeCurrent(dpy, None, NULL);
-		glXDestroyWindow(dpy, comp.glx_win);
-		glXDestroyContext(dpy, comp.glx_ctx);
+		glXMakeCurrent(comp.gl_dpy, None, NULL);
+		glXDestroyWindow(comp.gl_dpy, comp.glx_win);
+		glXDestroyContext(comp.gl_dpy, comp.glx_ctx);
 		comp.glx_ctx = 0;
 		comp.glx_win = 0;
 		return -1;
@@ -617,7 +622,7 @@ comp_init_gl(void)
 
 	/* Detect GLX_EXT_buffer_age for partial repaints */
 	{
-		const char *glx_exts = glXQueryExtensionsString(dpy, screen);
+		const char *glx_exts = glXQueryExtensionsString(comp.gl_dpy, screen);
 		comp.has_buffer_age =
 		    (glx_exts && strstr(glx_exts, "GLX_EXT_buffer_age") != NULL);
 	}
@@ -647,12 +652,13 @@ comp_bind_tfp(CompWin *cw)
 	/* Release any existing TFP resources first */
 	if (cw->texture) {
 		if (cw->glx_pixmap)
-			comp.glx_release_tex(dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
+			comp.glx_release_tex(
+			    comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
 		glDeleteTextures(1, &cw->texture);
 		cw->texture = 0;
 	}
 	if (cw->glx_pixmap) {
-		glXDestroyPixmap(dpy, cw->glx_pixmap);
+		glXDestroyPixmap(comp.gl_dpy, cw->glx_pixmap);
 		cw->glx_pixmap = 0;
 	}
 
@@ -664,7 +670,7 @@ comp_bind_tfp(CompWin *cw)
 			cw->argb ? GLX_BIND_TO_TEXTURE_RGBA_EXT
 			         : GLX_BIND_TO_TEXTURE_RGB_EXT,
 			True, GLX_DOUBLEBUFFER, False, None };
-		fbc              = glXChooseFBConfig(dpy, screen, depth_attr, &nfbc);
+		fbc = glXChooseFBConfig(comp.gl_dpy, screen, depth_attr, &nfbc);
 	}
 	if (!fbc || nfbc == 0) {
 		if (fbc)
@@ -690,7 +696,8 @@ comp_bind_tfp(CompWin *cw)
 		if (!cfg)
 			cfg = fbc[0]; /* last resort */
 		xerror_push_ignore();
-		cw->glx_pixmap = glXCreatePixmap(dpy, cfg, cw->pixmap, tfp_attr);
+		cw->glx_pixmap =
+		    glXCreatePixmap(comp.gl_dpy, cfg, cw->pixmap, tfp_attr);
 		XSync(dpy, False);
 		xerror_pop();
 	}
@@ -710,7 +717,7 @@ comp_bind_tfp(CompWin *cw)
 
 	/* Bind the TFP pixmap as the texture's image */
 	xerror_push_ignore();
-	comp.glx_bind_tex(dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
+	comp.glx_bind_tex(comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
 	XSync(dpy, False);
 	xerror_pop();
 
@@ -728,12 +735,13 @@ comp_release_tfp(CompWin *cw)
 
 	if (cw->texture) {
 		if (cw->glx_pixmap)
-			comp.glx_release_tex(dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
+			comp.glx_release_tex(
+			    comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
 		glDeleteTextures(1, &cw->texture);
 		cw->texture = 0;
 	}
 	if (cw->glx_pixmap) {
-		glXDestroyPixmap(dpy, cw->glx_pixmap);
+		glXDestroyPixmap(comp.gl_dpy, cw->glx_pixmap);
 		cw->glx_pixmap = 0;
 	}
 }
@@ -835,7 +843,20 @@ compositor_init(GMainContext *ctx)
 	/* --- Try to initialise the GL/TFP path --------------------------------
 	 */
 
-	if (comp_init_gl() != 0) {
+	/* Open a dedicated Display connection for all GLX operations.
+	 * Mesa's DRI3 backend issues XCB requests directly on the connection's
+	 * underlying xcb_connection_t.  When these race with Xlib's own request
+	 * sequencing on the same Display*, the 16-bit wire sequence number can
+	 * appear to go backwards, producing "Xlib: sequence lost" warnings.
+	 * Using a separate connection gives GLX an independent sequence counter
+	 * so the two streams never interfere. */
+	comp.gl_dpy = XOpenDisplay(NULL);
+	if (!comp.gl_dpy) {
+		awm_warn("compositor: XOpenDisplay for GL failed, "
+		         "GL path unavailable");
+	}
+
+	if (comp.gl_dpy && comp_init_gl() != 0) {
 		/* GL path unavailable — set up XRender back-buffer + target */
 		fmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
 		pa.subwindow_mode = IncludeInferiors;
@@ -964,11 +985,11 @@ compositor_cleanup(void)
 			glDeleteVertexArrays(1, &comp.vao);
 		if (comp.vbo)
 			glDeleteBuffers(1, &comp.vbo);
-		glXMakeCurrent(dpy, None, NULL);
+		glXMakeCurrent(comp.gl_dpy, None, NULL);
 		if (comp.glx_win)
-			glXDestroyWindow(dpy, comp.glx_win);
+			glXDestroyWindow(comp.gl_dpy, comp.glx_win);
 		if (comp.glx_ctx)
-			glXDestroyContext(dpy, comp.glx_ctx);
+			glXDestroyContext(comp.gl_dpy, comp.glx_ctx);
 	} else {
 		/* XRender path cleanup */
 		for (i = 0; i < 256; i++)
@@ -989,12 +1010,12 @@ compositor_cleanup(void)
 	if (comp.use_gl) {
 		if (comp.wallpaper_texture) {
 			if (comp.wallpaper_glx_pixmap)
-				comp.glx_release_tex(
-				    dpy, comp.wallpaper_glx_pixmap, GLX_FRONT_LEFT_EXT);
+				comp.glx_release_tex(comp.gl_dpy, comp.wallpaper_glx_pixmap,
+				    GLX_FRONT_LEFT_EXT);
 			glDeleteTextures(1, &comp.wallpaper_texture);
 		}
 		if (comp.wallpaper_glx_pixmap)
-			glXDestroyPixmap(dpy, comp.wallpaper_glx_pixmap);
+			glXDestroyPixmap(comp.gl_dpy, comp.wallpaper_glx_pixmap);
 	}
 
 	if (comp.overlay)
@@ -1011,6 +1032,13 @@ compositor_cleanup(void)
 
 	XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
 	XFlush(dpy);
+
+	/* Close the dedicated GL display connection last */
+	if (comp.gl_dpy) {
+		XCloseDisplay(comp.gl_dpy);
+		comp.gl_dpy = NULL;
+	}
+
 	comp.active = 0;
 }
 
@@ -1188,13 +1216,13 @@ comp_update_wallpaper(void)
 	if (comp.use_gl) {
 		if (comp.wallpaper_texture) {
 			if (comp.wallpaper_glx_pixmap)
-				comp.glx_release_tex(
-				    dpy, comp.wallpaper_glx_pixmap, GLX_FRONT_LEFT_EXT);
+				comp.glx_release_tex(comp.gl_dpy, comp.wallpaper_glx_pixmap,
+				    GLX_FRONT_LEFT_EXT);
 			glDeleteTextures(1, &comp.wallpaper_texture);
 			comp.wallpaper_texture = 0;
 		}
 		if (comp.wallpaper_glx_pixmap) {
-			glXDestroyPixmap(dpy, comp.wallpaper_glx_pixmap);
+			glXDestroyPixmap(comp.gl_dpy, comp.wallpaper_glx_pixmap);
 			comp.wallpaper_glx_pixmap = 0;
 		}
 	}
@@ -1250,14 +1278,14 @@ comp_update_wallpaper(void)
 			   GLX_TEXTURE_FORMAT_EXT, GLX_TEXTURE_FORMAT_RGB_EXT,
 			   GLX_MIPMAP_TEXTURE_EXT, False, None };
 
-		fbc = glXChooseFBConfig(dpy, screen, wp_attr, &nfbc);
+		fbc = glXChooseFBConfig(comp.gl_dpy, screen, wp_attr, &nfbc);
 		if (fbc && nfbc > 0) {
 			GLXFBConfig wp_cfg = gl_pick_8bpc(fbc, nfbc, 0);
 			if (!wp_cfg)
 				wp_cfg = fbc[0];
 			xerror_push_ignore();
-			comp.wallpaper_glx_pixmap =
-			    glXCreatePixmap(dpy, wp_cfg, comp.wallpaper_pixmap, tfp_attr);
+			comp.wallpaper_glx_pixmap = glXCreatePixmap(
+			    comp.gl_dpy, wp_cfg, comp.wallpaper_pixmap, tfp_attr);
 			XSync(dpy, False);
 			xerror_pop();
 
@@ -1273,8 +1301,8 @@ comp_update_wallpaper(void)
 				glTexParameteri(
 				    GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 				xerror_push_ignore();
-				comp.glx_bind_tex(
-				    dpy, comp.wallpaper_glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
+				comp.glx_bind_tex(comp.gl_dpy, comp.wallpaper_glx_pixmap,
+				    GLX_FRONT_LEFT_EXT, NULL);
 				XSync(dpy, False);
 				xerror_pop();
 				glBindTexture(GL_TEXTURE_2D, 0);
@@ -2182,7 +2210,8 @@ comp_do_repaint_gl(void)
 	/* --- Partial repaint via GLX_EXT_buffer_age + glScissor ------------- */
 	if (comp.has_buffer_age) {
 		unsigned int age = 0;
-		glXQueryDrawable(dpy, comp.glx_win, GLX_BACK_BUFFER_AGE_EXT, &age);
+		glXQueryDrawable(
+		    comp.gl_dpy, comp.glx_win, GLX_BACK_BUFFER_AGE_EXT, &age);
 
 		/* age==0 means undefined (e.g. first frame or after resize);
 		 * fall back to full repaint.  age==1 means back buffer is one
@@ -2265,9 +2294,9 @@ comp_do_repaint_gl(void)
 		/* Re-bind to ensure the GPU sees the latest pixmap contents */
 		if (comp.wallpaper_glx_pixmap) {
 			comp.glx_release_tex(
-			    dpy, comp.wallpaper_glx_pixmap, GLX_FRONT_LEFT_EXT);
-			comp.glx_bind_tex(
-			    dpy, comp.wallpaper_glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
+			    comp.gl_dpy, comp.wallpaper_glx_pixmap, GLX_FRONT_LEFT_EXT);
+			comp.glx_bind_tex(comp.gl_dpy, comp.wallpaper_glx_pixmap,
+			    GLX_FRONT_LEFT_EXT, NULL);
 		}
 		glUniform4f(comp.u_rect, 0.0f, 0.0f, (float) sw, (float) sh);
 		glUniform1f(comp.u_opacity, 1.0f);
@@ -2295,8 +2324,10 @@ comp_do_repaint_gl(void)
 		 * contents (the server may have updated it since last frame). */
 		glBindTexture(GL_TEXTURE_2D, cw->texture);
 		if (cw->glx_pixmap) {
-			comp.glx_release_tex(dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
-			comp.glx_bind_tex(dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
+			comp.glx_release_tex(
+			    comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
+			comp.glx_bind_tex(
+			    comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
 		}
 
 		/* Draw the full window pixmap (XCompositeNameWindowPixmap includes
@@ -2367,7 +2398,7 @@ comp_do_repaint_gl(void)
 	 * already be lowered and the GL context in an inconsistent state.
 	 * Skipping the swap is safe — the dirty region is already cleared. */
 	if (!comp.paused)
-		glXSwapBuffers(dpy, comp.glx_win);
+		glXSwapBuffers(comp.gl_dpy, comp.glx_win);
 }
 
 /* -------------------------------------------------------------------------
