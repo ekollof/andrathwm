@@ -28,7 +28,7 @@ SNILIBS = $(shell pkg-config --libs dbus-1 cairo gtk+-3.0 librsvg-2.0)
 SNIFLAGS = -DSTATUSNOTIFIER
 
 # Built-in XRender compositor, comment if you don't want it
-COMPOSITORLIBS  = -lXcomposite -lXdamage -lXrender -lXfixes -lXext -lGL
+COMPOSITORLIBS  = -lXcomposite -lXdamage -lXrender -lXfixes -lXext -lGL -l:libX11-xcb.so.1
 COMPOSITORFLAGS = -DCOMPOSITOR
 
 # freetype

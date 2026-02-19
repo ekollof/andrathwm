@@ -50,6 +50,17 @@
 
 #include <glib.h>
 
+/* XSetEventQueueOwner — from libX11-xcb (Xlib-xcb.h).
+ * Declared inline here so we don't require the libx11-xcb-dev headers;
+ * the symbol is provided by -lX11-xcb at link time. */
+#ifndef XCBOwnsEventQueue
+typedef enum {
+	XlibOwnsEventQueue = 0,
+	XCBOwnsEventQueue  = 1
+} XEventQueueOwner;
+void XSetEventQueueOwner(Display *dpy, XEventQueueOwner owner);
+#endif
+
 #include "awm.h"
 #include "log.h"
 #include "compositor.h"
@@ -844,16 +855,23 @@ compositor_init(GMainContext *ctx)
 	 */
 
 	/* Open a dedicated Display connection for all GLX operations.
-	 * Mesa's DRI3 backend issues XCB requests directly on the connection's
-	 * underlying xcb_connection_t.  When these race with Xlib's own request
-	 * sequencing on the same Display*, the 16-bit wire sequence number can
-	 * appear to go backwards, producing "Xlib: sequence lost" warnings.
-	 * Using a separate connection gives GLX an independent sequence counter
-	 * so the two streams never interfere. */
+	 * Mesa's DRI3 backend obtains the underlying xcb_connection_t via
+	 * XGetXCBConnection() and sends xcb_present_pixmap /
+	 * xcb_sync_trigger_fence requests directly over XCB, bypassing Xlib's
+	 * request counter.  Xlib's widen_seq() then sees reply/event sequence
+	 * numbers it never recorded and fires "Xlib: sequence lost" on every
+	 * frame.
+	 *
+	 * XSetEventQueueOwner(XCBOwnsEventQueue) makes XCB the authoritative
+	 * sequence counter for this connection.  All of Xlib's requests are then
+	 * routed through XCB's numbering, so Mesa's XCB-sent requests and Xlib's
+	 * requests share the same counter and widen_seq() never desynchronises. */
 	comp.gl_dpy = XOpenDisplay(NULL);
 	if (!comp.gl_dpy) {
 		awm_warn("compositor: XOpenDisplay for GL failed, "
 		         "GL path unavailable");
+	} else {
+		XSetEventQueueOwner(comp.gl_dpy, XCBOwnsEventQueue);
 	}
 
 	if (comp.gl_dpy && comp_init_gl() != 0) {
