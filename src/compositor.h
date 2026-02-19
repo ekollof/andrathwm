@@ -87,6 +87,15 @@ void compositor_xrender_errors(int *req_base, int *err_base);
 void compositor_damage_errors(int *err_base);
 
 /*
+ * Fill *req_base and *err_base with the GLX extension major opcode and
+ * error base.  Needed by the X error handler to whitelist transient GLX
+ * errors (e.g. GLXBadPixmap / GLXBadContextState) that arise when a TFP
+ * pixmap is destroyed while rendering is in flight (e.g. on fullscreen).
+ * Sets both to -1 if the compositor is inactive or not using GL.
+ */
+void compositor_glx_errors(int *req_base, int *err_base);
+
+/*
  * Perform a compositor repaint synchronously right now, bypassing the GLib
  * idle scheduler.  Call this from synchronous event loops (movemouse /
  * resizemouse) that block the GLib main loop and prevent idle callbacks

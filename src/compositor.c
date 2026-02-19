@@ -134,6 +134,9 @@ static struct {
 	/* XRender extension codes — needed for error whitelisting */
 	int render_request_base;
 	int render_err_base;
+	/* GLX extension codes — needed for error whitelisting */
+	int glx_req_base;
+	int glx_err_base;
 	/* XShape extension — optional */
 	int has_xshape;
 	int shape_ev_base;
@@ -737,6 +740,14 @@ compositor_init(GMainContext *ctx)
 		int op, ev_dummy, err_dummy;
 		if (XQueryExtension(dpy, "RENDER", &op, &ev_dummy, &err_dummy))
 			comp.render_request_base = op;
+	}
+	/* Query GLX extension opcode/error base for error whitelisting */
+	{
+		int op, ev_dummy, err_dummy;
+		if (XQueryExtension(dpy, "GLX", &op, &ev_dummy, &err_dummy)) {
+			comp.glx_req_base = op;
+			comp.glx_err_base = err_dummy;
+		}
 	}
 
 	if (XShapeQueryExtension(dpy, &comp.shape_ev_base, &comp.shape_err_base))
@@ -1527,6 +1538,18 @@ compositor_damage_errors(int *err_base)
 		return;
 	}
 	*err_base = comp.damage_err_base;
+}
+
+void
+compositor_glx_errors(int *req_base, int *err_base)
+{
+	if (!comp.active || !comp.use_gl) {
+		*req_base = -1;
+		*err_base = -1;
+		return;
+	}
+	*req_base = comp.glx_req_base;
+	*err_base = comp.glx_err_base;
 }
 
 void

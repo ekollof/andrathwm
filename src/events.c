@@ -659,9 +659,31 @@ xerror(Display *dpy, XErrorEvent *ee)
 		if (damage_err >= 0 && ee->error_code == damage_err) /* BadDamage */
 			return 0;
 	}
+	/* Transient GLX errors arise when glXDestroyPixmap / glXReleaseTexImageEXT
+	 * is called on a pixmap that the X server has already invalidated — this
+	 * happens routinely when a fullscreen window bypasses the compositor and
+	 * its TFP pixmap is released mid-frame.  These are harmless; ignore them
+	 * rather than letting the default Xlib handler call exit(). */
+	{
+		int glx_req, glx_err;
+		compositor_glx_errors(&glx_req, &glx_err);
+		if (glx_req > 0 && ee->request_code == glx_req) {
+			awm_debug("xerror: ignoring GLX error: "
+			          "request_code=%d error_code=%d",
+			    (int) ee->request_code, (int) ee->error_code);
+			return 0;
+		}
+		(void) glx_err;
+	}
 #endif
-	awm_error("X11 error: request_code=%d, error_code=%d", ee->request_code,
-	    ee->error_code);
+	{
+		char desc[128];
+		XGetErrorText(dpy, ee->error_code, desc, sizeof(desc));
+		awm_error("fatal X11 error: %s (request_code=%d error_code=%d "
+		          "resourceid=0x%lx)",
+		    desc, (int) ee->request_code, (int) ee->error_code,
+		    (unsigned long) ee->resourceid);
+	}
 	return xerrorxlib(dpy, ee); /* may call exit */
 }
 
