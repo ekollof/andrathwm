@@ -204,6 +204,14 @@ x_dispatch_cb(gpointer user_data)
 	XEvent ev;
 	(void) user_data;
 
+#ifdef COMPOSITOR
+	/* Sync gl_dpy's Xlib counters with XCB's counter on every loop
+	 * iteration.  Mesa DRI3 sends async XCB requests between frames that
+	 * bypass gl_dpy->request; without this call the counter drift causes
+	 * "Xlib: sequence lost" warnings in _XSetLastRequestRead. */
+	compositor_sync_counters();
+#endif
+
 	while (XPending(dpy)) {
 		XNextEvent(dpy, &ev);
 #ifdef COMPOSITOR

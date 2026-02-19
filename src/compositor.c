@@ -2459,6 +2459,36 @@ comp_do_repaint_gl(void)
 }
 
 /* -------------------------------------------------------------------------
+ * Keep gl_dpy's Xlib sequence counters in sync with XCB's counter.
+ *
+ * Mesa's DRI3 backend calls XGetXCBConnection(gl_dpy) and fires async XCB
+ * requests (xcb_present_pixmap, xcb_sync_trigger_fence, xcb_get_geometry …)
+ * between frames — bypassing gl_dpy->request entirely.  When Xlib later
+ * processes a reply, _XSetLastRequestRead widens the 16-bit reply sequence
+ * using last_request_read as the high-bit reference.  If XCB's counter has
+ * crossed a 16-bit boundary while last_request_read is still in the previous
+ * epoch, the widening overestimates the reply sequence by 0x10000 and prints
+ * "Xlib: sequence lost".
+ *
+ * Called once per GLib main-loop iteration (from x_dispatch_cb) to keep the
+ * counters fresh regardless of whether a repaint occurs.
+ * ---------------------------------------------------------------------- */
+void
+compositor_sync_counters(void)
+{
+	xcb_connection_t            *xcb;
+	xcb_get_input_focus_cookie_t ck;
+
+	if (!comp.active || !comp.gl_dpy || !comp.use_gl)
+		return;
+	xcb = XGetXCBConnection(comp.gl_dpy);
+	ck  = xcb_get_input_focus(xcb);
+	X_DPY_SET_REQUEST(comp.gl_dpy, ck.sequence);
+	X_DPY_SET_LAST_REQUEST_READ(comp.gl_dpy, ck.sequence);
+	xcb_discard_reply(xcb, ck.sequence);
+}
+
+/* -------------------------------------------------------------------------
  * XRender repaint path (fallback for software-only X servers)
  * ---------------------------------------------------------------------- */
 
