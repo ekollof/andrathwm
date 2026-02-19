@@ -23,6 +23,13 @@
 #include <stdint.h>
 
 #include <glib-unix.h>
+#include <xcb/xcb.h>
+#include <xcb/xproto.h>
+#include <X11/Xlibint.h>
+
+/* XGetXCBConnection — from libX11-xcb; declared here to avoid requiring
+ * the libx11-xcb-dev development package at compile time. */
+xcb_connection_t *XGetXCBConnection(Display *dpy);
 
 #include "awm.h"
 #include "client.h"
@@ -204,11 +211,27 @@ x_dispatch_cb(gpointer user_data)
 	XEvent ev;
 	(void) user_data;
 
+	/*
+	 * Sync dpy's Xlib sequence counters with XCB's current counter before
+	 * reading any events.  Mesa DRI3 sends async XCB requests directly on
+	 * dpy's connection (same socket) between frames, bypassing dpy->request.
+	 * Without this, _XSetLastRequestRead fires "Xlib: sequence lost" when
+	 * an event arrives whose 16-bit sequence wraps past dpy->request.
+	 *
+	 * xcb_get_input_focus is a minimal round-trip-free probe: the cookie
+	 * carries XCB's current counter; we write it into dpy->request and
+	 * dpy->last_request_read, then discard the pending reply.
+	 */
+	{
+		xcb_connection_t            *xcb = XGetXCBConnection(dpy);
+		xcb_get_input_focus_cookie_t ck  = xcb_get_input_focus(xcb);
+		X_DPY_SET_REQUEST(dpy, ck.sequence);
+		X_DPY_SET_LAST_REQUEST_READ(dpy, ck.sequence);
+		xcb_discard_reply(xcb, ck.sequence);
+	}
+
 #ifdef COMPOSITOR
-	/* Sync gl_dpy's Xlib counters with XCB's counter on every loop
-	 * iteration.  Mesa DRI3 sends async XCB requests between frames that
-	 * bypass gl_dpy->request; without this call the counter drift causes
-	 * "Xlib: sequence lost" warnings in _XSetLastRequestRead. */
+	/* Same sync for gl_dpy — Mesa DRI3 also bypasses gl_dpy->request. */
 	compositor_sync_counters();
 #endif
 
