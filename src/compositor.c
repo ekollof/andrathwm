@@ -50,6 +50,14 @@
 
 #include <glib.h>
 
+#include <xcb/xcb.h>
+#include <xcb/xproto.h>
+#include <X11/Xlibint.h>
+
+/* XGetXCBConnection — from libX11-xcb; declared here to avoid requiring
+ * the libx11-xcb-dev package at build time. */
+xcb_connection_t *XGetXCBConnection(Display *dpy);
+
 #include "awm.h"
 #include "log.h"
 #include "compositor.h"
@@ -2207,6 +2215,17 @@ comp_do_repaint_gl(void)
 	XRectangle scissor;
 	int        use_scissor = 0;
 
+	/*
+	 * Sync Xlib's request counter at frame start to catch any async DRI3
+	 * replies that arrived since the previous frame's end-of-frame sync.
+	 */
+	{
+		xcb_connection_t            *xcb = XGetXCBConnection(comp.gl_dpy);
+		xcb_get_input_focus_cookie_t ck  = xcb_get_input_focus(xcb);
+		X_DPY_SET_REQUEST(comp.gl_dpy, ck.sequence);
+		xcb_discard_reply(xcb, ck.sequence);
+	}
+
 	/* --- Partial repaint via GLX_EXT_buffer_age + glScissor ------------- */
 	if (comp.has_buffer_age) {
 		unsigned int age = 0;
@@ -2402,40 +2421,38 @@ comp_do_repaint_gl(void)
 	 * already be lowered and the GL context in an inconsistent state.
 	 * Skipping the swap is safe — the dirty region is already cleared. */
 
+	if (!comp.paused)
+		glXSwapBuffers(comp.gl_dpy, comp.glx_win);
+	/* Drain pending DRI3/GLX replies; advances last_request_read. */
+	XSync(comp.gl_dpy, False);
+
 	/*
-	 * Pump Xlib's request counter on gl_dpy before the swap.
+	 * Synchronise Xlib's request counter to XCB's actual sequence number.
 	 *
 	 * Mesa's DRI3 backend obtains the XCB connection underlying gl_dpy via
 	 * XGetXCBConnection() and sends xcb_present_pixmap /
 	 * xcb_sync_trigger_fence / xcb_get_geometry requests directly over XCB,
-	 * bypassing Xlib's dpy->request counter (dpy+0x98).  Each frame Mesa
-	 * typically sends ~9 such XCB-only requests.  Xlib's _XSetLastRequestRead
-	 * widens incoming 16-bit reply sequence numbers using dpy->request as the
-	 * high-bit reference; if dpy->request is more than 65535 behind the real
-	 * XCB counter it prints "Xlib: sequence lost".
+	 * bypassing Xlib's dpy->request counter (dpy+0x98).  Xlib's
+	 * _XSetLastRequestRead widens incoming 16-bit reply sequence numbers
+	 * using dpy->request as the high-bit reference.  When the XCB counter
+	 * advances far enough that a reply's widened sequence exceeds
+	 * dpy->request + 65535, it prints "Xlib: sequence lost".
 	 *
-	 * XNoOp() sends opcode 127 (NoOperation) — a fire-and-forget Xlib
-	 * request with no reply.  It increments dpy->request by exactly 1 via
-	 * _XGetRequest without a round-trip.  Issuing XNOOP_PER_FRAME of them
-	 * each frame keeps dpy->request pacing Mesa's XCB requests so the gap
-	 * never reaches 65535.
-	 *
-	 * The subsequent XSync() drains any pending replies and advances
-	 * dpy->last_request_read so _XSetLastRequestRead has a stable reference.
+	 * Fix: AFTER glXSwapBuffers + XSync (so all Mesa DRI3 requests for
+	 * this frame have been sent and their replies drained), send one
+	 * xcb_get_input_focus request via XCB on gl_dpy's underlying
+	 * connection.  The returned cookie's .sequence field is XCB's current
+	 * counter.  We write that value into Xlib's dpy->request via
+	 * X_DPY_SET_REQUEST(), keeping the two counters permanently
+	 * synchronised.  xcb_discard_reply() drops the pending reply so XCB
+	 * does not buffer it indefinitely.
 	 */
-#define XNOOP_PER_FRAME 16
 	{
-		int i;
-		for (i = 0; i < XNOOP_PER_FRAME; i++)
-			XNoOp(comp.gl_dpy);
-		XFlush(comp.gl_dpy);
+		xcb_connection_t            *xcb = XGetXCBConnection(comp.gl_dpy);
+		xcb_get_input_focus_cookie_t ck  = xcb_get_input_focus(xcb);
+		X_DPY_SET_REQUEST(comp.gl_dpy, ck.sequence);
+		xcb_discard_reply(xcb, ck.sequence);
 	}
-#undef XNOOP_PER_FRAME
-
-	if (!comp.paused)
-		glXSwapBuffers(comp.gl_dpy, comp.glx_win);
-	/* Drain pending replies and advance last_request_read. */
-	XSync(comp.gl_dpy, False);
 }
 
 /* -------------------------------------------------------------------------
