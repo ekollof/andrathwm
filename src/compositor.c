@@ -546,10 +546,10 @@ comp_init_gl(void)
 	glDisable(GL_DEPTH_TEST);
 	glDisable(GL_SCISSOR_TEST);
 	glEnable(GL_BLEND);
-	/* Pre-multiplied alpha blend: src=ONE, dst=ONE_MINUS_SRC_ALPHA.
-	 * TFP textures and our fragment shader both deliver pre-multiplied
-	 * alpha, so this is correct and avoids a divide. */
-	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+	/* Straight (non-pre-multiplied) alpha blend.  X11 ARGB windows
+	 * (terminals etc.) deliver straight alpha, so SRC_ALPHA is correct.
+	 * Using GL_ONE caused colour fringing on sub-pixel font rendering. */
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glViewport(0, 0, sw, sh);
 
 	comp.use_gl = 1;
