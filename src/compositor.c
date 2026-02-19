@@ -235,18 +235,22 @@ xerror_pop(void)
 /* -------------------------------------------------------------------------
  * XESetWireToEvent workaround (picom-derived)
  *
- * Some X extension libraries (notably GL/DRI2 drivers) register
- * XESetWireToEvent handlers.  When Xlib processes the event queue it calls
- * those handlers on every event that matches the registered type.  If the
- * compositor pulls events while a GL driver has such a handler registered,
- * Xlib may call it on unrelated events, corrupting GL state or causing
- * "lost sequence number" warnings.
+ * Mesa's DRI3/present backend registers XESetWireToEvent hooks on whatever
+ * Display* it is given.  Because EGL is initialised on the dedicated gl_dpy
+ * (which has XCBOwnsEventQueue), Mesa's hooks live on gl_dpy — NOT on dpy.
  *
- * Fix (same as picom): before handing an event to our handler, temporarily
- * clear the wire-to-event hook for that event type so Xlib won't invoke it
- * again for this event, tweak the sequence number to keep Xlib consistent,
- * call the original hook on a dummy event to let it do any internal Xlib
- * bookkeeping, then restore the hook.
+ * However libXdamage also registers a wire-to-event hook on dpy for
+ * XDamageNotify.  If anything calls proc(dpy, dummy, (xEvent*)ev) with an
+ * already-decoded XEvent*, the cast produces a layout mismatch:
+ *   • XAnyEvent.serial  is at byte offset 8 (unsigned long, 8 bytes)
+ *   • xGenericReply.sequenceNumber is at byte offset 2 (CARD16, 2 bytes)
+ * so _XSetLastRequestRead reads garbage as the sequence number and emits
+ * "Xlib: sequence lost" warnings on every XDamageNotify.
+ *
+ * The only safe thing to do is prevent Xlib from calling the hook a second
+ * time when it processes the already-queued XEvent.  We do this by clearing
+ * the hook and immediately restoring it — the event has already been decoded
+ * by XNextEvent so no further wire-to-event translation is needed.
  * ---------------------------------------------------------------------- */
 
 void
@@ -258,21 +262,13 @@ compositor_fix_wire_to_event(XEvent *ev)
 	if (!comp.use_gl)
 		return;
 
+	/* Temporarily clear the hook so Xlib won't re-invoke it, then restore.
+	 * Do NOT call proc ourselves: casting an XEvent* to xEvent* produces a
+	 * struct-layout mismatch that causes _XSetLastRequestRead to read garbage
+	 * bytes as the sequence number, triggering "sequence lost" warnings. */
 	proc = XESetWireToEvent(dpy, type, NULL);
-	if (proc) {
-		XEvent dummy;
-		/* Restore immediately so future events of this type are handled. */
+	if (proc)
 		XESetWireToEvent(dpy, type, proc);
-		/* Adjust sequence number: the driver compares it against its own
-		 * last-known value; feeding it the current last-known processed
-		 * request prevents "lost sequence number" warnings. */
-		{
-			unsigned long seq_saved = ev->xany.serial;
-			ev->xany.serial = LastKnownRequestProcessed(dpy) & 0xffffffff;
-			proc(dpy, &dummy, (xEvent *) ev);
-			ev->xany.serial = seq_saved;
-		}
-	}
 }
 
 static Picture
