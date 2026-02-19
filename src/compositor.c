@@ -2019,7 +2019,7 @@ comp_do_repaint_gl(void)
 
 		/* Draw borders for managed clients */
 		if (cw->client && cw->bw > 0) {
-			int          sel = (cw->client == selmon->sel);
+			int          sel = (selmon && cw->client == selmon->sel);
 			XRenderColor xrc =
 			    scheme[sel ? SchemeSel : SchemeNorm][ColBorder].color;
 			float        r  = (float) xrc.red / 65535.0f;
@@ -2139,7 +2139,7 @@ comp_do_repaint_xrender(void)
 		}
 
 		if (cw->client && cw->bw > 0) {
-			int          sel = (cw->client == selmon->sel);
+			int          sel = (selmon && cw->client == selmon->sel);
 			XRenderColor bc =
 			    scheme[sel ? SchemeSel : SchemeNorm][ColBorder].color;
 			unsigned int bw = (unsigned int) cw->bw;
