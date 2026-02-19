@@ -543,6 +543,20 @@ setup(void)
 #endif
 }
 
+static int
+xioerror(Display *d)
+{
+	(void) d;
+	/* _XIOError: the X server closed the connection (or the socket died).
+	 * This fires when the server forcibly drops our connection, e.g. due to
+	 * a fatal GLX protocol error.  Log it before libc calls exit(). */
+	awm_error("X IO error: X server connection lost (fatal GLX/X protocol "
+	          "error likely); awm is exiting");
+	/* Xlib requires this handler to not return — call exit directly. */
+	exit(1);
+	return 0; /* unreachable, silences -Werror=return-type */
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -557,6 +571,7 @@ main(int argc, char *argv[])
 		fputs("warning: no locale support\n", stderr);
 	if (!(dpy = XOpenDisplay(NULL)))
 		die("awm: cannot open display");
+	XSetIOErrorHandler(xioerror);
 	checkotherwm();
 	XrmInitialize();
 	loadxrdb();

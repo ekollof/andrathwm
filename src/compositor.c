@@ -1762,6 +1762,12 @@ comp_repaint_idle(gpointer data)
 	(void) data;
 	comp.repaint_id = 0;
 
+	/* Guard: compositor may have been paused (fullscreen bypass) between
+	 * the time this idle was queued and now.  Bail out immediately rather
+	 * than touching GL with a lowered/hidden overlay window. */
+	if (!comp.active || comp.paused)
+		return G_SOURCE_REMOVE;
+
 	/* Drain any XDamageNotify events still queued in the X connection
 	 * before painting so we paint one complete frame covering all
 	 * accumulated damage instead of a series of partial frames. */
@@ -1779,7 +1785,7 @@ comp_repaint_idle(gpointer data)
 static void
 comp_do_repaint(void)
 {
-	if (!comp.active)
+	if (!comp.active || comp.paused)
 		return;
 
 	if (comp.use_gl)
@@ -2095,8 +2101,13 @@ comp_do_repaint_gl(void)
 	/* Reset dirty region */
 	XFixesSetRegion(dpy, comp.dirty, NULL, 0);
 
-	/* Present — glXSwapBuffers is vsync-aware (swap interval = 1) */
-	glXSwapBuffers(dpy, comp.glx_win);
+	/* Present — glXSwapBuffers is vsync-aware (swap interval = 1).
+	 * Re-check paused immediately before the swap: if a fullscreen bypass
+	 * raced in between the repaint start and here, the overlay window may
+	 * already be lowered and the GL context in an inconsistent state.
+	 * Skipping the swap is safe — the dirty region is already cleared. */
+	if (!comp.paused)
+		glXSwapBuffers(dpy, comp.glx_win);
 }
 
 /* -------------------------------------------------------------------------
