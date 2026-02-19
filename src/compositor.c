@@ -1122,8 +1122,14 @@ schedule_repaint(void)
 	if (!comp.active || comp.repaint_id)
 		return;
 
-	comp.repaint_id = g_idle_add_full(
-	    G_PRIORITY_DEFAULT_IDLE, comp_repaint_idle, NULL, NULL);
+	/* Use G_PRIORITY_HIGH_IDLE so repaints interleave with event
+	 * processing rather than waiting for the entire event queue to
+	 * drain.  With G_PRIORITY_DEFAULT_IDLE a rapid damage stream (e.g.
+	 * xscreensaver fade, video) continuously defers the idle callback
+	 * because new events keep arriving at higher priority, making
+	 * animations appear extremely slow. */
+	comp.repaint_id =
+	    g_idle_add_full(G_PRIORITY_HIGH_IDLE, comp_repaint_idle, NULL, NULL);
 }
 
 /* -------------------------------------------------------------------------
