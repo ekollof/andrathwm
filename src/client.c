@@ -1,6 +1,9 @@
 /* AndrathWM - client management
  * See LICENSE file for copyright and license details. */
 
+#include <stdint.h>
+#include <xcb/xcb.h>
+
 #include "client.h"
 #include "awm.h"
 #include "events.h"
@@ -244,18 +247,26 @@ focus(Client *c)
 		detachstack(c);
 		attachstack(c);
 		grabbuttons(c, 1);
-		XSetWindowBorder(dpy, c->win, scheme[SchemeSel][ColBorder].pixel);
-		if (!selmon->pertag->drawwithgaps[selmon->pertag->curtag] &&
-		    !c->isfloating) {
-			XWindowChanges wc;
-			wc.sibling    = selmon->barwin;
-			wc.stack_mode = Below;
-			XConfigureWindow(dpy, c->win, CWSibling | CWStackMode, &wc);
+		{
+			xcb_connection_t *xcb = XGetXCBConnection(dpy);
+			uint32_t          pix = scheme[SchemeSel][ColBorder].pixel;
+			xcb_change_window_attributes(
+			    xcb, c->win, XCB_CW_BORDER_PIXEL, &pix);
+			if (!selmon->pertag->drawwithgaps[selmon->pertag->curtag] &&
+			    !c->isfloating) {
+				uint32_t vals[2];
+				vals[0] = (uint32_t) selmon->barwin;
+				vals[1] = XCB_STACK_MODE_BELOW;
+				xcb_configure_window(xcb, c->win,
+				    XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE,
+				    vals);
+			}
 		}
 		setfocus(c);
 	} else {
 		XSetInputFocus(dpy, selmon->barwin, RevertToPointerRoot, CurrentTime);
-		XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
+		xcb_delete_property(
+		    XGetXCBConnection(dpy), root, netatom[NetActiveWindow]);
 	}
 	selmon->sel = c;
 	if (selmon->lt[selmon->sellt]->arrange == monocle)
@@ -580,7 +591,7 @@ hide(Client *c)
 	XGetWindowAttributes(dpy, w, &ca);
 	XSelectInput(dpy, root, ra.your_event_mask & ~SubstructureNotifyMask);
 	XSelectInput(dpy, w, ca.your_event_mask & ~StructureNotifyMask);
-	XUnmapWindow(dpy, w);
+	xcb_unmap_window(XGetXCBConnection(dpy), w);
 	setclientstate(c, IconicState);
 	XSelectInput(dpy, root, ra.your_event_mask);
 	XSelectInput(dpy, w, ca.your_event_mask);
@@ -609,7 +620,7 @@ show(Client *c)
 	if (!c || !c->ishidden)
 		return;
 
-	XMapWindow(dpy, c->win);
+	xcb_map_window(XGetXCBConnection(dpy), c->win);
 	setclientstate(c, NormalState);
 	c->ishidden = 0;
 	focus(c);
@@ -712,8 +723,13 @@ manage(Window w, XWindowAttributes *wa)
 	c->bw = borderpx;
 
 	wc.border_width = c->bw;
-	XConfigureWindow(dpy, w, CWBorderWidth, &wc);
-	XSetWindowBorder(dpy, w, scheme[SchemeNorm][ColBorder].pixel);
+	{
+		xcb_connection_t *xcb = XGetXCBConnection(dpy);
+		uint32_t          bw  = (uint32_t) c->bw;
+		xcb_configure_window(xcb, w, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
+		uint32_t pix = scheme[SchemeNorm][ColBorder].pixel;
+		xcb_change_window_attributes(xcb, w, XCB_CW_BORDER_PIXEL, &pix);
+	}
 	configure(c);
 	updatewindowtype(c);
 	updatesizehints(c);
@@ -728,23 +744,39 @@ manage(Window w, XWindowAttributes *wa)
 	grabbuttons(c, 0);
 	if (!c->isfloating)
 		c->isfloating = c->oldstate = t != NULL || c->isfixed;
-	if (c->isfloating)
-		XRaiseWindow(dpy, c->win);
+	if (c->isfloating) {
+		uint32_t stack = XCB_STACK_MODE_ABOVE;
+		xcb_configure_window(XGetXCBConnection(dpy), c->win,
+		    XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+	}
 	attach(c);
 	attachstack(c);
-	XChangeProperty(dpy, root, netatom[NetClientList], XA_WINDOW, 32,
-	    PropModeAppend, (unsigned char *) &(c->win), 1);
+	{
+		xcb_connection_t *xcb    = XGetXCBConnection(dpy);
+		xcb_atom_t        winxid = (xcb_atom_t) c->win;
+		xcb_change_property(xcb, XCB_PROP_MODE_APPEND, root,
+		    netatom[NetClientList], XCB_ATOM_WINDOW, 32, 1, &winxid);
+	}
 
 	setewmhdesktop(c);
 	setwmstate(c);
 
 	{
-		long extents[4] = { c->bw, c->bw, c->bw, c->bw };
-		XChangeProperty(dpy, c->win, netatom[NetFrameExtents], XA_CARDINAL, 32,
-		    PropModeReplace, (unsigned char *) extents, 4);
+		uint32_t extents[4] = { (uint32_t) c->bw, (uint32_t) c->bw,
+			(uint32_t) c->bw, (uint32_t) c->bw };
+		xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE,
+		    c->win, netatom[NetFrameExtents], XCB_ATOM_CARDINAL, 32, 4,
+		    extents);
 	}
 
-	XMoveResizeWindow(dpy, c->win, c->x + 2 * sw, c->y, c->w, c->h);
+	{
+		uint32_t vals[4] = { (uint32_t) (c->x + 2 * sw), (uint32_t) c->y,
+			(uint32_t) c->w, (uint32_t) c->h };
+		xcb_configure_window(XGetXCBConnection(dpy), c->win,
+		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+		    vals);
+	}
 	setclientstate(c, NormalState);
 	if (c->mon == selmon)
 		unfocus(selmon->sel, 0);
@@ -752,7 +784,7 @@ manage(Window w, XWindowAttributes *wa)
 	if (!c->scratchkey)
 		c->mon->sel = c;
 	arrange(c->mon);
-	XMapWindow(dpy, c->win);
+	xcb_map_window(XGetXCBConnection(dpy), c->win);
 #ifdef COMPOSITOR
 	compositor_add_window(c);
 	/* Force-sync the CompWin geometry to the client struct.  During a
@@ -882,8 +914,16 @@ resizeclient(Client *c, int x, int y, int w, int h)
 		c->h            = wc.height += c->bw * 2;
 		wc.border_width = 0;
 	}
-	XConfigureWindow(
-	    dpy, c->win, CWX | CWY | CWWidth | CWHeight | CWBorderWidth, &wc);
+	{
+		uint32_t vals[5] = { (uint32_t) wc.x, (uint32_t) wc.y,
+			(uint32_t) wc.width, (uint32_t) wc.height,
+			(uint32_t) wc.border_width };
+		xcb_configure_window(XGetXCBConnection(dpy), c->win,
+		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
+		        XCB_CONFIG_WINDOW_BORDER_WIDTH,
+		    vals);
+	}
 	configure(c);
 	xflush(dpy);
 #ifdef COMPOSITOR
@@ -973,10 +1013,10 @@ sendmon(Client *c, Monitor *m)
 void
 setclientstate(Client *c, long state)
 {
-	long data[] = { state, None };
+	uint32_t data[2] = { (uint32_t) state, XCB_ATOM_NONE };
 
-	XChangeProperty(dpy, c->win, wmatom[WMState], wmatom[WMState], 32,
-	    PropModeReplace, (unsigned char *) data, 2);
+	xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE, c->win,
+	    wmatom[WMState], wmatom[WMState], 32, 2, data);
 }
 
 void
@@ -993,7 +1033,11 @@ setfullscreen(Client *c, int fullscreen)
 		compositor_bypass_window(c, 1);
 #endif
 		resizeclient(c, c->mon->mx, c->mon->my, c->mon->mw, c->mon->mh);
-		XRaiseWindow(dpy, c->win);
+		{
+			uint32_t stack = XCB_STACK_MODE_ABOVE;
+			xcb_configure_window(XGetXCBConnection(dpy), c->win,
+			    XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		}
 #ifdef COMPOSITOR
 		compositor_check_unredirect();
 #endif
@@ -1096,7 +1140,11 @@ showhide(Client *c)
 		return;
 	if (ISVISIBLE(c, c->mon) && !c->ishidden) {
 		compositor_set_hidden(c, 0);
-		XMoveWindow(dpy, c->win, c->x, c->y);
+		{
+			uint32_t vals[2] = { (uint32_t) c->x, (uint32_t) c->y };
+			xcb_configure_window(XGetXCBConnection(dpy), c->win,
+			    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
+		}
 		if ((!c->mon->lt[c->mon->sellt]->arrange || c->isfloating) &&
 		    !c->isfullscreen)
 			resize(c, c->x, c->y, c->w, c->h, 0);
@@ -1104,7 +1152,11 @@ showhide(Client *c)
 	} else {
 		showhide(c->snext);
 		compositor_set_hidden(c, 1);
-		XMoveWindow(dpy, c->win, WIDTH(c) * -2, c->y);
+		{
+			uint32_t vals[2] = { (uint32_t) (WIDTH(c) * -2), (uint32_t) c->y };
+			xcb_configure_window(XGetXCBConnection(dpy), c->win,
+			    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
+		}
 	}
 }
 
@@ -1343,13 +1395,18 @@ unfocus(Client *c, int setfocus)
 	if (!c)
 		return;
 	grabbuttons(c, 0);
-	XSetWindowBorder(dpy, c->win, scheme[SchemeNorm][ColBorder].pixel);
+	{
+		uint32_t pix = scheme[SchemeNorm][ColBorder].pixel;
+		xcb_change_window_attributes(
+		    XGetXCBConnection(dpy), c->win, XCB_CW_BORDER_PIXEL, &pix);
+	}
 #ifdef COMPOSITOR
 	compositor_focus_window(c);
 #endif
 	if (setfocus) {
 		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
-		XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
+		xcb_delete_property(
+		    XGetXCBConnection(dpy), root, netatom[NetActiveWindow]);
 	}
 }
 
