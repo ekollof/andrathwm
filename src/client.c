@@ -11,6 +11,10 @@
 #include "xrdb.h"
 #include "config.h"
 
+/* ---- compile-time invariants ---- */
+_Static_assert(sizeof(Atom) >= 4,
+    "sizeof(Atom) is used as the XGetWindowProperty length argument; must be >= 4 bytes");
+
 /* module-local strings */
 static const char broken[] = "broken";
 

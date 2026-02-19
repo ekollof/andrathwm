@@ -89,6 +89,16 @@ static struct {
 	int shape_err_base;
 } comp;
 
+/* ---- compositor compile-time invariants ---- */
+_Static_assert(sizeof(unsigned short) == 2,
+    "unsigned short must be 16 bits for XRenderColor alpha/channel field scaling");
+_Static_assert(sizeof(short) == 2,
+    "short must be 16 bits to match XRectangle.x and XRectangle.y field types");
+_Static_assert(sizeof(Pixmap) == sizeof(unsigned long),
+    "Pixmap (XID) must equal unsigned long in size for format-32 property reads");
+_Static_assert(sizeof(comp.alpha_pict) / sizeof(comp.alpha_pict[0]) == 256,
+    "alpha_pict must have exactly 256 entries for 8-bit opacity quantization");
+
 /* -------------------------------------------------------------------------
  * Forward declarations
  * ---------------------------------------------------------------------- */
