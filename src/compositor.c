@@ -1141,6 +1141,19 @@ comp_repaint_idle(gpointer data)
 {
 	(void) data;
 	comp.repaint_id = 0;
+
+	/* Drain any XDamageNotify events still queued in the X connection
+	 * before painting.  Each damage event unions its rect into comp.dirty
+	 * and would otherwise schedule another idle repaint; by processing them
+	 * all now we paint one complete frame covering all accumulated damage
+	 * instead of a series of partial frames that cause region-by-region
+	 * visual updates. */
+	{
+		XEvent ev;
+		while (XCheckTypedEvent(dpy, comp.damage_ev_base + XDamageNotify, &ev))
+			compositor_handle_event(&ev);
+	}
+
 	comp_do_repaint();
 	return G_SOURCE_REMOVE;
 }
@@ -1252,9 +1265,16 @@ comp_do_repaint(void)
 	if (children)
 		XFree(children);
 
-	/* --- 4. Clip overlay target to dirty region then blit back → screen ---
+	/* --- 4. Blit full back-buffer → overlay (no clip) --------------------
+	 * The back-buffer is a complete, consistent frame composition.  Blitting
+	 * only the dirty sub-region to the overlay causes tearing: the overlay
+	 * contains a patchwork of frames from different repaint cycles.  Always
+	 * blit the full back-buffer so the overlay is atomically consistent.
+	 * The dirty-region clip on comp.back above is still a valid optimisation
+	 * (we only re-render changed pixels into the back-buffer), but the
+	 * presentation blit must be unconditional.
 	 */
-	XFixesSetPictureClipRegion(dpy, comp.target, 0, 0, comp.dirty);
+	XFixesSetPictureClipRegion(dpy, comp.target, 0, 0, None);
 	XRenderComposite(dpy, PictOpSrc, comp.back, None, comp.target, 0, 0, 0, 0,
 	    0, 0, (unsigned int) sw, (unsigned int) sh);
 
@@ -1262,9 +1282,8 @@ comp_do_repaint(void)
 	 */
 	XFixesSetRegion(dpy, comp.dirty, NULL, 0);
 
-	/* Remove clip restrictions */
+	/* Remove clip restriction on back-buffer (overlay has no clip set) */
 	XFixesSetPictureClipRegion(dpy, comp.back, 0, 0, None);
-	XFixesSetPictureClipRegion(dpy, comp.target, 0, 0, None);
 
 	XFlush(dpy);
 }
