@@ -32,16 +32,25 @@ int
 sendevent(Window w, Atom proto, int mask, long d0, long d1, long d2, long d3,
     long d4)
 {
-	int   n;
-	Atom *protocols, mt;
-	int   exists = 0;
+	Atom mt;
+	int  exists = 0;
 
 	if (proto == wmatom[WMTakeFocus] || proto == wmatom[WMDelete]) {
 		mt = wmatom[WMProtocols];
-		if (XGetWMProtocols(dpy, w, &protocols, &n)) {
-			while (!exists && n--)
-				exists = protocols[n] == proto;
-			XFree(protocols);
+		{
+			xcb_connection_t         *xc = XGetXCBConnection(dpy);
+			xcb_get_property_cookie_t ck =
+			    xcb_get_property(xc, 0, (xcb_window_t) w,
+			        (xcb_atom_t) wmatom[WMProtocols], XCB_ATOM_ATOM, 0, 1024);
+			xcb_get_property_reply_t *r = xcb_get_property_reply(xc, ck, NULL);
+			if (r) {
+				int np = xcb_get_property_value_length(r) /
+				    (int) sizeof(xcb_atom_t);
+				xcb_atom_t *pa = xcb_get_property_value(r);
+				while (!exists && np--)
+					exists = (Atom) pa[np] == proto;
+				free(r);
+			}
 		}
 	} else {
 		exists = True;
@@ -78,7 +87,9 @@ void
 setfocus(Client *c)
 {
 	if (!c->neverfocus) {
-		XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+		xcb_set_input_focus(XGetXCBConnection(dpy),
+		    XCB_INPUT_FOCUS_POINTER_ROOT, (xcb_window_t) c->win,
+		    XCB_CURRENT_TIME);
 		uint32_t win32 = (uint32_t) c->win;
 		xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE,
 		    root, netatom[NetActiveWindow], XCB_ATOM_WINDOW, 32, 1, &win32);
