@@ -1,17 +1,26 @@
-/* compositor.c — built-in XRender compositor for awm
+/* compositor.c — GLX/TFP accelerated compositor for awm
  *
  * Architecture:
  *   - XCompositeRedirectSubwindows(root, CompositeRedirectManual) captures
  *     all root children into server-side pixmaps.
- *   - An overlay window (XCompositeGetOverlayWindow) sits above everything
- *     and is the sole painting target.
+ *   - An overlay window (XCompositeGetOverlayWindow) is used as the GLX
+ *     drawable; a GL context is created on it and windows are rendered
+ *     directly to it via textured quads.
+ *   - Each window's XCompositeNameWindowPixmap is bound as a GL texture
+ *     via GLX_EXT_texture_from_pixmap (zero CPU copy, GPU compositing).
  *   - XDamage tracks which windows have changed since the last repaint.
- *   - On damage, a single GLib G_PRIORITY_DEFAULT_IDLE source is scheduled.
- *     It paints all windows bottom-to-top onto a back-buffer Picture, then
- *     blits the back-buffer onto the overlay with XRender.
- *   - Double-buffering (back → overlay) eliminates tearing.
- *   - 256 pre-built 1×1 solid alpha Pictures are used as opacity masks to
- *     avoid allocating a new Picture per window per frame.
+ *   - glXSwapIntervalMESA(1) enables vsync so frames are presented at
+ *     display rate with no tearing.
+ *   - Border rectangles for managed clients are drawn as GL quads in the
+ *     same pass.
+ *   - XRender is retained only for building the alpha-picture cache that
+ *     was used for opacity; opacity is now handled by the GL blend equation
+ *     directly (no XRender needed at runtime).
+ *
+ * Fallback:
+ *   - If GLX_EXT_texture_from_pixmap is unavailable the compositor falls
+ *     back to the original XRender path (comp_do_repaint_xrender) so the
+ *     WM still works on software-only X servers.
  *
  * Compile-time guard: the entire file is dead code unless -DCOMPOSITOR.
  */
@@ -31,6 +40,13 @@
 #include <X11/extensions/Xfixes.h>
 #include <X11/extensions/Xrender.h>
 
+/* GL/GLX — only included when -DCOMPOSITOR is active */
+#define GL_GLEXT_PROTOTYPES
+#define GLX_GLXEXT_PROTOTYPES
+#include <GL/gl.h>
+#include <GL/glx.h>
+#include <GL/glxext.h>
+
 #include <glib.h>
 
 #include "awm.h"
@@ -42,16 +58,21 @@
  * ---------------------------------------------------------------------- */
 
 typedef struct CompWin {
-	Window          win;
-	Client         *client;  /* NULL for override_redirect windows        */
-	Pixmap          pixmap;  /* XCompositeNameWindowPixmap result          */
-	Picture         picture; /* XRenderCreatePicture on pixmap             */
+	Window  win;
+	Client *client; /* NULL for override_redirect windows        */
+	Pixmap  pixmap; /* XCompositeNameWindowPixmap result          */
+	/* XRender path (fallback) */
+	Picture picture; /* XRenderCreatePicture on pixmap             */
+	/* GL/TFP path */
+	GLXPixmap       glx_pixmap; /* glXCreatePixmap (TFP)                  */
+	GLuint          texture;    /* GL_TEXTURE_2D bound via TFP             */
 	Damage          damage;
-	int             x, y, w, h, bw; /* last known geometry                 */
-	int             depth;   /* window depth                               */
-	int             argb;    /* depth == 32                                */
-	double          opacity; /* 0.0 – 1.0                                  */
-	int             redirected; /* 0 = bypass (fullscreen/bypass-compositor)*/
+	int             x, y, w, h, bw; /* last known geometry                */
+	int             depth;   /* window depth                              */
+	int             argb;    /* depth == 32                               */
+	double          opacity; /* 0.0 – 1.0                                 */
+	int             redirected; /* 0 = bypass (fullscreen/bypass-hint)    */
+	int             hidden;     /* 1 = moved off-screen by showhide()        */
 	struct CompWin *next;
 } CompWin;
 
@@ -60,30 +81,52 @@ typedef struct CompWin {
  * ---------------------------------------------------------------------- */
 
 static struct {
-	int           active;
-	Window        overlay;
-	Picture       target; /* XRenderPicture on overlay           */
-	Pixmap        back_pixmap;
-	Picture       back;            /* XRenderPicture on back_pixmap       */
-	Picture       alpha_pict[256]; /* pre-built 1×1 RepeatNormal solids   */
+	int    active;
+	Window overlay;
+
+	/* ---- GL path (primary) ---- */
+	int        use_gl; /* 1 if TFP is available and context ok  */
+	GLXContext glx_ctx;
+	GLXWindow  glx_win; /* GLX drawable wrapping comp.overlay    */
+	GLuint     prog;    /* shader program                        */
+	GLuint     vbo;     /* quad vertex buffer                    */
+	GLuint     vao;     /* vertex array object                   */
+	/* uniform locations */
+	GLint u_tex;
+	GLint u_opacity;
+	GLint u_flip_y; /* reserved: flip V coord (unused for TFP) */
+	GLint u_solid;  /* 1 = draw solid colour quad (borders)  */
+	GLint u_color;  /* solid colour (borders)                */
+	/* TFP function pointers (loaded at runtime) */
+	PFNGLXBINDTEXIMAGEEXTPROC    glx_bind_tex;
+	PFNGLXRELEASETEXIMAGEEXTPROC glx_release_tex;
+	/* swap control (vsync) */
+	PFNGLXSWAPINTERVALMESAPROC glx_swap_interval;
+
+	/* ---- XRender path (fallback) ---- */
+	Picture target; /* XRenderPicture on overlay                   */
+	Pixmap  back_pixmap;
+	Picture back;            /* XRenderPicture on back_pixmap       */
+	Picture alpha_pict[256]; /* pre-built 1×1 RepeatNormal solids   */
+
+	/* ---- Shared state ---- */
 	int           damage_ev_base;
 	int           damage_err_base;
 	int           xfixes_ev_base;
 	int           xfixes_err_base;
-	guint         repaint_id; /* GLib idle source id, 0 = none       */
-	XserverRegion dirty;      /* accumulated dirty region            */
+	guint         repaint_id; /* GLib idle source id, 0 = none            */
+	XserverRegion dirty;      /* accumulated dirty region                 */
 	CompWin      *windows;
 	GMainContext *ctx;
-	/* Wallpaper support: picture built from _XROOTPMAP_ID / ESETROOT_PMAP_ID
-	 */
-	Atom    atom_rootpmap; /* _XROOTPMAP_ID                       */
-	Atom    atom_esetroot; /* ESETROOT_PMAP_ID                    */
+	/* Wallpaper support */
+	Atom    atom_rootpmap;
+	Atom    atom_esetroot;
 	Pixmap  wallpaper_pixmap;
-	Picture wallpaper_pict;
+	Picture wallpaper_pict; /* XRender picture (fallback path)           */
 	/* XRender extension codes — needed for error whitelisting */
 	int render_request_base;
 	int render_err_base;
-	/* XShape extension — optional, gracefully disabled if absent */
+	/* XShape extension — optional */
 	int has_xshape;
 	int shape_ev_base;
 	int shape_err_base;
@@ -99,8 +142,6 @@ _Static_assert(sizeof(short) == 2,
 _Static_assert(sizeof(Pixmap) == sizeof(unsigned long),
     "Pixmap (XID) must equal unsigned long in size for format-32 property "
     "reads");
-_Static_assert(sizeof(comp.alpha_pict) / sizeof(comp.alpha_pict[0]) == 256,
-    "alpha_pict must have exactly 256 entries for 8-bit opacity quantization");
 
 /* -------------------------------------------------------------------------
  * Forward declarations
@@ -115,6 +156,8 @@ static void     comp_apply_shape(CompWin *cw);
 static void     comp_update_wallpaper(void);
 static void     schedule_repaint(void);
 static void     comp_do_repaint(void);
+static void     comp_do_repaint_gl(void);
+static void     comp_do_repaint_xrender(void);
 static gboolean comp_repaint_idle(gpointer data);
 static Picture  make_alpha_picture(double a);
 
@@ -122,8 +165,7 @@ static Picture  make_alpha_picture(double a);
  * Helpers
  * ---------------------------------------------------------------------- */
 
-/* Suppress X errors for a single call — needed when windows disappear between
- * XQueryTree and our processing of the list. */
+/* Suppress X errors for a single call */
 static int
 comp_xerror_ignore(Display *d, XErrorEvent *e)
 {
@@ -149,7 +191,7 @@ xerror_pop(void)
 }
 
 /* -------------------------------------------------------------------------
- * Alpha picture cache
+ * Alpha picture cache (used by XRender fallback path only)
  * ---------------------------------------------------------------------- */
 
 static Picture
@@ -170,6 +212,458 @@ make_alpha_picture(double a)
 	XRenderFillRectangle(dpy, PictOpSrc, pic, &col, 0, 0, 1, 1);
 	XFreePixmap(dpy, pix);
 	return pic;
+}
+
+/* -------------------------------------------------------------------------
+ * GL shader source
+ * ---------------------------------------------------------------------- */
+
+/* Vertex shader: maps pixel coordinates to NDC.
+ * Uniforms: screen width/height are baked into the projection done here.
+ * We pass (x, y, w, h) as per-draw uniforms and generate the quad inline. */
+static const char *vert_src =
+    "#version 130\n"
+    "in vec2 a_pos;\n" /* unit quad [0,1]×[0,1]                   */
+    "in vec2 a_uv;\n"
+    "out vec2 v_uv;\n"
+    "uniform vec4 u_rect;\n"   /* x, y, w, h in pixels (top-left origin)  */
+    "uniform vec2 u_screen;\n" /* screen width, height                    */
+    "uniform int  u_flip_y;\n" /* reserved: flip V if texture origin differs */
+    "void main() {\n"
+    "    vec2 px = u_rect.xy + a_pos * u_rect.zw;\n"
+    "    gl_Position = vec4(\n"
+    "        px.x / u_screen.x * 2.0 - 1.0,\n"
+    "        1.0 - px.y / u_screen.y * 2.0,\n" /* Y-flip: screen top=0   */
+    "        0.0, 1.0);\n"
+    "    v_uv = (u_flip_y == 1) ? vec2(a_uv.x, 1.0 - a_uv.y) : a_uv;\n"
+    "}\n";
+
+/* Fragment shader: samples the window texture with opacity, or fills solid. */
+static const char *frag_src =
+    "#version 130\n"
+    "in vec2 v_uv;\n"
+    "out vec4 frag_color;\n"
+    "uniform sampler2D u_tex;\n"
+    "uniform float     u_opacity;\n"
+    "uniform int       u_solid;\n"
+    "uniform vec4      u_color;\n"
+    "void main() {\n"
+    "    if (u_solid == 1) {\n"
+    "        frag_color = u_color;\n"
+    "    } else {\n"
+    "        vec4 c = texture(u_tex, v_uv).rgba;\n"
+    /* TFP textures use the native RGBA layout once we enforce an 8bpc
+     * FBConfig.  Pre-multiplied alpha: un-premultiply before applying
+     * opacity then re-premultiply for the GL pre-multiplied blend equation.
+     * For fully opaque windows (opacity==1) the opacity path is a no-op. */
+    "        if (u_opacity < 1.0) {\n"
+    "            if (c.a > 0.0) c.rgb /= c.a;\n"
+    "            c.a *= u_opacity;\n"
+    "            c.rgb *= c.a;\n"
+    "        }\n"
+    "        frag_color = c;\n"
+    "    }\n"
+    "}\n";
+
+/* -------------------------------------------------------------------------
+ * GL init helpers
+ * ---------------------------------------------------------------------- */
+
+/* Pick the first FBConfig in the list whose RGB channel sizes are exactly
+ * 8 bits, and optionally also has an 8-bit alpha channel.
+ * Mesa on Intel Arc sorts 10bpc configs first; if we blindly take
+ * fbc[0] we get a 10bpc config and the TFP texture data is misinterpreted.
+ * Returns NULL if none qualify (caller falls back to fbc[0]). */
+static GLXFBConfig
+gl_pick_8bpc(GLXFBConfig *fbc, int nfbc, int need_alpha)
+{
+	int i;
+	for (i = 0; i < nfbc; i++) {
+		int r = 0, g = 0, b = 0, a = 0;
+		glXGetFBConfigAttrib(dpy, fbc[i], GLX_RED_SIZE, &r);
+		glXGetFBConfigAttrib(dpy, fbc[i], GLX_GREEN_SIZE, &g);
+		glXGetFBConfigAttrib(dpy, fbc[i], GLX_BLUE_SIZE, &b);
+		glXGetFBConfigAttrib(dpy, fbc[i], GLX_ALPHA_SIZE, &a);
+		if (r == 8 && g == 8 && b == 8 && (!need_alpha || a == 8))
+			return fbc[i];
+	}
+	return NULL;
+}
+
+static GLuint
+gl_compile_shader(GLenum type, const char *src)
+{
+	GLuint s  = glCreateShader(type);
+	GLint  ok = 0;
+	glShaderSource(s, 1, &src, NULL);
+	glCompileShader(s);
+	glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+	if (!ok) {
+		char buf[512];
+		glGetShaderInfoLog(s, sizeof(buf), NULL, buf);
+		awm_warn("compositor: shader compile error: %s", buf);
+		glDeleteShader(s);
+		return 0;
+	}
+	return s;
+}
+
+static GLuint
+gl_link_program(GLuint vert, GLuint frag)
+{
+	GLuint p  = glCreateProgram();
+	GLint  ok = 0;
+	glAttachShader(p, vert);
+	glAttachShader(p, frag);
+	glBindAttribLocation(p, 0, "a_pos");
+	glBindAttribLocation(p, 1, "a_uv");
+	glLinkProgram(p);
+	glGetProgramiv(p, GL_LINK_STATUS, &ok);
+	if (!ok) {
+		char buf[512];
+		glGetProgramInfoLog(p, sizeof(buf), NULL, buf);
+		awm_warn("compositor: shader link error: %s", buf);
+		glDeleteProgram(p);
+		return 0;
+	}
+	return p;
+}
+
+/* Attempt to initialise the GL/TFP path.  Returns 0 on success, -1 if GL
+ * is unavailable (caller falls back to XRender). */
+static int
+comp_init_gl(void)
+{
+	const char  *exts;
+	GLXFBConfig *fbc    = NULL;
+	int          nfbc   = 0;
+	GLXFBConfig  chosen = NULL;
+	GLuint       vert = 0, frag = 0;
+	int          i;
+
+	/* Unit-quad geometry: two triangles covering [0,1]×[0,1] */
+	static const float quad[] = {
+		/* a_pos    a_uv */
+		0.0f,
+		0.0f,
+		0.0f,
+		0.0f,
+		1.0f,
+		0.0f,
+		1.0f,
+		0.0f,
+		0.0f,
+		1.0f,
+		0.0f,
+		1.0f,
+		1.0f,
+		1.0f,
+		1.0f,
+		1.0f,
+	};
+
+	/* --- Check for GLX_EXT_texture_from_pixmap -------------------------*/
+	exts = glXQueryExtensionsString(dpy, screen);
+	if (!exts || !strstr(exts, "GLX_EXT_texture_from_pixmap")) {
+		awm_warn("compositor: GLX_EXT_texture_from_pixmap unavailable, "
+		         "falling back to XRender");
+		return -1;
+	}
+
+	/* Load TFP function pointers */
+	comp.glx_bind_tex = (PFNGLXBINDTEXIMAGEEXTPROC) glXGetProcAddressARB(
+	    (const GLubyte *) "glXBindTexImageEXT");
+	comp.glx_release_tex = (PFNGLXRELEASETEXIMAGEEXTPROC) glXGetProcAddressARB(
+	    (const GLubyte *) "glXReleaseTexImageEXT");
+	if (!comp.glx_bind_tex || !comp.glx_release_tex) {
+		awm_warn("compositor: glXBindTexImageEXT not found, "
+		         "falling back to XRender");
+		return -1;
+	}
+
+	/* Vsync via GLX_MESA_swap_control (preferred on Mesa) */
+	comp.glx_swap_interval = (PFNGLXSWAPINTERVALMESAPROC) glXGetProcAddressARB(
+	    (const GLubyte *) "glXSwapIntervalMESA");
+
+	/* --- Find an appropriate FBConfig for the overlay window -----------
+	 * We want one that:
+	 *   - supports GLX_DOUBLEBUFFER
+	 *   - supports GLX_BIND_TO_TEXTURE_RGBA_EXT (for ARGB windows)
+	 *   - depth matches DefaultDepth
+	 * Start with a broad query and filter manually.
+	 */
+	{
+		int attr[] = { GLX_RENDER_TYPE, GLX_RGBA_BIT, GLX_DRAWABLE_TYPE,
+			GLX_WINDOW_BIT | GLX_PIXMAP_BIT, GLX_DOUBLEBUFFER, True,
+			GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8,
+			GLX_ALPHA_SIZE, 8, GLX_DEPTH_SIZE, 0, GLX_STENCIL_SIZE, 0, None };
+		fbc        = glXChooseFBConfig(dpy, screen, attr, &nfbc);
+	}
+
+	if (!fbc || nfbc == 0) {
+		awm_warn("compositor: no suitable GLX FBConfig found, "
+		         "falling back to XRender");
+		return -1;
+	}
+
+	/* Pick the first 8bpc config that supports TFP for both RGB and RGBA.
+	 * Mesa on Intel Arc sorts 10bpc configs first; using one of those
+	 * causes the GPU to misinterpret 8-bit X11 pixmap data as 10-bit,
+	 * producing badly garbled colours.  We must insist on r==g==b==8. */
+	for (i = 0; i < nfbc; i++) {
+		int rgb_ok = 0, rgba_ok = 0, r = 0, g = 0, b = 0;
+		glXGetFBConfigAttrib(dpy, fbc[i], GLX_RED_SIZE, &r);
+		glXGetFBConfigAttrib(dpy, fbc[i], GLX_GREEN_SIZE, &g);
+		glXGetFBConfigAttrib(dpy, fbc[i], GLX_BLUE_SIZE, &b);
+		if (r != 8 || g != 8 || b != 8)
+			continue;
+		glXGetFBConfigAttrib(
+		    dpy, fbc[i], GLX_BIND_TO_TEXTURE_RGB_EXT, &rgb_ok);
+		glXGetFBConfigAttrib(
+		    dpy, fbc[i], GLX_BIND_TO_TEXTURE_RGBA_EXT, &rgba_ok);
+		if (rgb_ok && rgba_ok) {
+			chosen = fbc[i];
+			break;
+		}
+	}
+	/* Fallback: any 8bpc config (no alpha needed for the overlay window) */
+	if (!chosen)
+		chosen = gl_pick_8bpc(fbc, nfbc, 0);
+	/* Last resort: first config (may be 10bpc, colours will be wrong) */
+	if (!chosen)
+		chosen = fbc[0];
+	XFree(fbc);
+
+	/* --- Create GL context ---------------------------------------------*/
+	{
+		/* Request a core 2.1 context for compatibility with glxext.h
+		 * function signatures; we only use GLSL 1.30 features anyway. */
+		int ctx_attr[] = { GLX_CONTEXT_MAJOR_VERSION_ARB, 2,
+			GLX_CONTEXT_MINOR_VERSION_ARB, 1, None };
+		PFNGLXCREATECONTEXTATTRIBSARBPROC create_ctx =
+		    (PFNGLXCREATECONTEXTATTRIBSARBPROC) glXGetProcAddressARB(
+		        (const GLubyte *) "glXCreateContextAttribsARB");
+		if (create_ctx) {
+			xerror_push_ignore();
+			comp.glx_ctx = create_ctx(dpy, chosen, NULL, True, ctx_attr);
+			xerror_pop();
+		}
+		if (!comp.glx_ctx) {
+			/* Fall back to legacy glXCreateNewContext */
+			comp.glx_ctx =
+			    glXCreateNewContext(dpy, chosen, GLX_RGBA_TYPE, NULL, True);
+		}
+	}
+	if (!comp.glx_ctx) {
+		awm_warn("compositor: failed to create GL context, "
+		         "falling back to XRender");
+		return -1;
+	}
+
+	/* --- Wrap the overlay window as a GLX drawable ---------------------*/
+	comp.glx_win = glXCreateWindow(dpy, chosen, comp.overlay, NULL);
+	if (!comp.glx_win) {
+		awm_warn("compositor: glXCreateWindow failed, "
+		         "falling back to XRender");
+		glXDestroyContext(dpy, comp.glx_ctx);
+		comp.glx_ctx = NULL;
+		return -1;
+	}
+
+	if (!glXMakeCurrent(dpy, comp.glx_win, comp.glx_ctx)) {
+		awm_warn("compositor: glXMakeCurrent failed, "
+		         "falling back to XRender");
+		glXDestroyWindow(dpy, comp.glx_win);
+		glXDestroyContext(dpy, comp.glx_ctx);
+		comp.glx_ctx = 0;
+		comp.glx_win = 0;
+		return -1;
+	}
+
+	/* Enable vsync */
+	if (comp.glx_swap_interval)
+		comp.glx_swap_interval(1);
+
+	/* --- Compile shaders -----------------------------------------------*/
+	vert = gl_compile_shader(GL_VERTEX_SHADER, vert_src);
+	frag = gl_compile_shader(GL_FRAGMENT_SHADER, frag_src);
+	if (!vert || !frag) {
+		if (vert)
+			glDeleteShader(vert);
+		if (frag)
+			glDeleteShader(frag);
+		glXMakeCurrent(dpy, None, NULL);
+		glXDestroyWindow(dpy, comp.glx_win);
+		glXDestroyContext(dpy, comp.glx_ctx);
+		comp.glx_ctx = 0;
+		comp.glx_win = 0;
+		return -1;
+	}
+
+	comp.prog = gl_link_program(vert, frag);
+	glDeleteShader(vert);
+	glDeleteShader(frag);
+	if (!comp.prog) {
+		glXMakeCurrent(dpy, None, NULL);
+		glXDestroyWindow(dpy, comp.glx_win);
+		glXDestroyContext(dpy, comp.glx_ctx);
+		comp.glx_ctx = 0;
+		comp.glx_win = 0;
+		return -1;
+	}
+
+	/* Cache uniform locations */
+	comp.u_tex     = glGetUniformLocation(comp.prog, "u_tex");
+	comp.u_opacity = glGetUniformLocation(comp.prog, "u_opacity");
+	comp.u_flip_y  = glGetUniformLocation(comp.prog, "u_flip_y");
+	comp.u_solid   = glGetUniformLocation(comp.prog, "u_solid");
+	comp.u_color   = glGetUniformLocation(comp.prog, "u_color");
+
+	/* Cache the u_rect and u_screen locations via use */
+	glUseProgram(comp.prog);
+	glUniform1i(comp.u_tex, 0); /* texture unit 0 */
+	glUseProgram(0);
+
+	/* --- Build unit-quad VBO/VAO ----------------------------------------*/
+	glGenVertexArrays(1, &comp.vao);
+	glGenBuffers(1, &comp.vbo);
+	glBindVertexArray(comp.vao);
+	glBindBuffer(GL_ARRAY_BUFFER, comp.vbo);
+	glBufferData(
+	    GL_ARRAY_BUFFER, (GLsizeiptr) sizeof(quad), quad, GL_STATIC_DRAW);
+	/* a_pos: 2 floats at offset 0, stride 4 floats */
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(
+	    0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *) 0);
+	/* a_uv: 2 floats at offset 2 floats */
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+	    (void *) (2 * sizeof(float)));
+	glBindVertexArray(0);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+	/* --- GL state ---------------------------------------------------------*/
+	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_SCISSOR_TEST);
+	glEnable(GL_BLEND);
+	/* Pre-multiplied alpha blend: src=ONE, dst=ONE_MINUS_SRC_ALPHA.
+	 * TFP textures and our fragment shader both deliver pre-multiplied
+	 * alpha, so this is correct and avoids a divide. */
+	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+	glViewport(0, 0, sw, sh);
+
+	comp.use_gl = 1;
+	awm_debug("compositor: GL/TFP path initialised (renderer: %s)",
+	    (const char *) glGetString(GL_RENDERER));
+	return 0;
+}
+
+/* Create a TFP GLXPixmap + GL texture for cw->pixmap.
+ * Fills cw->glx_pixmap and cw->texture.
+ * Called after comp_refresh_pixmap() sets cw->pixmap. */
+static void
+comp_bind_tfp(CompWin *cw)
+{
+	int          tfp_attr[7];
+	int          n    = 0;
+	GLXFBConfig *fbc  = NULL;
+	int          nfbc = 0;
+
+	if (!comp.use_gl || !cw->pixmap)
+		return;
+
+	/* Release any existing TFP resources first */
+	if (cw->texture) {
+		if (cw->glx_pixmap)
+			comp.glx_release_tex(dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
+		glDeleteTextures(1, &cw->texture);
+		cw->texture = 0;
+	}
+	if (cw->glx_pixmap) {
+		glXDestroyPixmap(dpy, cw->glx_pixmap);
+		cw->glx_pixmap = 0;
+	}
+
+	/* Find an FBConfig that supports the pixmap's depth */
+	{
+		int depth_attr[] = { GLX_RENDER_TYPE, GLX_RGBA_BIT, GLX_DRAWABLE_TYPE,
+			GLX_PIXMAP_BIT, GLX_BIND_TO_TEXTURE_TARGETS_EXT,
+			GLX_TEXTURE_2D_BIT_EXT,
+			cw->argb ? GLX_BIND_TO_TEXTURE_RGBA_EXT
+			         : GLX_BIND_TO_TEXTURE_RGB_EXT,
+			True, GLX_DOUBLEBUFFER, False, None };
+		fbc              = glXChooseFBConfig(dpy, screen, depth_attr, &nfbc);
+	}
+	if (!fbc || nfbc == 0) {
+		if (fbc)
+			XFree(fbc);
+		return;
+	}
+
+	/* Build TFP pixmap attribute list */
+	tfp_attr[n++] = GLX_TEXTURE_TARGET_EXT;
+	tfp_attr[n++] = GLX_TEXTURE_2D_EXT;
+	tfp_attr[n++] = GLX_TEXTURE_FORMAT_EXT;
+	tfp_attr[n++] =
+	    cw->argb ? GLX_TEXTURE_FORMAT_RGBA_EXT : GLX_TEXTURE_FORMAT_RGB_EXT;
+	tfp_attr[n++] = GLX_MIPMAP_TEXTURE_EXT;
+	tfp_attr[n++] = False;
+	tfp_attr[n++] = None;
+
+	/* Use an 8bpc config to avoid the 10bpc misinterpretation bug.
+	 * For ARGB windows we must also have a==8 or the alpha channel is
+	 * lost and the window renders fully opaque. */
+	{
+		GLXFBConfig cfg = gl_pick_8bpc(fbc, nfbc, cw->argb);
+		if (!cfg)
+			cfg = fbc[0]; /* last resort */
+		xerror_push_ignore();
+		cw->glx_pixmap = glXCreatePixmap(dpy, cfg, cw->pixmap, tfp_attr);
+		XSync(dpy, False);
+		xerror_pop();
+	}
+
+	XFree(fbc);
+
+	if (!cw->glx_pixmap)
+		return;
+
+	/* Allocate GL texture */
+	glGenTextures(1, &cw->texture);
+	glBindTexture(GL_TEXTURE_2D, cw->texture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+	/* Bind the TFP pixmap as the texture's image */
+	xerror_push_ignore();
+	comp.glx_bind_tex(dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
+	XSync(dpy, False);
+	xerror_pop();
+
+	glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+/* Release TFP resources for a CompWin without touching its XRender Picture.
+ * Must be called before comp_free_win() when use_gl==1 so textures are
+ * released before the underlying pixmap is freed. */
+static void
+comp_release_tfp(CompWin *cw)
+{
+	if (!comp.use_gl)
+		return;
+
+	if (cw->texture) {
+		if (cw->glx_pixmap)
+			comp.glx_release_tex(dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
+		glDeleteTextures(1, &cw->texture);
+		cw->texture = 0;
+	}
+	if (cw->glx_pixmap) {
+		glXDestroyPixmap(dpy, cw->glx_pixmap);
+		cw->glx_pixmap = 0;
+	}
 }
 
 /* -------------------------------------------------------------------------
@@ -225,7 +719,6 @@ compositor_init(GMainContext *ctx)
 		awm_warn("compositor: XRender extension not available");
 		return -1;
 	}
-	/* Store render error base for the X error handler whitelist */
 	comp.render_err_base = render_err;
 	{
 		int op, ev_dummy, err_dummy;
@@ -233,12 +726,8 @@ compositor_init(GMainContext *ctx)
 			comp.render_request_base = op;
 	}
 
-	/* XShape — optional; used to honour ShapeBounding clip regions.
-	 * Non-fatal: compositing works without it, shaped windows just paint
-	 * their full bounding box. */
-	if (XShapeQueryExtension(dpy, &comp.shape_ev_base, &comp.shape_err_base)) {
+	if (XShapeQueryExtension(dpy, &comp.shape_ev_base, &comp.shape_err_base))
 		comp.has_xshape = 1;
-	}
 
 	/* --- Redirect all root children ---------------------------------------
 	 */
@@ -247,10 +736,6 @@ compositor_init(GMainContext *ctx)
 	XCompositeRedirectSubwindows(dpy, root, CompositeRedirectManual);
 	XSync(dpy, False);
 	xerror_pop();
-
-	/* If another compositor is running, XCompositeRedirectSubwindows raises
-	 * BadAccess.  We treat any error here as "already composited, back off."
-	 */
 
 	/* --- Overlay window ---------------------------------------------------
 	 */
@@ -262,32 +747,27 @@ compositor_init(GMainContext *ctx)
 		return -1;
 	}
 
-	/* Make the overlay click-through by giving it an empty input shape */
+	/* Make the overlay click-through */
 	empty = XFixesCreateRegion(dpy, NULL, 0);
 	XFixesSetWindowShapeRegion(dpy, comp.overlay, ShapeInput, 0, 0, empty);
 	XFixesDestroyRegion(dpy, empty);
 
-	/* --- Create target picture on overlay ---------------------------------
+	/* --- Try to initialise the GL/TFP path --------------------------------
 	 */
 
-	fmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-	pa.subwindow_mode = IncludeInferiors;
-	comp.target =
-	    XRenderCreatePicture(dpy, comp.overlay, fmt, CPSubwindowMode, &pa);
-
-	/* --- Create back-buffer pixmap + picture ------------------------------
-	 */
-
-	comp.back_pixmap = XCreatePixmap(dpy, root, (unsigned int) sw,
-	    (unsigned int) sh, (unsigned int) DefaultDepth(dpy, screen));
-	comp.back =
-	    XRenderCreatePicture(dpy, comp.back_pixmap, fmt, CPSubwindowMode, &pa);
-
-	/* --- Pre-build alpha pictures -----------------------------------------
-	 */
-
-	for (i = 0; i < 256; i++)
-		comp.alpha_pict[i] = make_alpha_picture((double) i / 255.0);
+	if (comp_init_gl() != 0) {
+		/* GL path unavailable — set up XRender back-buffer + target */
+		fmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
+		pa.subwindow_mode = IncludeInferiors;
+		comp.target =
+		    XRenderCreatePicture(dpy, comp.overlay, fmt, CPSubwindowMode, &pa);
+		comp.back_pixmap = XCreatePixmap(dpy, root, (unsigned int) sw,
+		    (unsigned int) sh, (unsigned int) DefaultDepth(dpy, screen));
+		comp.back        = XRenderCreatePicture(
+            dpy, comp.back_pixmap, fmt, CPSubwindowMode, &pa);
+		for (i = 0; i < 256; i++)
+			comp.alpha_pict[i] = make_alpha_picture((double) i / 255.0);
+	}
 
 	/* --- Dirty region (starts as full screen) -----------------------------
 	 */
@@ -330,8 +810,8 @@ compositor_init(GMainContext *ctx)
 
 	schedule_repaint();
 
-	awm_debug(
-	    "compositor: initialised (damage_ev_base=%d)", comp.damage_ev_base);
+	awm_debug("compositor: initialised (gl=%d damage_ev_base=%d)", comp.use_gl,
+	    comp.damage_ev_base);
 	return 0;
 }
 
@@ -348,7 +828,6 @@ compositor_cleanup(void)
 	if (!comp.active)
 		return;
 
-	/* Cancel pending repaint */
 	if (comp.repaint_id) {
 		g_source_remove(comp.repaint_id);
 		comp.repaint_id = 0;
@@ -357,40 +836,49 @@ compositor_cleanup(void)
 	/* Free all tracked windows */
 	for (cw = comp.windows; cw; cw = next) {
 		next = cw->next;
+		if (comp.use_gl)
+			comp_release_tfp(cw);
 		comp_free_win(cw);
 		free(cw);
 	}
 	comp.windows = NULL;
 
-	/* Free alpha pictures */
-	for (i = 0; i < 256; i++) {
-		if (comp.alpha_pict[i])
-			XRenderFreePicture(dpy, comp.alpha_pict[i]);
+	if (comp.use_gl) {
+		/* Destroy GL resources */
+		if (comp.prog)
+			glDeleteProgram(comp.prog);
+		if (comp.vao)
+			glDeleteVertexArrays(1, &comp.vao);
+		if (comp.vbo)
+			glDeleteBuffers(1, &comp.vbo);
+		glXMakeCurrent(dpy, None, NULL);
+		if (comp.glx_win)
+			glXDestroyWindow(dpy, comp.glx_win);
+		if (comp.glx_ctx)
+			glXDestroyContext(dpy, comp.glx_ctx);
+	} else {
+		/* XRender path cleanup */
+		for (i = 0; i < 256; i++)
+			if (comp.alpha_pict[i])
+				XRenderFreePicture(dpy, comp.alpha_pict[i]);
+		if (comp.back)
+			XRenderFreePicture(dpy, comp.back);
+		if (comp.back_pixmap)
+			XFreePixmap(dpy, comp.back_pixmap);
+		if (comp.target)
+			XRenderFreePicture(dpy, comp.target);
 	}
 
-	/* Free wallpaper picture (pixmap is owned by the wallpaper setter) */
 	if (comp.wallpaper_pict)
 		XRenderFreePicture(dpy, comp.wallpaper_pict);
 
-	/* Free back buffer */
-	if (comp.back)
-		XRenderFreePicture(dpy, comp.back);
-	if (comp.back_pixmap)
-		XFreePixmap(dpy, comp.back_pixmap);
-
-	/* Free target picture and release overlay */
-	if (comp.target)
-		XRenderFreePicture(dpy, comp.target);
 	if (comp.overlay)
 		XCompositeReleaseOverlayWindow(dpy, comp.overlay);
 
-	/* Free dirty region */
 	if (comp.dirty)
 		XFixesDestroyRegion(dpy, comp.dirty);
 
-	/* Unredirect subwindows */
 	XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
-
 	XFlush(dpy);
 	comp.active = 0;
 }
@@ -445,6 +933,10 @@ comp_refresh_pixmap(CompWin *cw)
 	XRenderPictFormat       *fmt;
 	XRenderPictureAttributes pa;
 
+	/* Release TFP resources before freeing the pixmap */
+	if (comp.use_gl)
+		comp_release_tfp(cw);
+
 	if (cw->picture) {
 		XRenderFreePicture(dpy, cw->picture);
 		cw->picture = None;
@@ -474,26 +966,26 @@ comp_refresh_pixmap(CompWin *cw)
 		}
 	}
 
-	xerror_push_ignore();
-	fmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-	if (cw->argb)
-		fmt = XRenderFindStandardFormat(dpy, PictStandardARGB32);
-
-	pa.subwindow_mode = IncludeInferiors;
-	cw->picture =
-	    XRenderCreatePicture(dpy, cw->pixmap, fmt, CPSubwindowMode, &pa);
-	XSync(dpy, False);
-	xerror_pop();
-
-	/* Apply any existing ShapeBounding clip to the freshly-created picture */
-	comp_apply_shape(cw);
+	if (comp.use_gl) {
+		/* Bind as GL texture via TFP */
+		comp_bind_tfp(cw);
+	} else {
+		/* XRender fallback: create an XRender Picture */
+		xerror_push_ignore();
+		fmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
+		if (cw->argb)
+			fmt = XRenderFindStandardFormat(dpy, PictStandardARGB32);
+		pa.subwindow_mode = IncludeInferiors;
+		cw->picture =
+		    XRenderCreatePicture(dpy, cw->pixmap, fmt, CPSubwindowMode, &pa);
+		XSync(dpy, False);
+		xerror_pop();
+		comp_apply_shape(cw);
+	}
 }
 
-/* Apply the window's ShapeBounding clip region to cw->picture so that XRender
- * compositing naturally skips pixels outside the shape (e.g. rounded corners,
- * non-rectangular popups).  Called after every comp_refresh_pixmap() and on
- * ShapeNotify.  Safe to call when XShape is unavailable or the window has no
- * shape set — in both cases the picture clip is reset to None (full rect). */
+/* Apply the window's ShapeBounding clip region to cw->picture.
+ * Only used by the XRender fallback path. */
 static void
 comp_apply_shape(CompWin *cw)
 {
@@ -508,8 +1000,6 @@ comp_apply_shape(CompWin *cw)
 		return;
 	}
 
-	/* XShapeGetRectangles returns NULL if the window has no bounding shape
-	 * (i.e. it is an ordinary rectangle). */
 	rects =
 	    XShapeGetRectangles(dpy, cw->win, ShapeBounding, &nrects, &ordering);
 
@@ -520,9 +1010,6 @@ comp_apply_shape(CompWin *cw)
 		return;
 	}
 
-	/* The rectangles are window-interior-relative.  cw->picture covers the
-	 * interior (XCompositeNameWindowPixmap excludes the border), so no
-	 * translation is needed. */
 	{
 		XserverRegion region =
 		    XFixesCreateRegion(dpy, rects, (unsigned int) nrects);
@@ -532,9 +1019,9 @@ comp_apply_shape(CompWin *cw)
 	XFree(rects);
 }
 
-/* Read _XROOTPMAP_ID (or ESETROOT_PMAP_ID fallback) from the root window and
- * rebuild comp.wallpaper_pict.  Called at init and whenever the property
- * changes so that feh/nitrogen/hsetroot wallpapers are picked up live. */
+/* Read _XROOTPMAP_ID (or ESETROOT_PMAP_ID fallback) and rebuild wallpaper.
+ * For the GL path we read the wallpaper pixmap into a GL texture.
+ * For the XRender path we keep an XRender Picture. */
 static void
 comp_update_wallpaper(void)
 {
@@ -546,8 +1033,6 @@ comp_update_wallpaper(void)
 	Atom           atoms[2];
 	int            i;
 
-	/* Free the previous picture (but NOT the pixmap — it is owned by the
-	 * wallpaper setter, we must never free it). */
 	if (comp.wallpaper_pict) {
 		XRenderFreePicture(dpy, comp.wallpaper_pict);
 		comp.wallpaper_pict   = None;
@@ -571,14 +1056,17 @@ comp_update_wallpaper(void)
 	}
 
 	if (pmap == None)
-		return; /* no wallpaper set — back-buffer falls back to black */
+		return;
 
+	/* Always build the XRender picture — it's used by the XRender fallback
+	 * and as a cheap way to know we have a wallpaper in the GL path
+	 * (where we use the pixmap directly via TFP). */
 	{
 		XRenderPictFormat       *fmt;
 		XRenderPictureAttributes pa;
 
 		fmt       = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-		pa.repeat = RepeatNormal; /* tile if back-buffer > wallpaper */
+		pa.repeat = RepeatNormal;
 		xerror_push_ignore();
 		comp.wallpaper_pict =
 		    XRenderCreatePicture(dpy, pmap, fmt, CPRepeat, &pa);
@@ -590,18 +1078,16 @@ comp_update_wallpaper(void)
 	}
 }
 
-/* Add window by X ID (used during init scan and on MapNotify). */
+/* Add window by X ID */
 static void
 comp_add_by_xid(Window w)
 {
 	XWindowAttributes wa;
 	CompWin          *cw;
 
-	/* Already tracked? */
 	if (comp_find_by_xid(w))
 		return;
 
-	/* Skip the overlay itself */
 	if (w == comp.overlay)
 		return;
 
@@ -613,11 +1099,9 @@ comp_add_by_xid(Window w)
 	if (!ok)
 		return;
 
-	/* Skip InputOnly windows */
 	if (wa.class == InputOnly)
 		return;
 
-	/* Skip unmapped windows that aren't viewable */
 	if (wa.map_state != IsViewable)
 		return;
 
@@ -636,7 +1120,6 @@ comp_add_by_xid(Window w)
 	cw->opacity    = 1.0;
 	cw->redirected = 1;
 
-	/* Find matching Client (may be NULL for override_redirect windows) */
 	{
 		Client  *c;
 		Monitor *m;
@@ -653,7 +1136,6 @@ comp_add_by_xid(Window w)
 
 	comp_refresh_pixmap(cw);
 
-	/* Create damage tracker */
 	if (cw->pixmap) {
 		xerror_push_ignore();
 		cw->damage = XDamageCreate(dpy, w, XDamageReportNonEmpty);
@@ -661,12 +1143,9 @@ comp_add_by_xid(Window w)
 		xerror_pop();
 	}
 
-	/* Subscribe to ShapeNotify so we can update the clip when the
-	 * window's bounding shape changes at runtime. */
 	if (comp.has_xshape)
 		XShapeSelectInput(dpy, w, ShapeNotifyMask);
 
-	/* Prepend — we'll sort by Z-order via XQueryTree at paint time */
 	cw->next     = comp.windows;
 	comp.windows = cw;
 }
@@ -683,7 +1162,6 @@ compositor_add_window(Client *c)
 	if (!comp.active || !c)
 		return;
 
-	/* Window may already have been picked up by MapNotify */
 	cw = comp_find_by_xid(c->win);
 	if (cw) {
 		cw->client  = c;
@@ -693,7 +1171,6 @@ compositor_add_window(Client *c)
 
 	comp_add_by_xid(c->win);
 
-	/* Attach client pointer */
 	cw = comp_find_by_xid(c->win);
 	if (cw) {
 		cw->client  = c;
@@ -714,7 +1191,6 @@ compositor_remove_window(Client *c)
 	prev = NULL;
 	for (cw = comp.windows; cw; cw = cw->next) {
 		if (cw->client == c || cw->win == c->win) {
-			/* Dirty the old footprint so the repaint erases the ghost. */
 			{
 				XRectangle    r;
 				XserverRegion sr;
@@ -730,6 +1206,8 @@ compositor_remove_window(Client *c)
 				prev->next = cw->next;
 			else
 				comp.windows = cw->next;
+			if (comp.use_gl)
+				comp_release_tfp(cw);
 			comp_free_win(cw);
 			free(cw);
 			schedule_repaint();
@@ -754,7 +1232,6 @@ compositor_configure_window(Client *c, int actual_bw)
 	if (!cw)
 		return;
 
-	/* Mark the old footprint dirty so it gets repainted with background. */
 	old_rect.x      = (short) cw->x;
 	old_rect.y      = (short) cw->y;
 	old_rect.width  = (unsigned short) (cw->w + 2 * cw->bw);
@@ -765,15 +1242,12 @@ compositor_configure_window(Client *c, int actual_bw)
 
 	resized = (c->w != cw->w || c->h != cw->h);
 
-	cw->x = c->x - actual_bw;
-	cw->y = c->y - actual_bw;
-	cw->w = c->w;
-	cw->h = c->h;
-	cw->bw =
-	    actual_bw; /* actual X border_width, may be 0 for singularborders */
+	cw->x  = c->x - actual_bw;
+	cw->y  = c->y - actual_bw;
+	cw->w  = c->w;
+	cw->h  = c->h;
+	cw->bw = actual_bw;
 
-	/* Mark the new footprint dirty so the window gets painted at its new pos.
-	 */
 	{
 		XRectangle    new_rect;
 		XserverRegion new_r;
@@ -786,7 +1260,6 @@ compositor_configure_window(Client *c, int actual_bw)
 		XFixesDestroyRegion(dpy, new_r);
 	}
 
-	/* Only re-acquire the pixmap on resize; a move reuses the existing one. */
 	if (cw->redirected && resized)
 		comp_refresh_pixmap(cw);
 
@@ -806,13 +1279,15 @@ compositor_bypass_window(Client *c, int bypass)
 		return;
 
 	if (bypass == !cw->redirected)
-		return; /* already in desired state */
+		return;
 
 	xerror_push_ignore();
 	if (bypass) {
 		XCompositeUnredirectWindow(dpy, c->win, CompositeRedirectManual);
 		cw->redirected = 0;
-		comp_free_win(cw); /* release stale picture */
+		if (comp.use_gl)
+			comp_release_tfp(cw);
+		comp_free_win(cw);
 	} else {
 		XCompositeRedirectWindow(dpy, c->win, CompositeRedirectManual);
 		cw->redirected = 1;
@@ -857,11 +1332,6 @@ compositor_focus_window(Client *c)
 	if (!cw || cw->bw <= 0)
 		return;
 
-	/* Dirty the full outer rect (window interior + all four border strips)
-	 * so that comp_do_repaint() repaints the borders in the new focus colour.
-	 * This is needed because a pure focus-change carries no geometry change,
-	 * so compositor_configure_window() is never called and the dirty region
-	 * would otherwise be empty for these pixels. */
 	r.x      = (short) cw->x;
 	r.y      = (short) cw->y;
 	r.width  = (unsigned short) (cw->w + 2 * cw->bw);
@@ -869,6 +1339,38 @@ compositor_focus_window(Client *c)
 	sr       = XFixesCreateRegion(dpy, &r, 1);
 	XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
 	XFixesDestroyRegion(dpy, sr);
+	schedule_repaint();
+}
+
+void
+compositor_set_hidden(Client *c, int hidden)
+{
+	CompWin *cw;
+
+	if (!comp.active || !c)
+		return;
+
+	cw = comp_find_by_client(c);
+	if (!cw)
+		return;
+
+	if (cw->hidden == hidden)
+		return;
+
+	cw->hidden = hidden;
+
+	/* Dirty the window region so the vacated area gets repainted */
+	{
+		XRectangle    r;
+		XserverRegion sr;
+		r.x      = (short) cw->x;
+		r.y      = (short) cw->y;
+		r.width  = (unsigned short) (cw->w + 2 * cw->bw);
+		r.height = (unsigned short) (cw->h + 2 * cw->bw);
+		sr       = XFixesCreateRegion(dpy, &r, 1);
+		XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
+		XFixesDestroyRegion(dpy, sr);
+	}
 	schedule_repaint();
 }
 
@@ -922,7 +1424,6 @@ compositor_repaint_now(void)
 {
 	if (!comp.active)
 		return;
-	/* Cancel any pending idle repaint — we're doing it right now. */
 	if (comp.repaint_id) {
 		g_source_remove(comp.repaint_id);
 		comp.repaint_id = 0;
@@ -945,12 +1446,8 @@ compositor_handle_event(XEvent *ev)
 		XserverRegion       r;
 		XRectangle          rect;
 
-		/* Subtract the damage so the server resets the dirty state */
 		XDamageSubtract(dpy, dev->damage, None, None);
 
-		/* Union the damaged rect into comp.dirty.
-		 * XDamageNotifyEvent.area is window-relative; translate to
-		 * root-relative by adding the tracked window origin. */
 		{
 			CompWin *dcw = comp_find_by_xid(dev->drawable);
 			rect.x       = (short) (dev->area.x + (dcw ? dcw->x : 0));
@@ -978,11 +1475,7 @@ compositor_handle_event(XEvent *ev)
 		XUnmapEvent *uev = (XUnmapEvent *) ev;
 		CompWin     *cw  = comp_find_by_xid(uev->window);
 		if (cw && !cw->client) {
-			/* Only override_redirect windows (cw->client==NULL) are removed
-			 * here. Managed clients are removed via compositor_remove_window()
-			 * from unmanage(). */
 			CompWin *prev = NULL, *cur;
-			/* Dirty the old footprint before removal. */
 			{
 				XRectangle    r;
 				XserverRegion sr;
@@ -1000,6 +1493,8 @@ compositor_handle_event(XEvent *ev)
 						prev->next = cw->next;
 					else
 						comp.windows = cw->next;
+					if (comp.use_gl)
+						comp_release_tfp(cw);
 					comp_free_win(cw);
 					free(cw);
 					break;
@@ -1015,17 +1510,11 @@ compositor_handle_event(XEvent *ev)
 		XConfigureEvent *cev = (XConfigureEvent *) ev;
 		CompWin         *cw  = comp_find_by_xid(cev->window);
 		if (cw) {
-			/* Managed clients are already handled synchronously by
-			 * compositor_configure_window() from resizeclient().  Processing
-			 * the async ConfigureNotify here as well would double-update
-			 * geometry (using stale cev->x/y) and undo what configure_window
-			 * already did correctly.  Skip them. */
 			if (cw->client)
 				return;
 
 			int resized = (cev->width != cw->w || cev->height != cw->h);
 
-			/* Mark the old position dirty so ghost images are cleared */
 			{
 				XRectangle    old_rect;
 				XserverRegion old_r;
@@ -1044,8 +1533,6 @@ compositor_handle_event(XEvent *ev)
 			cw->h  = cev->height;
 			cw->bw = cev->border_width;
 
-			/* Only re-acquire the pixmap on resize; a move reuses the old one
-			 */
 			if (cw->redirected && resized)
 				comp_refresh_pixmap(cw);
 
@@ -1059,7 +1546,6 @@ compositor_handle_event(XEvent *ev)
 		CompWin             *prev = NULL, *cw;
 		for (cw = comp.windows; cw; cw = cw->next) {
 			if (cw->win == dev->window) {
-				/* Dirty the old footprint so the ghost gets painted over. */
 				{
 					XRectangle    r;
 					XserverRegion sr;
@@ -1075,6 +1561,8 @@ compositor_handle_event(XEvent *ev)
 					prev->next = cw->next;
 				else
 					comp.windows = cw->next;
+				if (comp.use_gl)
+					comp_release_tfp(cw);
 				comp_free_win(cw);
 				free(cw);
 				schedule_repaint();
@@ -1087,7 +1575,6 @@ compositor_handle_event(XEvent *ev)
 
 	if (ev->type == PropertyNotify) {
 		XPropertyEvent *pev = (XPropertyEvent *) ev;
-		/* Watch for wallpaper changes on the root window */
 		if (pev->window == root &&
 		    (pev->atom == comp.atom_rootpmap ||
 		        pev->atom == comp.atom_esetroot)) {
@@ -1097,14 +1584,20 @@ compositor_handle_event(XEvent *ev)
 		return;
 	}
 
-	/* ShapeNotify — window bounding shape changed; rebuild the clip region
-	 * on its picture so compositing respects the new shape immediately. */
 	if (comp.has_xshape && ev->type == comp.shape_ev_base + ShapeNotify) {
 		XShapeEvent *sev = (XShapeEvent *) ev;
 		if (sev->kind == ShapeBounding) {
 			CompWin *cw = comp_find_by_xid(sev->window);
-			if (cw && cw->picture) {
-				comp_apply_shape(cw);
+			if (cw) {
+				if (comp.use_gl) {
+					/* In the GL path there's no per-picture clip region;
+					 * the shape is handled by re-acquiring the pixmap so
+					 * TFP naturally masks via the window's shape. */
+					if (cw->redirected)
+						comp_refresh_pixmap(cw);
+				} else if (cw->picture) {
+					comp_apply_shape(cw);
+				}
 				schedule_repaint();
 			}
 		}
@@ -1122,12 +1615,6 @@ schedule_repaint(void)
 	if (!comp.active || comp.repaint_id)
 		return;
 
-	/* Use G_PRIORITY_HIGH_IDLE so repaints interleave with event
-	 * processing rather than waiting for the entire event queue to
-	 * drain.  With G_PRIORITY_DEFAULT_IDLE a rapid damage stream (e.g.
-	 * xscreensaver fade, video) continuously defers the idle callback
-	 * because new events keep arriving at higher priority, making
-	 * animations appear extremely slow. */
 	comp.repaint_id =
 	    g_idle_add_full(G_PRIORITY_HIGH_IDLE, comp_repaint_idle, NULL, NULL);
 }
@@ -1143,11 +1630,8 @@ comp_repaint_idle(gpointer data)
 	comp.repaint_id = 0;
 
 	/* Drain any XDamageNotify events still queued in the X connection
-	 * before painting.  Each damage event unions its rect into comp.dirty
-	 * and would otherwise schedule another idle repaint; by processing them
-	 * all now we paint one complete frame covering all accumulated damage
-	 * instead of a series of partial frames that cause region-by-region
-	 * visual updates. */
+	 * before painting so we paint one complete frame covering all
+	 * accumulated damage instead of a series of partial frames. */
 	{
 		XEvent ev;
 		while (XCheckTypedEvent(dpy, comp.damage_ev_base + XDamageNotify, &ev))
@@ -1158,25 +1642,213 @@ comp_repaint_idle(gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+/* Dispatch to GL or XRender repaint */
 static void
 comp_do_repaint(void)
+{
+	if (!comp.active)
+		return;
+
+	if (comp.use_gl)
+		comp_do_repaint_gl();
+	else
+		comp_do_repaint_xrender();
+}
+
+/* -------------------------------------------------------------------------
+ * GL repaint path
+ * ---------------------------------------------------------------------- */
+
+static void
+comp_do_repaint_gl(void)
 {
 	Window       root_ret, parent_ret;
 	Window      *children  = NULL;
 	unsigned int nchildren = 0, i;
-	XRenderColor bg_color  = { 0, 0, 0, 0xffff }; /* opaque black default */
+	GLint        u_rect, u_screen;
 
-	if (!comp.active)
+	u_rect   = glGetUniformLocation(comp.prog, "u_rect");
+	u_screen = glGetUniformLocation(comp.prog, "u_screen");
+
+	glUseProgram(comp.prog);
+	glUniform2f(u_screen, (float) sw, (float) sh);
+	glUniform1i(comp.u_tex, 0);
+
+	/* Clear to black (or paint wallpaper) */
+	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT);
+
+	/* Paint wallpaper via TFP if available */
+	if (comp.wallpaper_pixmap) {
+		/* Re-use a temporary CompWin-like binding for the wallpaper.
+		 * The wallpaper pixmap changes rarely; we bind it fresh each
+		 * full repaint rather than caching a texture for it, to keep
+		 * the code simple. */
+		GLXPixmap    wp_glx = 0;
+		GLuint       wp_tex = 0;
+		GLXFBConfig *fbc    = NULL;
+		int          nfbc   = 0;
+		int wp_attr[]  = { GLX_RENDER_TYPE, GLX_RGBA_BIT, GLX_DRAWABLE_TYPE,
+			 GLX_PIXMAP_BIT, GLX_BIND_TO_TEXTURE_TARGETS_EXT,
+			 GLX_TEXTURE_2D_BIT_EXT, GLX_BIND_TO_TEXTURE_RGB_EXT, True,
+			 GLX_DOUBLEBUFFER, False, None };
+		int tfp_attr[] = { GLX_TEXTURE_TARGET_EXT, GLX_TEXTURE_2D_EXT,
+			GLX_TEXTURE_FORMAT_EXT, GLX_TEXTURE_FORMAT_RGB_EXT,
+			GLX_MIPMAP_TEXTURE_EXT, False, None };
+		fbc            = glXChooseFBConfig(dpy, screen, wp_attr, &nfbc);
+		if (fbc && nfbc > 0) {
+			/* Use 8bpc config — wallpaper is always RGB, no alpha needed. */
+			GLXFBConfig wp_cfg = gl_pick_8bpc(fbc, nfbc, 0);
+			if (!wp_cfg)
+				wp_cfg = fbc[0];
+			xerror_push_ignore();
+			wp_glx =
+			    glXCreatePixmap(dpy, wp_cfg, comp.wallpaper_pixmap, tfp_attr);
+			XSync(dpy, False);
+			xerror_pop();
+			if (wp_glx) {
+				glGenTextures(1, &wp_tex);
+				glBindTexture(GL_TEXTURE_2D, wp_tex);
+				glTexParameteri(
+				    GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+				glTexParameteri(
+				    GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+				glTexParameteri(
+				    GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+				glTexParameteri(
+				    GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+				xerror_push_ignore();
+				comp.glx_bind_tex(dpy, wp_glx, GLX_FRONT_LEFT_EXT, NULL);
+				XSync(dpy, False);
+				xerror_pop();
+
+				glUniform4f(u_rect, 0.0f, 0.0f, (float) sw, (float) sh);
+				glUniform1f(comp.u_opacity, 1.0f);
+				glUniform1i(comp.u_flip_y, 0);
+				glUniform1i(comp.u_solid, 0);
+				glBindVertexArray(comp.vao);
+				glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+				glBindVertexArray(0);
+
+				comp.glx_release_tex(dpy, wp_glx, GLX_FRONT_LEFT_EXT);
+				glDeleteTextures(1, &wp_tex);
+				glXDestroyPixmap(dpy, wp_glx);
+			}
+			XFree(fbc);
+		}
+		glBindTexture(GL_TEXTURE_2D, 0);
+	}
+
+	/* Walk root children bottom-to-top */
+	if (!XQueryTree(
+	        dpy, root, &root_ret, &parent_ret, &children, &nchildren)) {
+		glUseProgram(0);
 		return;
+	}
 
-	/* --- 1. Clip back-buffer to dirty region ------------------------------
-	 */
+	xerror_push_ignore();
+
+	glBindVertexArray(comp.vao);
+	glActiveTexture(GL_TEXTURE0);
+
+	for (i = 0; i < nchildren; i++) {
+		CompWin *cw;
+
+		if (children[i] == comp.overlay)
+			continue;
+
+		cw = comp_find_by_xid(children[i]);
+		if (!cw || !cw->redirected || !cw->texture || cw->hidden)
+			continue;
+
+		/* Re-bind the TFP texture so the GL sees the latest pixmap
+		 * contents (the server may have updated it since last frame). */
+		glBindTexture(GL_TEXTURE_2D, cw->texture);
+		if (cw->glx_pixmap) {
+			comp.glx_release_tex(dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
+			comp.glx_bind_tex(dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
+		}
+
+		/* Draw window interior quad */
+		glUniform4f(u_rect, (float) (cw->x + cw->bw), (float) (cw->y + cw->bw),
+		    (float) cw->w, (float) cw->h);
+		glUniform1f(comp.u_opacity, (float) cw->opacity);
+		glUniform1i(comp.u_flip_y, 0); /* NDC Y-flip in vert shader suffices */
+		glUniform1i(comp.u_solid, 0);
+		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+		/* Draw borders for managed clients */
+		if (cw->client && cw->bw > 0) {
+			int          sel = (cw->client == selmon->sel);
+			XRenderColor xrc =
+			    scheme[sel ? SchemeSel : SchemeNorm][ColBorder].color;
+			float        r  = (float) xrc.red / 65535.0f;
+			float        g  = (float) xrc.green / 65535.0f;
+			float        b  = (float) xrc.blue / 65535.0f;
+			float        a  = (float) xrc.alpha / 65535.0f;
+			unsigned int bw = (unsigned int) cw->bw;
+			unsigned int ow = (unsigned int) cw->w + 2 * bw;
+			unsigned int oh = (unsigned int) cw->h + 2 * bw;
+
+			glBindTexture(GL_TEXTURE_2D, 0);
+			glUniform1i(comp.u_solid, 1);
+			/* Borders are opaque — pre-multiplied: rgb*a = rgb (a==1) */
+			glUniform4f(comp.u_color, r * a, g * a, b * a, a);
+
+			/* top */
+			glUniform4f(
+			    u_rect, (float) cw->x, (float) cw->y, (float) ow, (float) bw);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+			/* bottom */
+			glUniform4f(u_rect, (float) cw->x,
+			    (float) (cw->y + (int) (oh - bw)), (float) ow, (float) bw);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+			/* left */
+			glUniform4f(u_rect, (float) cw->x, (float) (cw->y + (int) bw),
+			    (float) bw, (float) cw->h);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+			/* right */
+			glUniform4f(u_rect, (float) (cw->x + (int) (ow - bw)),
+			    (float) (cw->y + (int) bw), (float) bw, (float) cw->h);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+			glUniform1i(comp.u_solid, 0);
+			/* Restore texture binding for next window */
+			glBindTexture(GL_TEXTURE_2D, 0);
+		}
+	}
+
+	glBindVertexArray(0);
+	xerror_pop();
+
+	if (children)
+		XFree(children);
+
+	glUseProgram(0);
+
+	/* Reset dirty region — GL always presents a complete frame */
+	XFixesSetRegion(dpy, comp.dirty, NULL, 0);
+
+	/* Present — glXSwapBuffers is vsync-aware (swap interval = 1) */
+	glXSwapBuffers(dpy, comp.glx_win);
+}
+
+/* -------------------------------------------------------------------------
+ * XRender repaint path (fallback for software-only X servers)
+ * ---------------------------------------------------------------------- */
+
+static void
+comp_do_repaint_xrender(void)
+{
+	Window       root_ret, parent_ret;
+	Window      *children  = NULL;
+	unsigned int nchildren = 0, i;
+	XRenderColor bg_color  = { 0, 0, 0, 0xffff };
+
+	/* Clip back-buffer to dirty region */
 	XFixesSetPictureClipRegion(dpy, comp.back, 0, 0, comp.dirty);
 
-	/* --- 2. Paint background onto back-buffer ----------------------------
-	 * If a wallpaper pixmap has been set via _XROOTPMAP_ID / ESETROOT_PMAP_ID,
-	 * blit it as the bottom-most layer.  Otherwise fill with opaque black.
-	 */
+	/* Paint background */
 	if (comp.wallpaper_pict) {
 		XRenderComposite(dpy, PictOpSrc, comp.wallpaper_pict, None, comp.back,
 		    0, 0, 0, 0, 0, 0, (unsigned int) sw, (unsigned int) sh);
@@ -1185,17 +1857,13 @@ comp_do_repaint(void)
 		    (unsigned int) sw, (unsigned int) sh);
 	}
 
-	/* --- 3. Walk root children bottom-to-top (XQueryTree Z-order) ---------
-	 */
+	/* Walk root children bottom-to-top */
 	if (!XQueryTree(
 	        dpy, root, &root_ret, &parent_ret, &children, &nchildren)) {
 		XFixesSetPictureClipRegion(dpy, comp.back, 0, 0, None);
 		return;
 	}
 
-	/* Guard the entire paint loop: a GL window (e.g. alacritty) may destroy
-	 * its pixmap/picture between the XQueryTree call and the XRenderComposite
-	 * calls.  Absorb any resulting BadPicture/BadDrawable without crashing. */
 	xerror_push_ignore();
 
 	for (i = 0; i < nchildren; i++) {
@@ -1207,25 +1875,19 @@ comp_do_repaint(void)
 			continue;
 
 		cw = comp_find_by_xid(children[i]);
-		if (!cw || !cw->redirected || cw->picture == None)
+		if (!cw || !cw->redirected || cw->picture == None || cw->hidden)
 			continue;
 
-		/* Determine alpha mask */
 		alpha_idx = (int) (cw->opacity * 255.0 + 0.5);
 		if (alpha_idx < 0)
 			alpha_idx = 0;
 		if (alpha_idx > 255)
 			alpha_idx = 255;
 
-		/* XCompositeNameWindowPixmap returns a pixmap of the window
-		 * interior only (w × h), not including the X border.  Paint
-		 * at the interior origin (x+bw, y+bw) with interior size. */
 		if (cw->argb || alpha_idx < 255) {
 			mask = comp.alpha_pict[alpha_idx];
 			XRenderComposite(dpy, PictOpOver, cw->picture, mask, comp.back, 0,
-			    0,    /* src x, y */
-			    0, 0, /* mask x, y */
-			    cw->x + cw->bw, cw->y + cw->bw, (unsigned int) cw->w,
+			    0, 0, 0, cw->x + cw->bw, cw->y + cw->bw, (unsigned int) cw->w,
 			    (unsigned int) cw->h);
 		} else {
 			XRenderComposite(dpy, PictOpSrc, cw->picture, None, comp.back, 0,
@@ -1233,27 +1895,20 @@ comp_do_repaint(void)
 			    (unsigned int) cw->h);
 		}
 
-		/* Paint the border frame that awm manages.  The redirected pixmap
-		 * is interior-only, so the compositor must draw it explicitly.
-		 * Only managed clients with a visible border need this. */
 		if (cw->client && cw->bw > 0) {
 			int          sel = (cw->client == selmon->sel);
 			XRenderColor bc =
 			    scheme[sel ? SchemeSel : SchemeNorm][ColBorder].color;
 			unsigned int bw = (unsigned int) cw->bw;
-			unsigned int ow = (unsigned int) cw->w + 2 * bw; /* outer w */
-			unsigned int oh = (unsigned int) cw->h + 2 * bw; /* outer h */
+			unsigned int ow = (unsigned int) cw->w + 2 * bw;
+			unsigned int oh = (unsigned int) cw->h + 2 * bw;
 
-			/* top */
 			XRenderFillRectangle(
 			    dpy, PictOpSrc, comp.back, &bc, cw->x, cw->y, ow, bw);
-			/* bottom */
 			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc, cw->x,
 			    cw->y + (int) (oh - bw), ow, bw);
-			/* left */
 			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc, cw->x,
 			    cw->y + (int) bw, bw, (unsigned int) cw->h);
-			/* right */
 			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc,
 			    cw->x + (int) (ow - bw), cw->y + (int) bw, bw,
 			    (unsigned int) cw->h);
@@ -1265,26 +1920,15 @@ comp_do_repaint(void)
 	if (children)
 		XFree(children);
 
-	/* --- 4. Blit full back-buffer → overlay (no clip) --------------------
-	 * The back-buffer is a complete, consistent frame composition.  Blitting
-	 * only the dirty sub-region to the overlay causes tearing: the overlay
-	 * contains a patchwork of frames from different repaint cycles.  Always
-	 * blit the full back-buffer so the overlay is atomically consistent.
-	 * The dirty-region clip on comp.back above is still a valid optimisation
-	 * (we only re-render changed pixels into the back-buffer), but the
-	 * presentation blit must be unconditional.
-	 */
+	/* Blit full back-buffer to overlay — unconditional, no clip */
 	XFixesSetPictureClipRegion(dpy, comp.target, 0, 0, None);
 	XRenderComposite(dpy, PictOpSrc, comp.back, None, comp.target, 0, 0, 0, 0,
 	    0, 0, (unsigned int) sw, (unsigned int) sh);
 
-	/* --- 5. Reset dirty region --------------------------------------------
-	 */
+	/* Reset dirty region */
 	XFixesSetRegion(dpy, comp.dirty, NULL, 0);
 
-	/* Remove clip restriction on back-buffer (overlay has no clip set) */
 	XFixesSetPictureClipRegion(dpy, comp.back, 0, 0, None);
-
 	XFlush(dpy);
 }
 

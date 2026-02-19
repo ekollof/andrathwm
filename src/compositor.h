@@ -94,5 +94,12 @@ void compositor_damage_errors(int *err_base);
  */
 void compositor_repaint_now(void);
 
+/*
+ * Called from showhide() to tell the compositor a client window has been
+ * moved off-screen (hidden=1) or back on-screen (hidden=0).  Prevents the
+ * compositor from painting stale window content over an empty tag.
+ */
+void compositor_set_hidden(Client *c, int hidden);
+
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */

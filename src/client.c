@@ -1089,6 +1089,7 @@ showhide(Client *c)
 	if (!c)
 		return;
 	if (ISVISIBLE(c, c->mon) && !c->ishidden) {
+		compositor_set_hidden(c, 0);
 		XMoveWindow(dpy, c->win, c->x, c->y);
 		if ((!c->mon->lt[c->mon->sellt]->arrange || c->isfloating) &&
 		    !c->isfullscreen)
@@ -1096,6 +1097,7 @@ showhide(Client *c)
 		showhide(c->snext);
 	} else {
 		showhide(c->snext);
+		compositor_set_hidden(c, 1);
 		XMoveWindow(dpy, c->win, WIDTH(c) * -2, c->y);
 	}
 }
