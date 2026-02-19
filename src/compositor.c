@@ -233,8 +233,8 @@ xerror_pop(void)
  * bookkeeping, then restore the hook.
  * ---------------------------------------------------------------------- */
 
-static void
-comp_fix_wire_to_event(XEvent *ev)
+void
+compositor_fix_wire_to_event(XEvent *ev)
 {
 	int type = ev->type & 0x7f; /* strip SendEvent bit */
 	Bool (*proc)(Display *, XEvent *, xEvent *);
@@ -1817,8 +1817,8 @@ compositor_handle_event(XEvent *ev)
 		return;
 
 	/* Apply the XESetWireToEvent workaround before dispatching.
-	 * See comp_fix_wire_to_event() for a full explanation. */
-	comp_fix_wire_to_event(ev);
+	 * See compositor_fix_wire_to_event() for a full explanation. */
+	compositor_fix_wire_to_event(ev);
 
 	if (ev->type == comp.damage_ev_base + XDamageNotify) {
 		XDamageNotifyEvent *dev = (XDamageNotifyEvent *) ev;
@@ -2092,7 +2092,7 @@ comp_repaint_idle(gpointer data)
 		XEvent ev;
 		while (
 		    XCheckTypedEvent(dpy, comp.damage_ev_base + XDamageNotify, &ev)) {
-			comp_fix_wire_to_event(&ev);
+			compositor_fix_wire_to_event(&ev);
 			compositor_handle_event(&ev);
 		}
 	}

@@ -206,6 +206,12 @@ x_dispatch_cb(gpointer user_data)
 
 	while (XPending(dpy)) {
 		XNextEvent(dpy, &ev);
+#ifdef COMPOSITOR
+		/* Apply the XESetWireToEvent workaround for every event before
+		 * any handler sees it.  This prevents GL/DRI2 wire-to-event
+		 * hooks from corrupting Xlib's sequence tracking. */
+		compositor_fix_wire_to_event(&ev);
+#endif
 #ifdef XRANDR
 		if (ev.type == randrbase + RRScreenChangeNotify) {
 			XRRUpdateConfiguration(&ev);
@@ -569,6 +575,13 @@ main(int argc, char *argv[])
 		die("usage: awm [-v]");
 	if (!setlocale(LC_CTYPE, "") || !XSupportsLocale())
 		fputs("warning: no locale support\n", stderr);
+	/* XInitThreads() must be called before XOpenDisplay() when using
+	 * GLX with modern XCB-backed libX11.  Without it, GLX requests
+	 * increment the XCB sequence counter independently of Xlib's, causing
+	 * "Xlib: sequence lost" warnings whenever the 16-bit wire counter
+	 * wraps.  Calling XInitThreads() enables the XCB/Xlib sequence
+	 * synchronisation path that resolves this. */
+	XInitThreads();
 	if (!(dpy = XOpenDisplay(NULL)))
 		die("awm: cannot open display");
 	XSetIOErrorHandler(xioerror);
