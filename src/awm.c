@@ -125,13 +125,17 @@ cleanup(void)
 	for (m = mons; m; m = m->next)
 		while (m->cl->stack)
 			unmanage(m->cl->stack, 0);
-	XUngrabKey(dpy, AnyKey, AnyModifier, root);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
+		xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
+	}
 	while (mons)
 		cleanupmon(mons);
 
 	if (showsystray) {
-		XUnmapWindow(dpy, systray->win);
-		XDestroyWindow(dpy, systray->win);
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
+		xcb_unmap_window(xc, systray->win);
+		xcb_destroy_window(xc, systray->win);
 		free(systray);
 	}
 	status_cleanup();
@@ -145,10 +149,11 @@ cleanup(void)
 	for (i = 0; i < LENGTH(colors); i++)
 		free(scheme[i]);
 	free(scheme);
-	XDestroyWindow(dpy, wmcheckwin);
+	xcb_destroy_window(XGetXCBConnection(dpy), wmcheckwin);
 	drw_free(drw);
 	xflush(dpy);
-	XSetInputFocus(dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
+	xcb_set_input_focus(XGetXCBConnection(dpy), XCB_INPUT_FOCUS_POINTER_ROOT,
+	    XCB_INPUT_FOCUS_POINTER_ROOT, XCB_CURRENT_TIME);
 	xcb_delete_property(
 	    XGetXCBConnection(dpy), root, netatom[NetActiveWindow]);
 	if (xsource_id > 0) {
@@ -386,30 +391,56 @@ run(void)
 void
 scan(void)
 {
-	unsigned int      i, num;
-	Window            d1, d2, *wins = NULL;
-	XWindowAttributes wa;
+	unsigned int i;
 
-	if (XQueryTree(dpy, root, &d1, &d2, &wins, &num)) {
-		for (i = 0; i < num; i++) {
-			if (!XGetWindowAttributes(dpy, wins[i], &wa) ||
-			    wa.override_redirect ||
-			    XGetTransientForHint(dpy, wins[i], &d1))
-				continue;
-			if (wa.map_state == IsViewable || getstate(wins[i]) == IconicState)
+	xcb_connection_t       *xc = XGetXCBConnection(dpy);
+	xcb_query_tree_cookie_t ck = xcb_query_tree(xc, root);
+	xcb_query_tree_reply_t *tr = xcb_query_tree_reply(xc, ck, NULL);
+	if (!tr)
+		return;
+
+	int           num  = xcb_query_tree_children_length(tr);
+	xcb_window_t *wins = xcb_query_tree_children(tr);
+
+	/* first pass: non-transients */
+	for (i = 0; i < (unsigned int) num; i++) {
+		xcb_get_window_attributes_cookie_t wck =
+		    xcb_get_window_attributes(xc, wins[i]);
+		xcb_get_window_attributes_reply_t *wr =
+		    xcb_get_window_attributes_reply(xc, wck, NULL);
+		if (!wr)
+			continue;
+		int override  = wr->override_redirect;
+		int map_state = wr->map_state;
+		free(wr);
+		Window trans = None;
+		if (override || XGetTransientForHint(dpy, wins[i], &trans))
+			continue;
+		if (map_state == IsViewable || getstate(wins[i]) == IconicState) {
+			static XWindowAttributes wa;
+			if (XGetWindowAttributes(dpy, wins[i], &wa))
 				manage(wins[i], &wa);
 		}
-		for (i = 0; i < num; i++) { /* now the transients */
-			if (!XGetWindowAttributes(dpy, wins[i], &wa))
-				continue;
-			if (XGetTransientForHint(dpy, wins[i], &d1) &&
-			    (wa.map_state == IsViewable ||
-			        getstate(wins[i]) == IconicState))
-				manage(wins[i], &wa);
-		}
-		if (wins)
-			XFree(wins);
 	}
+	/* second pass: transients */
+	for (i = 0; i < (unsigned int) num; i++) {
+		xcb_get_window_attributes_cookie_t wck =
+		    xcb_get_window_attributes(xc, wins[i]);
+		xcb_get_window_attributes_reply_t *wr =
+		    xcb_get_window_attributes_reply(xc, wck, NULL);
+		if (!wr)
+			continue;
+		int map_state = wr->map_state;
+		free(wr);
+		Window trans = None;
+		if (XGetTransientForHint(dpy, wins[i], &trans) &&
+		    (map_state == IsViewable || getstate(wins[i]) == IconicState)) {
+			static XWindowAttributes wa;
+			if (XGetWindowAttributes(dpy, wins[i], &wa))
+				manage(wins[i], &wa);
+		}
+	}
+	free(tr);
 }
 
 /* Batch-intern all atoms using async XCB cookies on the connection that Xlib
@@ -501,9 +532,8 @@ intern_atoms(void)
 void
 setup(void)
 {
-	int                  i;
-	XSetWindowAttributes wa;
-	struct sigaction     sa;
+	int              i;
+	struct sigaction sa;
 
 	/* do not transform children into zombies when they terminate */
 	sigemptyset(&sa.sa_mask);
@@ -554,7 +584,13 @@ setup(void)
 	updatebars();
 	updatestatus();
 	/* supporting window for NetWMCheck */
-	wmcheckwin = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
+	{
+		xcb_connection_t *xcb = XGetXCBConnection(dpy);
+		wmcheckwin            = xcb_generate_id(xcb);
+		xcb_create_window(xcb, XCB_COPY_FROM_PARENT, wmcheckwin, root, 0, 0, 1,
+		    1, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, 0,
+		    NULL);
+	}
 	{
 		xcb_connection_t *xcb   = XGetXCBConnection(dpy);
 		uint32_t          win32 = (uint32_t) wmcheckwin;
@@ -590,11 +626,15 @@ setup(void)
 			updateworkarea(m);
 	}
 	/* select events */
-	wa.cursor     = cursor[CurNormal]->cursor;
-	wa.event_mask = SubstructureRedirectMask | SubstructureNotifyMask |
-	    ButtonPressMask | PointerMotionMask | EnterWindowMask |
-	    LeaveWindowMask | StructureNotifyMask | PropertyChangeMask;
-	XChangeWindowAttributes(dpy, root, CWEventMask | CWCursor, &wa);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
+		uint32_t evmask = SubstructureRedirectMask | SubstructureNotifyMask |
+		    ButtonPressMask | PointerMotionMask | EnterWindowMask |
+		    LeaveWindowMask | StructureNotifyMask | PropertyChangeMask;
+		xcb_change_window_attributes(xc, root, XCB_CW_EVENT_MASK, &evmask);
+		uint32_t cur = (uint32_t) cursor[CurNormal]->cursor;
+		xcb_change_window_attributes(xc, root, XCB_CW_CURSOR, &cur);
+	}
 	grabkeys();
 	focus(NULL);
 	/* Initialize icon subsystem (GTK, cache) unconditionally */
