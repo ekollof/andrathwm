@@ -10,18 +10,17 @@
 #include "xrdb.h"
 #include "config.h"
 
-/* Convert a Clr (allocated in the default colormap) to a 32-bit ARGB pixel
- * suitable for use with the systray's ARGB visual and colormap. */
+/* Convert a Clr (XftColor) to a 32-bit ARGB pixel suitable for use with
+ * the systray's ARGB visual and colormap.  XftColor already carries the
+ * pre-multiplied XRenderColor channels populated by XftColorAllocName /
+ * XftColorAllocValue — no X roundtrip needed. */
 unsigned long
 clr_to_argb(Clr *clr)
 {
-	XColor xc;
-	xc.pixel = clr->pixel;
-	XQueryColor(dpy, DefaultColormap(dpy, DefaultScreen(dpy)), &xc);
-	/* XColor channels are 16-bit; shift down to 8-bit and pack ARGB */
-	return 0xFF000000UL | ((unsigned long) (xc.red >> 8) << 16) |
-	    ((unsigned long) (xc.green >> 8) << 8) |
-	    ((unsigned long) (xc.blue >> 8));
+	/* XRenderColor channels are 16-bit (0–65535); shift to 8-bit and pack. */
+	return 0xFF000000UL | ((unsigned long) (clr->color.red >> 8) << 16) |
+	    ((unsigned long) (clr->color.green >> 8) << 8) |
+	    ((unsigned long) (clr->color.blue >> 8));
 }
 
 unsigned int
@@ -97,22 +96,25 @@ updatesystrayiconstate(Client *i, XPropertyEvent *ev)
 void
 updatesystrayiconcolors(void)
 {
-	XColor        color;
 	unsigned long colors[12];
+	unsigned long r, g, b;
 
 	if (!showsystray || !systray)
 		return;
 
-	color.pixel = scheme[SchemeNorm][ColFg].pixel;
-	XQueryColor(dpy, DefaultColormap(dpy, DefaultScreen(dpy)), &color);
+	/* XftColor already carries XRenderColor channels — no X roundtrip. */
+	r = scheme[SchemeNorm][ColFg].color.red;
+	g = scheme[SchemeNorm][ColFg].color.green;
+	b = scheme[SchemeNorm][ColFg].color.blue;
+
 	/* foreground color from bar scheme */
-	colors[0] = color.red;
-	colors[1] = color.green;
-	colors[2] = color.blue;
+	colors[0] = r;
+	colors[1] = g;
+	colors[2] = b;
 	/* use same for error/warning/success - simple approach */
-	colors[3] = colors[6] = colors[9] = color.red;
-	colors[4] = colors[7] = colors[10] = color.green;
-	colors[5] = colors[8] = colors[11] = color.blue;
+	colors[3] = colors[6] = colors[9] = r;
+	colors[4] = colors[7] = colors[10] = g;
+	colors[5] = colors[8] = colors[11] = b;
 	XChangeProperty(dpy, systray->win, netatom[NetSystemTrayColors],
 	    XA_CARDINAL, 32, PropModeReplace, (unsigned char *) colors, 12);
 }
