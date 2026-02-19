@@ -87,10 +87,10 @@ typedef struct CompWin {
 	int         x, y, w, h, bw; /* last known geometry                */
 	int         depth;          /* window depth                              */
 	int         argb;           /* depth == 32                               */
-	double      opacity;      /* 0.0 – 1.0                                 */
-	int         redirected;   /* 0 = bypass (fullscreen/bypass-hint)    */
-	int         hidden;       /* 1 = moved off-screen by showhide()        */
-	int         ever_damaged; /* 0 = no damage received yet (since map) */
+	double      opacity;        /* 0.0 – 1.0                                 */
+	int         redirected;     /* 0 = bypass (fullscreen/bypass-hint)    */
+	int         hidden;         /* 1 = moved off-screen by showhide()        */
+	int         ever_damaged;   /* 0 = no damage received yet (since map) */
 	struct CompWin *next;
 } CompWin;
 
@@ -414,8 +414,29 @@ comp_init_gl(void)
 		1.0f,
 	};
 
-	/* --- Get EGL display wrapping the dedicated GL connection ----------*/
-	comp.egl_dpy = eglGetDisplay((EGLNativeDisplayType) comp.gl_dpy);
+	/* --- Get EGL display wrapping the dedicated GL connection ----------
+	 * Prefer eglGetPlatformDisplayEXT(EGL_PLATFORM_X11_EXT) over the
+	 * legacy eglGetDisplay(): the legacy path lets Mesa auto-detect the
+	 * platform, which on some driver/Mesa versions picks a non-X11
+	 * platform (device, surfaceless) that does not advertise
+	 * EGL_KHR_image_pixmap.  The explicit platform hint guarantees we
+	 * get the X11 EGL display, which does expose that extension.
+	 */
+	{
+		PFNEGLGETPLATFORMDISPLAYEXTPROC get_plat_dpy =
+		    (PFNEGLGETPLATFORMDISPLAYEXTPROC) eglGetProcAddress(
+		        "eglGetPlatformDisplayEXT");
+		if (get_plat_dpy) {
+			comp.egl_dpy =
+			    get_plat_dpy(EGL_PLATFORM_X11_EXT, comp.gl_dpy, NULL);
+			awm_debug("compositor: used eglGetPlatformDisplayEXT"
+			          "(EGL_PLATFORM_X11_EXT)");
+		} else {
+			comp.egl_dpy = eglGetDisplay((EGLNativeDisplayType) comp.gl_dpy);
+			awm_debug("compositor: eglGetPlatformDisplayEXT "
+			          "unavailable, used legacy eglGetDisplay");
+		}
+	}
 	if (comp.egl_dpy == EGL_NO_DISPLAY) {
 		awm_warn("compositor: eglGetDisplay failed, "
 		         "falling back to XRender");
