@@ -136,14 +136,5 @@ void compositor_notify_screen_resize(void);
  */
 void compositor_fix_wire_to_event(XEvent *ev);
 
-/*
- * Sync gl_dpy's Xlib sequence counters with XCB's counter.
- * Must be called once per GLib main-loop iteration (from x_dispatch_cb)
- * to prevent "Xlib: sequence lost" warnings caused by Mesa DRI3 sending
- * async XCB requests between frames that bypass gl_dpy->request.
- * No-op when the GL compositor path is not active.
- */
-void compositor_sync_counters(void);
-
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */

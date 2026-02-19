@@ -50,14 +50,6 @@
 
 #include <glib.h>
 
-#include <xcb/xcb.h>
-#include <xcb/xproto.h>
-#include <X11/Xlibint.h>
-
-/* XGetXCBConnection — from libX11-xcb; declared here to avoid requiring
- * the libx11-xcb-dev package at build time. */
-xcb_connection_t *XGetXCBConnection(Display *dpy);
-
 #include "awm.h"
 #include "log.h"
 #include "compositor.h"
@@ -2215,21 +2207,6 @@ comp_do_repaint_gl(void)
 	XRectangle scissor;
 	int        use_scissor = 0;
 
-	/*
-	 * Sync both Xlib counters at frame start to catch any async DRI3
-	 * replies that arrived since the previous frame's end-of-frame sync.
-	 * We must update last_request_read as well as request: the widening
-	 * logic in _XSetLastRequestRead uses last_request_read's high bits to
-	 * reconstruct the 64-bit sequence from the 16-bit wire value.
-	 */
-	{
-		xcb_connection_t            *xcb = XGetXCBConnection(comp.gl_dpy);
-		xcb_get_input_focus_cookie_t ck  = xcb_get_input_focus(xcb);
-		X_DPY_SET_REQUEST(comp.gl_dpy, ck.sequence);
-		X_DPY_SET_LAST_REQUEST_READ(comp.gl_dpy, ck.sequence);
-		xcb_discard_reply(xcb, ck.sequence);
-	}
-
 	/* --- Partial repaint via GLX_EXT_buffer_age + glScissor ------------- */
 	if (comp.has_buffer_age) {
 		unsigned int age = 0;
@@ -2427,65 +2404,7 @@ comp_do_repaint_gl(void)
 
 	if (!comp.paused)
 		glXSwapBuffers(comp.gl_dpy, comp.glx_win);
-	/* Drain pending DRI3/GLX replies; advances last_request_read. */
 	XSync(comp.gl_dpy, False);
-
-	/*
-	 * Synchronise both Xlib counters to XCB's actual sequence number.
-	 *
-	 * Mesa's DRI3 backend sends xcb_present_pixmap / xcb_sync_trigger_fence
-	 * / xcb_get_geometry requests directly via XCB on gl_dpy's connection,
-	 * bypassing Xlib's dpy->request counter.  Xlib's _XSetLastRequestRead
-	 * widens incoming 16-bit reply sequence numbers using last_request_read
-	 * as the high-bit reference.  When XCB's counter wraps a 16-bit
-	 * boundary while last_request_read is still in the previous epoch, the
-	 * widening overestimates the reply sequence by 0x10000 and prints
-	 * "Xlib: sequence lost".
-	 *
-	 * Fix: AFTER glXSwapBuffers + XSync (all Mesa DRI3 requests sent and
-	 * replies drained), send one xcb_get_input_focus to get XCB's current
-	 * counter and write it into BOTH dpy->request (so no future request
-	 * looks out-of-sequence) and last_request_read (so _XSetLastRequestRead
-	 * uses the correct high bits for the next widening).
-	 * xcb_discard_reply drops the pending reply immediately.
-	 */
-	{
-		xcb_connection_t            *xcb = XGetXCBConnection(comp.gl_dpy);
-		xcb_get_input_focus_cookie_t ck  = xcb_get_input_focus(xcb);
-		X_DPY_SET_REQUEST(comp.gl_dpy, ck.sequence);
-		X_DPY_SET_LAST_REQUEST_READ(comp.gl_dpy, ck.sequence);
-		xcb_discard_reply(xcb, ck.sequence);
-	}
-}
-
-/* -------------------------------------------------------------------------
- * Keep gl_dpy's Xlib sequence counters in sync with XCB's counter.
- *
- * Mesa's DRI3 backend calls XGetXCBConnection(gl_dpy) and fires async XCB
- * requests (xcb_present_pixmap, xcb_sync_trigger_fence, xcb_get_geometry …)
- * between frames — bypassing gl_dpy->request entirely.  When Xlib later
- * processes a reply, _XSetLastRequestRead widens the 16-bit reply sequence
- * using last_request_read as the high-bit reference.  If XCB's counter has
- * crossed a 16-bit boundary while last_request_read is still in the previous
- * epoch, the widening overestimates the reply sequence by 0x10000 and prints
- * "Xlib: sequence lost".
- *
- * Called once per GLib main-loop iteration (from x_dispatch_cb) to keep the
- * counters fresh regardless of whether a repaint occurs.
- * ---------------------------------------------------------------------- */
-void
-compositor_sync_counters(void)
-{
-	xcb_connection_t            *xcb;
-	xcb_get_input_focus_cookie_t ck;
-
-	if (!comp.active || !comp.gl_dpy || !comp.use_gl)
-		return;
-	xcb = XGetXCBConnection(comp.gl_dpy);
-	ck  = xcb_get_input_focus(xcb);
-	X_DPY_SET_REQUEST(comp.gl_dpy, ck.sequence);
-	X_DPY_SET_LAST_REQUEST_READ(comp.gl_dpy, ck.sequence);
-	xcb_discard_reply(xcb, ck.sequence);
 }
 
 /* -------------------------------------------------------------------------
