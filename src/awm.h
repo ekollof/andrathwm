@@ -69,6 +69,10 @@
 #define TAGSLENGTH (LENGTH(tags))
 #define TEXTW(X) (drw_fontset_getwidth(drw, (X)) + lrpad)
 
+/* Flush the X request buffer without a round-trip.
+ * Prefer this over XSync(dpy, False) wherever error-draining is not needed. */
+#define xflush(d) xcb_flush(XGetXCBConnection(d))
+
 #define STATUS_TEXT_LEN 512
 
 #define GAP_TOGGLE 100

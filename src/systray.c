@@ -184,7 +184,7 @@ updatesystray(void)
 		if (XGetSelectionOwner(dpy, netatom[NetSystemTray]) == systray->win) {
 			sendevent(root, xatom[Manager], StructureNotifyMask, CurrentTime,
 			    netatom[NetSystemTray], systray->win, 0, 0);
-			XSync(dpy, False);
+			xflush(dpy);
 		} else {
 			awm_error("Unable to obtain system tray window");
 			free(systray);
@@ -219,12 +219,11 @@ updatesystray(void)
 	XMapWindow(dpy, systray->win);
 	XMapSubwindows(dpy, systray->win);
 	/* Flush buffered requests to the X server without blocking for
-	 * completion.  We use XFlush rather than XSync to avoid stalling the
-	 * GLib main loop on every status-bar tick.  The window background is
-	 * filled automatically from the background_pixel set at creation time
-	 * whenever the server exposes previously-hidden areas, so no explicit
-	 * XClearWindow call is needed here. */
-	XFlush(dpy);
+	 * completion.  xcb_flush avoids the round-trip overhead of XSync/XFlush.
+	 * The window background is filled automatically from background_pixel set
+	 * at creation time whenever the server exposes previously-hidden areas,
+	 * so no explicit XClearWindow call is needed here. */
+	xflush(dpy);
 }
 
 Client *

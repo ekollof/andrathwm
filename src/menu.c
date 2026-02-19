@@ -4,6 +4,7 @@
  */
 
 #include <X11/Xlib.h>
+#include <X11/Xlib-xcb.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #ifdef XINERAMA
@@ -415,7 +416,7 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
 	XMapRaised(menu->dpy, menu->win);
 
 	/* Process expose to render before grab */
-	XSync(menu->dpy, False);
+	xcb_flush(XGetXCBConnection(menu->dpy));
 
 	menu->visible             = 1;
 	menu->ignore_next_release = 1; /* Ignore the pending ButtonRelease */
@@ -430,7 +431,7 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
 	 * AlreadyGrabbed because X11 rejects a grab that pre-dates the
 	 * existing one. */
 	XUngrabPointer(menu->dpy, event_time);
-	XSync(menu->dpy, False);
+	xcb_flush(XGetXCBConnection(menu->dpy));
 	{
 		int grab_result = XGrabPointer(menu->dpy, menu->win, False,
 		    ButtonPressMask | ButtonReleaseMask | PointerMotionMask,

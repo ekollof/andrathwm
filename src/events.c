@@ -184,7 +184,7 @@ clientmessage(XEvent *e)
 			sendevent(c->win, netatom[Xembed], StructureNotifyMask,
 			    CurrentTime, XEMBED_EMBEDDED_NOTIFY, 0, systray->win,
 			    XEMBED_VERSION);
-			XSync(dpy, False);
+			xflush(dpy);
 			resizebarwin(selmon);
 			updatesystray();
 			setclientstate(c, NormalState);
@@ -319,7 +319,7 @@ configurerequest(XEvent *e)
 		wc.stack_mode   = ev->detail;
 		XConfigureWindow(dpy, ev->window, ev->value_mask, &wc);
 	}
-	XSync(dpy, False);
+	xflush(dpy);
 }
 
 void

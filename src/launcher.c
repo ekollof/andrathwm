@@ -706,7 +706,7 @@ launcher_render(Launcher *launcher)
 		drw_text(launcher->drw, x, y, launcher->w - LAUNCHER_PADDING * 2,
 		    LAUNCHER_ITEM_HEIGHT, 0, "(no matches)", 0);
 		drw_map(launcher->drw, launcher->win, 0, 0, launcher->w, launcher->h);
-		XSync(launcher->dpy, False);
+		xflush(launcher->dpy);
 		return;
 	}
 
@@ -764,7 +764,7 @@ launcher_render(Launcher *launcher)
 	}
 
 	drw_map(launcher->drw, launcher->win, 0, 0, launcher->w, launcher->h);
-	XSync(launcher->dpy, False);
+	xflush(launcher->dpy);
 }
 
 void
@@ -983,7 +983,7 @@ launcher_show(Launcher *launcher, int x, int y)
 	XMoveResizeWindow(launcher->dpy, launcher->win, launcher->x, launcher->y,
 	    launcher->w, launcher->h);
 	XMapRaised(launcher->dpy, launcher->win);
-	XSync(launcher->dpy, False);
+	xflush(launcher->dpy);
 
 	launcher->visible = 1;
 	launcher_render(launcher);
@@ -995,7 +995,7 @@ launcher_show(Launcher *launcher, int x, int y)
 	 * establish the active keyboard grab. */
 	XUngrabPointer(launcher->dpy, last_event_time);
 	XUngrabKeyboard(launcher->dpy, last_event_time);
-	XSync(launcher->dpy, False);
+	xflush(launcher->dpy);
 	{
 		int grab_result = XGrabPointer(launcher->dpy, launcher->win, False,
 		    ButtonPressMask | ButtonReleaseMask | PointerMotionMask,

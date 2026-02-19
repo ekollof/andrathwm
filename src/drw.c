@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <X11/Xlib-xcb.h>
+
 #include "drw.h"
 #include "log.h"
 #include "util.h"
@@ -472,7 +474,7 @@ drw_map(Drw *drw, Window win, int x, int y, unsigned int w, unsigned int h)
 		cairo_surface_flush(drw->cairo_surface);
 
 	XCopyArea(drw->dpy, drw->drawable, win, drw->gc, x, y, w, h, x, y);
-	XSync(drw->dpy, False);
+	xcb_flush(XGetXCBConnection(drw->dpy));
 }
 
 unsigned int

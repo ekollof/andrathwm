@@ -147,7 +147,7 @@ cleanup(void)
 	free(scheme);
 	XDestroyWindow(dpy, wmcheckwin);
 	drw_free(drw);
-	XSync(dpy, False);
+	xflush(dpy);
 	XSetInputFocus(dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
 	XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
 	if (xsource_id > 0) {
@@ -360,7 +360,7 @@ run(void)
 {
 	GMainContext *ctx;
 
-	XSync(dpy, False);
+	xflush(dpy);
 
 	ctx = g_main_context_default();
 
