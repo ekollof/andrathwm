@@ -370,14 +370,43 @@ expose(XEvent *e)
 	}
 }
 
+/* Return 1 if `w` is a descendant of `ancestor` in the X window tree.
+ * We walk up via XQueryTree, stopping at the root.  The depth is bounded by
+ * the browser's internal widget hierarchy (typically 2–5 hops), so this is
+ * cheap in practice. */
+static int
+iswindowdescendant(Window w, Window ancestor)
+{
+	Window       root_ret, parent, *children;
+	unsigned int nchildren;
+
+	while (w && w != ancestor && w != root) {
+		if (!XQueryTree(dpy, w, &root_ret, &parent, &children, &nchildren))
+			break;
+		if (children)
+			XFree(children);
+		w = parent;
+	}
+	return w == ancestor;
+}
+
 /* there are some broken focus acquiring clients needing extra handling */
 void
 focusin(XEvent *e)
 {
 	XFocusChangeEvent *ev = &e->xfocus;
 
-	if (selmon->sel && ev->window != selmon->sel->win)
-		setfocus(selmon->sel);
+	if (!selmon->sel || ev->window == selmon->sel->win)
+		return;
+
+	/* Allow focus to move to a child window of the currently focused client
+	 * (e.g. an in-page widget, chat overlay, or popup inside a fullscreen
+	 * browser window).  Without this guard, focusin() would steal focus back
+	 * to the top-level client window, making those widgets unreachable. */
+	if (iswindowdescendant(ev->window, selmon->sel->win))
+		return;
+
+	setfocus(selmon->sel);
 }
 
 void
