@@ -149,7 +149,8 @@ cleanup(void)
 	drw_free(drw);
 	xflush(dpy);
 	XSetInputFocus(dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
-	XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
+	xcb_delete_property(
+	    XGetXCBConnection(dpy), root, netatom[NetActiveWindow]);
 	if (xsource_id > 0) {
 		g_source_remove(xsource_id);
 		xsource_id = 0;
@@ -554,15 +555,30 @@ setup(void)
 	updatestatus();
 	/* supporting window for NetWMCheck */
 	wmcheckwin = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
-	XChangeProperty(dpy, wmcheckwin, netatom[NetWMCheck], XA_WINDOW, 32,
-	    PropModeReplace, (unsigned char *) &wmcheckwin, 1);
-	XChangeProperty(dpy, wmcheckwin, netatom[NetWMName], utf8string_atom, 8,
-	    PropModeReplace, (unsigned char *) "awm", 3);
-	XChangeProperty(dpy, root, netatom[NetWMCheck], XA_WINDOW, 32,
-	    PropModeReplace, (unsigned char *) &wmcheckwin, 1);
-	/* EWMH support per view */
-	XChangeProperty(dpy, root, netatom[NetSupported], XA_ATOM, 32,
-	    PropModeReplace, (unsigned char *) netatom, NetLast);
+	{
+		xcb_connection_t *xcb   = XGetXCBConnection(dpy);
+		uint32_t          win32 = (uint32_t) wmcheckwin;
+
+		xcb_change_property(xcb, XCB_PROP_MODE_REPLACE, wmcheckwin,
+		    netatom[NetWMCheck], XCB_ATOM_WINDOW, 32, 1, &win32);
+		xcb_change_property(xcb, XCB_PROP_MODE_REPLACE, wmcheckwin,
+		    netatom[NetWMName], utf8string_atom, 8, 3, "awm");
+		xcb_change_property(xcb, XCB_PROP_MODE_REPLACE, root,
+		    netatom[NetWMCheck], XCB_ATOM_WINDOW, 32, 1, &win32);
+
+		/* EWMH support per view — netatom[] is Atom=unsigned long, need
+		 * uint32_t array for XCB format-32 */
+		{
+			xcb_atom_t supported[NetLast];
+			int        k;
+			for (k = 0; k < NetLast; k++)
+				supported[k] = (xcb_atom_t) netatom[k];
+			xcb_change_property(xcb, XCB_PROP_MODE_REPLACE, root,
+			    netatom[NetSupported], XCB_ATOM_ATOM, 32, NetLast, supported);
+		}
+
+		xcb_delete_property(xcb, root, netatom[NetClientList]);
+	}
 	setnumdesktops();
 	setcurrentdesktop();
 	setdesktopnames();
@@ -573,7 +589,6 @@ setup(void)
 		for (m = mons; m; m = m->next)
 			updateworkarea(m);
 	}
-	XDeleteProperty(dpy, root, netatom[NetClientList]);
 	/* select events */
 	wa.cursor     = cursor[CurNormal]->cursor;
 	wa.event_mask = SubstructureRedirectMask | SubstructureNotifyMask |

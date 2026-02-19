@@ -1,6 +1,8 @@
 /* AndrathWM - EWMH/ICCCM protocol functions
  * See LICENSE file for copyright and license details. */
 
+#include <stdint.h>
+
 #include "awm.h"
 #include "client.h"
 #include "ewmh.h"
@@ -12,9 +14,9 @@
 void
 setcurrentdesktop(void)
 {
-	long data[] = { 0 };
-	XChangeProperty(dpy, root, netatom[NetCurrentDesktop], XA_CARDINAL, 32,
-	    PropModeReplace, (unsigned char *) data, 1);
+	uint32_t data[] = { 0 };
+	xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE, root,
+	    netatom[NetCurrentDesktop], XCB_ATOM_CARDINAL, 32, 1, data);
 }
 
 void
@@ -65,9 +67,9 @@ sendevent(Window w, Atom proto, int mask, long d0, long d1, long d2, long d3,
 void
 setnumdesktops(void)
 {
-	long data[] = { TAGSLENGTH };
-	XChangeProperty(dpy, root, netatom[NetNumberOfDesktops], XA_CARDINAL, 32,
-	    PropModeReplace, (unsigned char *) data, 1);
+	uint32_t data[] = { TAGSLENGTH };
+	xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE, root,
+	    netatom[NetNumberOfDesktops], XCB_ATOM_CARDINAL, 32, 1, data);
 }
 
 void
@@ -75,8 +77,9 @@ setfocus(Client *c)
 {
 	if (!c->neverfocus) {
 		XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
-		XChangeProperty(dpy, root, netatom[NetActiveWindow], XA_WINDOW, 32,
-		    PropModeReplace, (unsigned char *) &(c->win), 1);
+		uint32_t win32 = (uint32_t) c->win;
+		xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE,
+		    root, netatom[NetActiveWindow], XCB_ATOM_WINDOW, 32, 1, &win32);
 	}
 	sendevent(c->win, wmatom[WMTakeFocus], NoEventMask, wmatom[WMTakeFocus],
 	    CurrentTime, 0, 0, 0);
@@ -85,113 +88,117 @@ setfocus(Client *c)
 void
 setviewport(void)
 {
-	long data[] = { 0, 0 };
-	XChangeProperty(dpy, root, netatom[NetDesktopViewport], XA_CARDINAL, 32,
-	    PropModeReplace, (unsigned char *) data, 2);
+	uint32_t data[] = { 0, 0 };
+	xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE, root,
+	    netatom[NetDesktopViewport], XCB_ATOM_CARDINAL, 32, 2, data);
 }
 
 void
 updateclientlist(void)
 {
-	Client  *c;
-	Monitor *m;
+	Client           *c;
+	Monitor          *m;
+	xcb_connection_t *xcb = XGetXCBConnection(dpy);
 
-	XDeleteProperty(dpy, root, netatom[NetClientList]);
+	xcb_delete_property(xcb, root, netatom[NetClientList]);
 	for (m = mons; m; m = m->next)
 		if (m->cl) /* Safety check */
-			for (c = m->cl->clients; c; c = c->next)
-				XChangeProperty(dpy, root, netatom[NetClientList], XA_WINDOW,
-				    32, PropModeAppend, (unsigned char *) &(c->win), 1);
+			for (c = m->cl->clients; c; c = c->next) {
+				uint32_t win32 = (uint32_t) c->win;
+				xcb_change_property(xcb, XCB_PROP_MODE_APPEND, root,
+				    netatom[NetClientList], XCB_ATOM_WINDOW, 32, 1, &win32);
+			}
 
 	/* Update _NET_CLIENT_LIST_STACKING in bottom-to-top order */
-	XDeleteProperty(dpy, root, netatom[NetClientListStacking]);
+	xcb_delete_property(xcb, root, netatom[NetClientListStacking]);
 	for (m = mons; m; m = m->next)
 		if (m->cl) /* Safety check */
-			for (c = m->cl->stack; c; c = c->snext)
-				XChangeProperty(dpy, root, netatom[NetClientListStacking],
-				    XA_WINDOW, 32, PropModeAppend, (unsigned char *) &(c->win),
-				    1);
+			for (c = m->cl->stack; c; c = c->snext) {
+				uint32_t win32 = (uint32_t) c->win;
+				xcb_change_property(xcb, XCB_PROP_MODE_APPEND, root,
+				    netatom[NetClientListStacking], XCB_ATOM_WINDOW, 32, 1,
+				    &win32);
+			}
 }
 
 void
 updatecurrentdesktop(void)
 {
-	long rawdata[] = { selmon->tagset[selmon->seltags] };
-	int  i         = 0;
-	while (*rawdata >> (i + 1)) {
+	unsigned int rawdata = selmon->tagset[selmon->seltags];
+	uint32_t     i       = 0;
+	while (rawdata >> (i + 1))
 		i++;
-	}
-	long data[] = { i };
-	XChangeProperty(dpy, root, netatom[NetCurrentDesktop], XA_CARDINAL, 32,
-	    PropModeReplace, (unsigned char *) data, 1);
+	xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE, root,
+	    netatom[NetCurrentDesktop], XCB_ATOM_CARDINAL, 32, 1, &i);
 }
 
 void
 setwmstate(Client *c)
 {
-	Atom state[8];
-	int  i = 0;
+	xcb_atom_t state[8];
+	uint32_t   n = 0;
 
 	if (c->isfullscreen)
-		state[i++] = netatom[NetWMFullscreen];
+		state[n++] = netatom[NetWMFullscreen];
 	if (c->isurgent)
-		state[i++] = netatom[NetWMStateDemandsAttention];
+		state[n++] = netatom[NetWMStateDemandsAttention];
 	if (c->ishidden)
-		state[i++] = netatom[NetWMStateHidden];
+		state[n++] = netatom[NetWMStateHidden];
 
-	XChangeProperty(dpy, c->win, netatom[NetWMState], XA_ATOM, 32,
-	    PropModeReplace, (unsigned char *) state, i);
+	xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE, c->win,
+	    netatom[NetWMState], XCB_ATOM_ATOM, 32, n, state);
 }
 
 void
 setewmhdesktop(Client *c)
 {
-	long data[] = { 0 };
-	int  i;
+	uint32_t data;
+	int      i;
 
 	/* Calculate desktop number from tags */
 	for (i = 0; i < LENGTH(tags) && !(c->tags & (1 << i)); i++)
 		;
 
-	if (i < LENGTH(tags))
-		data[0] = i;
-	else
-		data[0] = 0xFFFFFFFF; /* All desktops/sticky */
+	data = (i < LENGTH(tags)) ? (uint32_t) i
+	                          : 0xFFFFFFFFu; /* 0xFFFFFFFF = all desktops */
 
-	XChangeProperty(dpy, c->win, netatom[NetWMDesktop], XA_CARDINAL, 32,
-	    PropModeReplace, (unsigned char *) data, 1);
+	xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE, c->win,
+	    netatom[NetWMDesktop], XCB_ATOM_CARDINAL, 32, 1, &data);
 }
 
 void
 updateworkarea(Monitor *m)
 {
-	long data[4];
+	uint32_t data[4];
 
 	/* Calculate workarea (screen minus bar) */
-	data[0] = m->wx;
-	data[1] = m->wy;
-	data[2] = m->ww;
-	data[3] = m->wh;
+	data[0] = (uint32_t) m->wx;
+	data[1] = (uint32_t) m->wy;
+	data[2] = (uint32_t) m->ww;
+	data[3] = (uint32_t) m->wh;
 
-	XChangeProperty(dpy, root, netatom[NetWorkarea], XA_CARDINAL, 32,
-	    PropModeReplace, (unsigned char *) data, 4);
+	xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE, root,
+	    netatom[NetWorkarea], XCB_ATOM_CARDINAL, 32, 4, data);
 }
 
 unsigned long
 getembedinfo(Client *c)
 {
-	int            di;
-	unsigned long  dl;
-	unsigned char *p = NULL;
-	Atom           da;
-	unsigned long  flags = 0;
+	xcb_connection_t         *xcb = XGetXCBConnection(dpy);
+	xcb_get_property_cookie_t ck;
+	xcb_get_property_reply_t *rep;
+	unsigned long             flags = 0;
 
-	if (XGetWindowProperty(dpy, c->win, xatom[XembedInfo], 0L, 2, False,
-	        xatom[XembedInfo], &da, &di, &dl, &dl, &p) == Success &&
-	    p) {
-		if (dl == 2)
-			flags = ((unsigned long *) p)[1];
-		XFree(p);
+	ck = xcb_get_property(
+	    xcb, 0, c->win, xatom[XembedInfo], xatom[XembedInfo], 0, 2);
+	rep = xcb_get_property_reply(xcb, ck, NULL);
+	if (rep) {
+		if (xcb_get_property_value_length(rep) >=
+		    (int) (2 * sizeof(uint32_t))) {
+			uint32_t *vals = xcb_get_property_value(rep);
+			flags          = vals[1];
+		}
+		free(rep);
 	}
 	return flags;
 }
