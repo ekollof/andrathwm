@@ -516,20 +516,47 @@ icon_pixmap_to_surface(Icon *icons, int count, int size)
 		cairo_scale(cr, scale_x, scale_y);
 	}
 
-	/* Create source surface with a private copy of the pixel data so the
-	 * surface lifetime is independent of the Icon / SNIIcon struct. */
+	/* Create source surface with converted pixel data.
+	 *
+	 * The SNI D-Bus protocol delivers icon pixels in network (big-endian)
+	 * byte order: bytes are [A][R][G][B] per pixel in memory.
+	 * Cairo ARGB32 on a little-endian host stores pixels as the native
+	 * 32-bit word 0xAARRGGBB, i.e. bytes [B][G][R][A] in memory.
+	 * A raw memcpy would swap R and B, producing wrong colours.
+	 *
+	 * We must also convert to premultiplied alpha as Cairo requires. */
 	cairo_surface_t *src = cairo_image_surface_create(
 	    CAIRO_FORMAT_ARGB32, best_icon->width, best_icon->height);
 	if (cairo_surface_status(src) == CAIRO_STATUS_SUCCESS) {
-		int src_stride = cairo_image_surface_get_stride(src);
-		int dst_stride = cairo_format_stride_for_width(
-		    CAIRO_FORMAT_ARGB32, best_icon->width);
+		int            stride   = cairo_image_surface_get_stride(src);
 		unsigned char *dst_data = cairo_image_surface_get_data(src);
-		/* Copy row by row in case strides differ */
-		for (int row = 0; row < best_icon->height; row++) {
-			memcpy(dst_data + row * src_stride,
-			    best_icon->pixels + row * dst_stride,
-			    (size_t) (best_icon->width * 4));
+		int            w        = best_icon->width;
+		int            h        = best_icon->height;
+
+		for (int row = 0; row < h; row++) {
+			const unsigned char *sp = best_icon->pixels + row * (w * 4);
+			unsigned char       *dp = dst_data + row * stride;
+			for (int col = 0; col < w; col++, sp += 4, dp += 4) {
+				unsigned char a = sp[0]; /* D-Bus wire: A first */
+				unsigned char r = sp[1]; /* then R */
+				unsigned char g = sp[2]; /* then G */
+				unsigned char b = sp[3]; /* then B */
+				/* Cairo ARGB32 little-endian memory: [B][G][R][A]
+				 * with premultiplied alpha. */
+				if (a == 0) {
+					dp[0] = dp[1] = dp[2] = dp[3] = 0;
+				} else if (a == 255) {
+					dp[0] = b;
+					dp[1] = g;
+					dp[2] = r;
+					dp[3] = 255;
+				} else {
+					dp[0] = (unsigned char) ((b * a) / 255);
+					dp[1] = (unsigned char) ((g * a) / 255);
+					dp[2] = (unsigned char) ((r * a) / 255);
+					dp[3] = a;
+				}
+			}
 		}
 		cairo_surface_mark_dirty(src);
 	}
