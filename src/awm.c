@@ -73,9 +73,10 @@ void (*handler[LASTEvent])(XEvent *) = { [ButtonPress] = buttonpress,
 	[ResizeRequest]                                    = resizerequest,
 	[UnmapNotify]                                      = unmapnotify };
 Atom              wmatom[WMLast], netatom[NetLast], xatom[XLast];
-int               restart   = 0;
-int               barsdirty = 0;
-static GMainLoop *main_loop = NULL;
+int               restart         = 0;
+int               barsdirty       = 0;
+Time              last_event_time = CurrentTime;
+static GMainLoop *main_loop       = NULL;
 Cur              *cursor[CurLast];
 Clr             **scheme;
 Display          *dpy;
@@ -88,21 +89,27 @@ Clientlist       *cl;
 _Static_assert(LENGTH(tags) <= 31,
     "Too many tags: bitmask must fit in 31 bits of unsigned int");
 _Static_assert(LENGTH(tags) < sizeof(unsigned int) * 8,
-    "LENGTH(tags) must be < bit-width of unsigned int to avoid UB in TAGMASK shift");
+    "LENGTH(tags) must be < bit-width of unsigned int to avoid UB in TAGMASK "
+    "shift");
 _Static_assert(sizeof(Atom) == sizeof(long),
-    "Atom must equal long in size: Xlib format-32 property buffers use long[]");
+    "Atom must equal long in size: Xlib format-32 property buffers use "
+    "long[]");
 _Static_assert(sizeof(Window) == sizeof(long),
-    "Window (XID) must equal long in size: Xlib format-32 property buffers use long[]");
+    "Window (XID) must equal long in size: Xlib format-32 property buffers "
+    "use long[]");
 _Static_assert(sizeof(long) >= 4,
-    "long must be at least 32 bits for all Xlib format-32 EWMH/ICCCM property writes");
+    "long must be at least 32 bits for all Xlib format-32 EWMH/ICCCM property "
+    "writes");
 _Static_assert(sizeof(unsigned long) >= 4,
-    "unsigned long must be at least 32 bits for _NET_WM_WINDOW_OPACITY and ARGB pixel packing");
-_Static_assert(sizeof(((Monitor *)0)->tagset) / sizeof(unsigned int) == 2,
+    "unsigned long must be at least 32 bits for _NET_WM_WINDOW_OPACITY and "
+    "ARGB pixel packing");
+_Static_assert(sizeof(((Monitor *) 0)->tagset) / sizeof(unsigned int) == 2,
     "Monitor.tagset must have exactly 2 entries indexed by seltags in {0,1}");
-_Static_assert(sizeof(((Monitor *)0)->lt) / sizeof(const Layout *) == 2,
+_Static_assert(sizeof(((Monitor *) 0)->lt) / sizeof(const Layout *) == 2,
     "Monitor.lt must have exactly 2 entries indexed by sellt in {0,1}");
 _Static_assert(ColBorder == 2,
-    "ColBorder must be index 2; colors[][3] scheme array has exactly 3 per-scheme entries");
+    "ColBorder must be index 2; colors[][3] scheme array has exactly 3 "
+    "per-scheme entries");
 
 void
 cleanup(void)

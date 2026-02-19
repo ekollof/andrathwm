@@ -22,6 +22,7 @@
 #include "launcher.h"
 #include "log.h"
 #include "util.h"
+#include "awm.h"
 
 #include <gtk/gtk.h>
 
@@ -33,8 +34,7 @@
 #define LAUNCHER_SCROLL_BAR_WIDTH 6
 
 static const char *desktop_paths[] = {
-	"/usr/share/applications",
-	"/usr/local/share/applications",
+	"/usr/share/applications", "/usr/local/share/applications",
 	NULL, /* will be replaced with ~/.local/share/applications */
 	NULL, /* will be replaced with flatpak path */
 };
@@ -862,7 +862,7 @@ launcher_create(
 		home = "/root";
 
 	for (i = 0; i < (int) (sizeof(desktop_paths) / sizeof(desktop_paths[0]));
-	    i++) {
+	     i++) {
 		if (desktop_paths[i] == NULL) {
 			if (i == 2) {
 				snprintf(
@@ -988,11 +988,23 @@ launcher_show(Launcher *launcher, int x, int y)
 	launcher->visible = 1;
 	launcher_render(launcher);
 
-	XGrabPointer(launcher->dpy, launcher->win, False,
-	    ButtonPressMask | ButtonReleaseMask | PointerMotionMask, GrabModeAsync,
-	    GrabModeAsync, None, None, CurrentTime);
-	XGrabKeyboard(launcher->dpy, launcher->win, True, GrabModeAsync,
-	    GrabModeAsync, CurrentTime);
+	XUngrabPointer(launcher->dpy, last_event_time);
+	XSync(launcher->dpy, False);
+	{
+		int grab_result = XGrabPointer(launcher->dpy, launcher->win, False,
+		    ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+		    GrabModeAsync, GrabModeAsync, None, None, last_event_time);
+		if (grab_result != GrabSuccess)
+			awm_warn(
+			    "Launcher: Failed to grab pointer (result=%d)", grab_result);
+	}
+	{
+		int key_grab = XGrabKeyboard(launcher->dpy, launcher->win, True,
+		    GrabModeAsync, GrabModeAsync, last_event_time);
+		if (key_grab != GrabSuccess)
+			awm_warn(
+			    "Launcher: Failed to grab keyboard (result=%d)", key_grab);
+	}
 }
 
 void

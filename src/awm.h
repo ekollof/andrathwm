@@ -302,6 +302,7 @@ extern int          restart;
 extern int          barsdirty;
 extern unsigned int numlockmask;
 extern int (*xerrorxlib)(Display *, XErrorEvent *);
+extern Time last_event_time; /* timestamp of the most recent user event */
 /* config-derived globals referenced by dbus.c / icon.c */
 extern const unsigned int sniconsize;
 extern const unsigned int iconcachesize;
