@@ -57,6 +57,9 @@
 #include <X11/extensions/Xfixes.h>
 #include <X11/extensions/Xrender.h>
 
+#include <xcb/xcb.h>
+#include <xcb/present.h>
+
 /* EGL + GL — only included when -DCOMPOSITOR is active */
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
@@ -91,7 +94,8 @@ typedef struct CompWin {
 	int         redirected;     /* 0 = bypass (fullscreen/bypass-hint)    */
 	int         hidden;         /* 1 = moved off-screen by showhide()        */
 	int         ever_damaged;   /* 0 = no damage received yet (since map) */
-	struct CompWin *next;
+	xcb_present_event_t present_eid; /* 0 = not subscribed to Present events */
+	struct CompWin     *next;
 } CompWin;
 
 /* -------------------------------------------------------------------------
@@ -163,6 +167,10 @@ static struct {
 	int has_xshape;
 	int shape_ev_base;
 	int shape_err_base;
+	/* X Present extension — optional, used to detect DRI3/Present frames */
+	int     has_present;    /* 1 if Present extension available */
+	uint8_t present_opcode; /* major opcode for GenericEvent filter */
+	xcb_present_event_t present_eid_next; /* monotonically incrementing EID */
 	/* _NET_WM_CM_Sn selection ownership */
 	Window cm_owner_win; /* utility window used to hold the CM selection */
 	Atom   atom_cm_sn;   /* _NET_WM_CM_S<screen> atom                    */
@@ -773,6 +781,26 @@ compositor_init(GMainContext *ctx)
 	if (XShapeQueryExtension(dpy, &comp.shape_ev_base, &comp.shape_err_base))
 		comp.has_xshape = 1;
 
+	/* --- Query X Present extension (optional) ----------------------------
+	 * Used to subscribe to PresentCompleteNotify so DRI3/Present GPU frames
+	 * from Chrome/Chromium trigger a pixmap refresh and repaint rather than
+	 * showing a frozen frame when the window is re-redirected after
+	 * fullscreen bypass.
+	 */
+	{
+		xcb_connection_t                  *xconn = XGetXCBConnection(dpy);
+		const xcb_query_extension_reply_t *pext =
+		    xcb_get_extension_data(xconn, &xcb_present_id);
+		if (pext && pext->present) {
+			comp.has_present      = 1;
+			comp.present_opcode   = pext->major_opcode;
+			comp.present_eid_next = 1; /* start EID allocation at 1 */
+			awm_debug("compositor: X Present extension available "
+			          "(opcode=%d)",
+			    comp.present_opcode);
+		}
+	}
+
 	/* --- Redirect all root children ---------------------------------------
 	 */
 
@@ -1019,6 +1047,53 @@ comp_find_by_client(Client *c)
 	return NULL;
 }
 
+/* Subscribe cw to XPresent CompleteNotify events so that GPU-rendered
+ * frames via DRI3/Present (e.g. Chrome video) are detected even when
+ * XDamageNotify is not generated.
+ *
+ * Each subscription needs a unique 32-bit event ID (eid).  We allocate
+ * one from comp.present_eid_next.  The eid is stored in cw->present_eid
+ * so we can unsubscribe later with the same value.
+ *
+ * Called when a CompWin is first created and when it is re-redirected
+ * after fullscreen bypass (compositor_check_unredirect resume path). */
+static void
+comp_subscribe_present(CompWin *cw)
+{
+	xcb_connection_t *xconn;
+
+	if (!comp.has_present || cw->present_eid)
+		return; /* already subscribed or extension absent */
+
+	xconn           = XGetXCBConnection(dpy);
+	cw->present_eid = comp.present_eid_next++;
+
+	xcb_present_select_input(xconn, cw->present_eid, (xcb_window_t) cw->win,
+	    XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY);
+	xcb_flush(xconn);
+
+	awm_debug("compositor: subscribed Present CompleteNotify for "
+	          "window 0x%lx (eid=%u)",
+	    cw->win, cw->present_eid);
+}
+
+/* Unsubscribe from Present events for cw.  Safe to call on destroyed
+ * windows — the server ignores requests on dead XIDs. */
+static void
+comp_unsubscribe_present(CompWin *cw)
+{
+	xcb_connection_t *xconn;
+
+	if (!comp.has_present || !cw->present_eid)
+		return;
+
+	xconn = XGetXCBConnection(dpy);
+	xcb_present_select_input(xconn, cw->present_eid, (xcb_window_t) cw->win,
+	    XCB_PRESENT_EVENT_MASK_NO_EVENT);
+	xcb_flush(xconn);
+	cw->present_eid = 0;
+}
+
 static void
 comp_free_win(CompWin *cw)
 {
@@ -1032,6 +1107,9 @@ comp_free_win(CompWin *cw)
 		XSync(dpy, False);
 		xerror_pop();
 	}
+
+	/* Unsubscribe Present events (no-op on dead windows). */
+	comp_unsubscribe_present(cw);
 
 	if (cw->damage) {
 		xerror_push_ignore();
@@ -1356,6 +1434,10 @@ comp_add_by_xid(Window w)
 		xerror_pop();
 	}
 
+	/* Subscribe to X Present CompleteNotify so DRI3/Present GPU frames
+	 * (e.g. Chrome video) trigger repaints even without XDamageNotify. */
+	comp_subscribe_present(cw);
+
 	if (comp.has_xshape)
 		XShapeSelectInput(dpy, w, ShapeNotifyMask);
 
@@ -1516,6 +1598,7 @@ compositor_bypass_window(Client *c, int bypass)
 		comp_refresh_pixmap(cw);
 		if (cw->pixmap && !cw->damage)
 			cw->damage = XDamageCreate(dpy, c->win, XDamageReportNonEmpty);
+		comp_subscribe_present(cw);
 	}
 	XSync(dpy, False);
 	xerror_pop();
@@ -1700,11 +1783,32 @@ compositor_check_unredirect(void)
 	comp.paused = should_pause;
 
 	if (comp.paused) {
-		/* Hide overlay: lower it below the fullscreen window so the
-		 * window draws directly to the display with no GL overhead. */
+		/* Unredirect the fullscreen window and hide the overlay so that
+		 * the window can do DRI3/Present page-flips directly to the
+		 * display without the X server downgrading them to copies.
+		 * Without XCompositeUnredirectWindow the window is still
+		 * redirected into a backing pixmap, DRI3 flips stall, and
+		 * GPU-rendered video (Chrome, mpv) freezes. */
 		if (comp.repaint_id) {
 			g_source_remove(comp.repaint_id);
 			comp.repaint_id = 0;
+		}
+		{
+			CompWin *cw;
+			for (cw = comp.windows; cw; cw = cw->next) {
+				if (cw->client && cw->client->isfullscreen && cw->redirected) {
+					xerror_push_ignore();
+					XCompositeUnredirectWindow(
+					    dpy, cw->win, CompositeRedirectManual);
+					XSync(dpy, False);
+					xerror_pop();
+					cw->redirected = 0;
+					/* Release TFP/pixmap — they'll be rebuilt on resume */
+					if (comp.use_gl)
+						comp_release_tfp(cw);
+					comp_free_win(cw); /* also unsubscribes Present */
+				}
+			}
 		}
 		XLowerWindow(dpy, comp.overlay);
 		awm_debug("compositor: suspended (fullscreen unredirect)");
@@ -1727,6 +1831,9 @@ compositor_check_unredirect(void)
 					    XDamageCreate(dpy, cw->win, XDamageReportNonEmpty);
 				XSync(dpy, False);
 				xerror_pop();
+				/* Re-subscribe Present events — the eid was cleared by
+				 * comp_unsubscribe_present() when we unredirected earlier. */
+				comp_subscribe_present(cw);
 				awm_debug("compositor: re-redirected fullscreen "
 				          "window 0x%lx on resume",
 				    cw->win);
@@ -2035,6 +2142,54 @@ compositor_handle_event(XEvent *ev)
 			         "compositor; disabling compositing",
 			    screen);
 			compositor_cleanup();
+		}
+		return;
+	}
+
+	/* ---- X Present CompleteNotify -----------------------------------------
+	 * Chrome/Chromium and other DRI3/Present clients submit GPU video frames
+	 * via xcb_present_pixmap rather than triggering XDamageNotify.  Without
+	 * this handler the compositor would paint one static frame on resume from
+	 * fullscreen bypass and then freeze.
+	 *
+	 * Present events arrive as Xlib GenericEvent (type 35).  We call
+	 * XGetEventData to get the xcb_ge_generic_event_t cookie, check that its
+	 * extension field matches the Present major opcode, and for a
+	 * CompleteNotify we force a pixmap refresh + full damage + repaint on the
+	 * originating window.
+	 */
+	if (comp.has_present && ev->type == GenericEvent) {
+		XGenericEventCookie *cookie = &ev->xcookie;
+		if (XGetEventData(dpy, cookie)) {
+			if (cookie->extension == (int) comp.present_opcode &&
+			    cookie->evtype == XCB_PRESENT_COMPLETE_NOTIFY) {
+				xcb_present_complete_notify_event_t *pev =
+				    (xcb_present_complete_notify_event_t *) cookie->data;
+				/* Only react to pixmap presents (kind==0), not MSC queries */
+				if (pev->kind == XCB_PRESENT_COMPLETE_KIND_PIXMAP) {
+					CompWin *cw = comp_find_by_xid((Window) pev->window);
+					/* Skip while paused (fullscreen bypass): the window
+					 * draws directly to the display and the compositor is
+					 * not painting.  Calling comp_refresh_pixmap here at
+					 * video frame rate would issue XSync on every frame,
+					 * stalling Chrome's rendering pipeline and causing the
+					 * "freezes when focused" symptom. */
+					if (cw && cw->redirected && !comp.paused) {
+						/* Grab a fresh pixmap snapshot — the DRI3/Present
+						 * buffer Chromium rendered into may not be the same
+						 * pixmap we already have a TFP binding for.  A new
+						 * XCompositeNameWindowPixmap call retrieves the
+						 * current backing store. */
+						comp_refresh_pixmap(cw);
+						compositor_damage_all();
+						schedule_repaint();
+						awm_debug("compositor: Present CompleteNotify on "
+						          "window 0x%lx — refreshed pixmap",
+						    cw->win);
+					}
+				}
+			}
+			XFreeEventData(dpy, cookie);
 		}
 		return;
 	}
