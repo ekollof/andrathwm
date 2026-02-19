@@ -1898,8 +1898,17 @@ compositor_handle_event(XEvent *ev)
 		XConfigureEvent *cev = (XConfigureEvent *) ev;
 		CompWin         *cw  = comp_find_by_xid(cev->window);
 		if (cw) {
-			if (cw->client)
+			if (cw->client) {
+				/* Geometry for managed clients is tracked by
+				 * compositor_configure_window() (called from resizeclient()).
+				 * We only need to update the Z-order in our internal list so
+				 * the painter's algorithm draws them correctly. Without this,
+				 * comp.windows ordering is frozen at map time and monocle /
+				 * floating windows appear in the wrong layer. */
+				comp_restack_above(cw, cev->above);
+				schedule_repaint();
 				return;
+			}
 
 			int resized = (cev->width != cw->w || cev->height != cw->h);
 
