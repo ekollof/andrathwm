@@ -589,12 +589,20 @@ hide(Client *c)
 	XGrabServer(dpy);
 	XGetWindowAttributes(dpy, root, &ra);
 	XGetWindowAttributes(dpy, w, &ca);
-	XSelectInput(dpy, root, ra.your_event_mask & ~SubstructureNotifyMask);
-	XSelectInput(dpy, w, ca.your_event_mask & ~StructureNotifyMask);
-	xcb_unmap_window(XGetXCBConnection(dpy), w);
-	setclientstate(c, IconicState);
-	XSelectInput(dpy, root, ra.your_event_mask);
-	XSelectInput(dpy, w, ca.your_event_mask);
+	{
+		xcb_connection_t *xcb = XGetXCBConnection(dpy);
+		uint32_t          mask;
+		mask = (uint32_t) (ra.your_event_mask & ~SubstructureNotifyMask);
+		xcb_change_window_attributes(xcb, root, XCB_CW_EVENT_MASK, &mask);
+		mask = (uint32_t) (ca.your_event_mask & ~StructureNotifyMask);
+		xcb_change_window_attributes(xcb, w, XCB_CW_EVENT_MASK, &mask);
+		xcb_unmap_window(xcb, w);
+		setclientstate(c, IconicState);
+		mask = (uint32_t) ra.your_event_mask;
+		xcb_change_window_attributes(xcb, root, XCB_CW_EVENT_MASK, &mask);
+		mask = (uint32_t) ca.your_event_mask;
+		xcb_change_window_attributes(xcb, w, XCB_CW_EVENT_MASK, &mask);
+	}
 	XUngrabServer(dpy);
 
 	c->ishidden = 1;
@@ -738,9 +746,12 @@ manage(Window w, XWindowAttributes *wa)
 		c->x = c->mon->mx + (c->mon->mw - WIDTH(c)) / 2;
 		c->y = c->mon->my + (c->mon->mh - HEIGHT(c)) / 2;
 	}
-	XSelectInput(dpy, w,
-	    EnterWindowMask | FocusChangeMask | PropertyChangeMask |
-	        StructureNotifyMask);
+	{
+		uint32_t mask = EnterWindowMask | FocusChangeMask |
+		    PropertyChangeMask | StructureNotifyMask;
+		xcb_change_window_attributes(
+		    XGetXCBConnection(dpy), w, XCB_CW_EVENT_MASK, &mask);
+	}
 	grabbuttons(c, 0);
 	if (!c->isfloating)
 		c->isfloating = c->oldstate = t != NULL || c->isfixed;

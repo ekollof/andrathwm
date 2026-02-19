@@ -167,7 +167,11 @@ updatesystray(void)
 		            CWEventMask | CWOverrideRedirect | CWBackPixel | CWBorderPixel |
 		                CWColormap,
 		            &wa);
-		XSelectInput(dpy, systray->win, SubstructureNotifyMask);
+		{
+			uint32_t mask = SubstructureNotifyMask;
+			xcb_change_window_attributes(XGetXCBConnection(dpy), systray->win,
+			    XCB_CW_EVENT_MASK, &mask);
+		}
 		XChangeProperty(dpy, systray->win, netatom[NetSystemTrayOrientation],
 		    XA_CARDINAL, 32, PropModeReplace,
 		    (unsigned char *) &netatom[NetSystemTrayOrientationHorz], 1);

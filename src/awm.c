@@ -595,7 +595,6 @@ setup(void)
 	    ButtonPressMask | PointerMotionMask | EnterWindowMask |
 	    LeaveWindowMask | StructureNotifyMask | PropertyChangeMask;
 	XChangeWindowAttributes(dpy, root, CWEventMask | CWCursor, &wa);
-	XSelectInput(dpy, root, wa.event_mask);
 	grabkeys();
 	focus(NULL);
 	/* Initialize icon subsystem (GTK, cache) unconditionally */

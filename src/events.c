@@ -168,8 +168,12 @@ clientmessage(XEvent *e)
 			updatesizehints(c);
 			updatesystrayicongeom(c, wa.width, wa.height);
 			XAddToSaveSet(dpy, c->win);
-			XSelectInput(dpy, c->win,
-			    StructureNotifyMask | PropertyChangeMask | ResizeRedirectMask);
+			{
+				uint32_t mask = StructureNotifyMask | PropertyChangeMask |
+				    ResizeRedirectMask;
+				xcb_change_window_attributes(
+				    XGetXCBConnection(dpy), c->win, XCB_CW_EVENT_MASK, &mask);
+			}
 			if (XReparentWindow(dpy, c->win, systray->win, 0, 0) ==
 			    BadWindow) {
 				awm_error("Failed to reparent systray window 0x%lx", c->win);
