@@ -58,6 +58,27 @@
  * Internal types
  * ---------------------------------------------------------------------- */
 
+/*
+ * gl_dpy_sync(d) — XSync + resync Xlib's request counter.
+ *
+ * Mesa's DRI3 backend sends requests directly via XCB on gl_dpy's
+ * underlying socket, bypassing Xlib's dpy->request counter.  After an
+ * XSync, last_request_read has been advanced by _XSetLastRequestRead to
+ * track the actual wire sequence, but dpy->request still holds Xlib's
+ * low count.  If last_request_read crosses a 16-bit boundary while
+ * request is far behind, the next widening in _XSetLastRequestRead
+ * computes newseq = 0x10000 + (small reply seq) > request and prints
+ * "Xlib: sequence lost".
+ *
+ * Fix: after every XSync on gl_dpy, copy last_request_read → request
+ * so both counters agree and the widening arithmetic stays correct.
+ */
+#define gl_dpy_sync(d)                                          \
+	do {                                                        \
+		XSync((d), False);                                      \
+		X_DPY_SET_REQUEST((d), X_DPY_GET_LAST_REQUEST_READ(d)); \
+	} while (0)
+
 typedef struct CompWin {
 	Window  win;
 	Client *client; /* NULL for override_redirect windows        */
@@ -698,7 +719,7 @@ comp_bind_tfp(CompWin *cw)
 		xerror_push_ignore();
 		cw->glx_pixmap =
 		    glXCreatePixmap(comp.gl_dpy, cfg, cw->pixmap, tfp_attr);
-		XSync(comp.gl_dpy, False);
+		gl_dpy_sync(comp.gl_dpy);
 		xerror_pop();
 	}
 
@@ -718,7 +739,7 @@ comp_bind_tfp(CompWin *cw)
 	/* Bind the TFP pixmap as the texture's image */
 	xerror_push_ignore();
 	comp.glx_bind_tex(comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
-	XSync(comp.gl_dpy, False);
+	gl_dpy_sync(comp.gl_dpy);
 	xerror_pop();
 
 	glBindTexture(GL_TEXTURE_2D, 0);
@@ -1285,7 +1306,7 @@ comp_update_wallpaper(void)
 			xerror_push_ignore();
 			comp.wallpaper_glx_pixmap = glXCreatePixmap(
 			    comp.gl_dpy, wp_cfg, comp.wallpaper_pixmap, tfp_attr);
-			XSync(comp.gl_dpy, False);
+			gl_dpy_sync(comp.gl_dpy);
 			xerror_pop();
 
 			if (comp.wallpaper_glx_pixmap) {
@@ -1302,7 +1323,7 @@ comp_update_wallpaper(void)
 				xerror_push_ignore();
 				comp.glx_bind_tex(comp.gl_dpy, comp.wallpaper_glx_pixmap,
 				    GLX_FRONT_LEFT_EXT, NULL);
-				XSync(comp.gl_dpy, False);
+				gl_dpy_sync(comp.gl_dpy);
 				xerror_pop();
 
 				glBindTexture(GL_TEXTURE_2D, 0);
@@ -2385,7 +2406,7 @@ comp_do_repaint_gl(void)
 	/* Drain pending GLX replies from the per-window TFP rebind calls above
 	 * before popping the error handler, so any errors on gl_dpy are
 	 * processed before Xlib's sequence counter advances further. */
-	XSync(comp.gl_dpy, False);
+	gl_dpy_sync(comp.gl_dpy);
 	xerror_pop();
 
 	glUseProgram(0);
@@ -2404,7 +2425,7 @@ comp_do_repaint_gl(void)
 
 	if (!comp.paused)
 		glXSwapBuffers(comp.gl_dpy, comp.glx_win);
-	XSync(comp.gl_dpy, False);
+	gl_dpy_sync(comp.gl_dpy);
 }
 
 /* -------------------------------------------------------------------------
