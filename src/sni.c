@@ -1057,10 +1057,19 @@ sni_icon_render(SNIItem *item, int icon_size, cairo_surface_t *icon_surface)
 	cairo_surface_flush(pixmap_surface);
 	cairo_surface_destroy(pixmap_surface);
 
-	/* Set as window background — pixmap XID is global to the X server */
-	XSetWindowBackgroundPixmap(sni_dpy, item->win, pixmap);
-	XClearWindow(sni_dpy, item->win);
-	xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
+	/* Set as window background entirely over sni_cairo_xcb so that all
+	 * pixmap writes and the background-set request travel on the same
+	 * connection.  Using Xlib's XSetWindowBackgroundPixmap on a different
+	 * connection (sni_dpy) would create a cross-connection ordering hazard:
+	 * the X server could process the background-set before the pixmap fill
+	 * commands, producing wrong/blank icons. */
+	{
+		const uint32_t xcb_pm = (uint32_t) pixmap;
+		xcb_change_window_attributes(sni_cairo_xcb, (xcb_window_t) item->win,
+		    XCB_CW_BACK_PIXMAP, &xcb_pm);
+		xcb_clear_area(sni_cairo_xcb, 0, (xcb_window_t) item->win, 0, 0, 0, 0);
+		xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
+	}
 
 	awm_debug("SNI: Icon rendered for %s", item->service);
 }
@@ -1273,10 +1282,15 @@ sni_render_item(SNIItem *item)
 	cairo_surface_flush(pixmap_surface);
 	cairo_surface_destroy(pixmap_surface);
 
-	/* Set as window background — pixmap XID is global to the X server */
-	XSetWindowBackgroundPixmap(sni_dpy, item->win, pixmap);
-	XClearWindow(sni_dpy, item->win);
-	xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
+	/* Same cross-connection fix as sni_icon_render(): keep all pixmap
+	 * lifecycle operations on sni_cairo_xcb to avoid ordering hazards. */
+	{
+		const uint32_t xcb_pm = (uint32_t) pixmap;
+		xcb_change_window_attributes(sni_cairo_xcb, (xcb_window_t) item->win,
+		    XCB_CW_BACK_PIXMAP, &xcb_pm);
+		xcb_clear_area(sni_cairo_xcb, 0, (xcb_window_t) item->win, 0, 0, 0, 0);
+		xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
+	}
 
 	awm_debug("SNI: Placeholder rendered for %s", item->service);
 
