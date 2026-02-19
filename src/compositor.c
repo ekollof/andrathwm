@@ -50,17 +50,6 @@
 
 #include <glib.h>
 
-/* XSetEventQueueOwner — from libX11-xcb (Xlib-xcb.h).
- * Declared inline here so we don't require the libx11-xcb-dev headers;
- * the symbol is provided by -lX11-xcb at link time. */
-#ifndef XCBOwnsEventQueue
-typedef enum {
-	XlibOwnsEventQueue = 0,
-	XCBOwnsEventQueue  = 1
-} XEventQueueOwner;
-void XSetEventQueueOwner(Display *dpy, XEventQueueOwner owner);
-#endif
-
 #include "awm.h"
 #include "log.h"
 #include "compositor.h"
@@ -855,23 +844,15 @@ compositor_init(GMainContext *ctx)
 	 */
 
 	/* Open a dedicated Display connection for all GLX operations.
-	 * Mesa's DRI3 backend obtains the underlying xcb_connection_t via
-	 * XGetXCBConnection() and sends xcb_present_pixmap /
-	 * xcb_sync_trigger_fence requests directly over XCB, bypassing Xlib's
-	 * request counter.  Xlib's widen_seq() then sees reply/event sequence
-	 * numbers it never recorded and fires "Xlib: sequence lost" on every
-	 * frame.
-	 *
-	 * XSetEventQueueOwner(XCBOwnsEventQueue) makes XCB the authoritative
-	 * sequence counter for this connection.  All of Xlib's requests are then
-	 * routed through XCB's numbering, so Mesa's XCB-sent requests and Xlib's
-	 * requests share the same counter and widen_seq() never desynchronises. */
+	 * Mesa's DRI3 backend sends xcb_present_pixmap / xcb_get_geometry
+	 * requests directly via the XCB connection underlying gl_dpy, bypassing
+	 * Xlib's dpy->request counter.  Per-frame XNoOp() calls in the repaint
+	 * path keep dpy->request pacing Mesa's XCB counter so _XSetLastRequestRead
+	 * never sees a gap > 65535 and "Xlib: sequence lost" is suppressed. */
 	comp.gl_dpy = XOpenDisplay(NULL);
 	if (!comp.gl_dpy) {
 		awm_warn("compositor: XOpenDisplay for GL failed, "
 		         "GL path unavailable");
-	} else {
-		XSetEventQueueOwner(comp.gl_dpy, XCBOwnsEventQueue);
 	}
 
 	if (comp.gl_dpy && comp_init_gl() != 0) {
@@ -2420,10 +2401,40 @@ comp_do_repaint_gl(void)
 	 * raced in between the repaint start and here, the overlay window may
 	 * already be lowered and the GL context in an inconsistent state.
 	 * Skipping the swap is safe — the dirty region is already cleared. */
+
+	/*
+	 * Pump Xlib's request counter on gl_dpy before the swap.
+	 *
+	 * Mesa's DRI3 backend obtains the XCB connection underlying gl_dpy via
+	 * XGetXCBConnection() and sends xcb_present_pixmap /
+	 * xcb_sync_trigger_fence / xcb_get_geometry requests directly over XCB,
+	 * bypassing Xlib's dpy->request counter (dpy+0x98).  Each frame Mesa
+	 * typically sends ~9 such XCB-only requests.  Xlib's _XSetLastRequestRead
+	 * widens incoming 16-bit reply sequence numbers using dpy->request as the
+	 * high-bit reference; if dpy->request is more than 65535 behind the real
+	 * XCB counter it prints "Xlib: sequence lost".
+	 *
+	 * XNoOp() sends opcode 127 (NoOperation) — a fire-and-forget Xlib
+	 * request with no reply.  It increments dpy->request by exactly 1 via
+	 * _XGetRequest without a round-trip.  Issuing XNOOP_PER_FRAME of them
+	 * each frame keeps dpy->request pacing Mesa's XCB requests so the gap
+	 * never reaches 65535.
+	 *
+	 * The subsequent XSync() drains any pending replies and advances
+	 * dpy->last_request_read so _XSetLastRequestRead has a stable reference.
+	 */
+#define XNOOP_PER_FRAME 16
+	{
+		int i;
+		for (i = 0; i < XNOOP_PER_FRAME; i++)
+			XNoOp(comp.gl_dpy);
+		XFlush(comp.gl_dpy);
+	}
+#undef XNOOP_PER_FRAME
+
 	if (!comp.paused)
 		glXSwapBuffers(comp.gl_dpy, comp.glx_win);
-	/* Drain any pending GLX replies so Xlib's 16-bit sequence counter on
-	 * gl_dpy does not wrap and trigger "Xlib: sequence lost" warnings. */
+	/* Drain pending replies and advance last_request_read. */
 	XSync(comp.gl_dpy, False);
 }
 
