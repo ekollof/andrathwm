@@ -1,26 +1,36 @@
-/* compositor.c — GLX/TFP accelerated compositor for awm
+/* compositor.c — EGL/KHR_image_pixmap accelerated compositor for awm
  *
  * Architecture:
  *   - XCompositeRedirectSubwindows(root, CompositeRedirectManual) captures
  *     all root children into server-side pixmaps.
- *   - An overlay window (XCompositeGetOverlayWindow) is used as the GLX
- *     drawable; a GL context is created on it and windows are rendered
+ *   - An overlay window (XCompositeGetOverlayWindow) is used as the EGL
+ *     surface; a GL context is created on it and windows are rendered
  *     directly to it via textured quads.
  *   - Each window's XCompositeNameWindowPixmap is bound as a GL texture
- *     via GLX_EXT_texture_from_pixmap (zero CPU copy, GPU compositing).
+ *     via EGL_KHR_image_pixmap + GL_OES_EGL_image (zero CPU copy, GPU
+ *     compositing).  This replaces the old GLX_EXT_texture_from_pixmap
+ *     (TFP) path.
  *   - XDamage tracks which windows have changed since the last repaint.
- *   - glXSwapIntervalMESA(1) enables vsync so frames are presented at
- *     display rate with no tearing.
+ *   - eglSwapInterval(1) enables vsync so frames are presented at display
+ *     rate with no tearing.
  *   - Border rectangles for managed clients are drawn as GL quads in the
  *     same pass.
  *   - XRender is retained only for building the alpha-picture cache that
  *     was used for opacity; opacity is now handled by the GL blend equation
  *     directly (no XRender needed at runtime).
  *
+ * Why EGL instead of GLX:
+ *   EGL has zero Xlib/XCB sequence-number involvement.  The old GLX path
+ *   used a separate Display* for all GLX calls; Mesa's DRI3 backend sends
+ *   kernel DRM fence requests that bypass Xlib's sequence counter, causing
+ *   "Xlib: sequence lost" warnings.  EGL's eglSwapBuffers and
+ *   eglCreateImageKHR are entirely outside Xlib's request/reply machinery,
+ *   eliminating the root cause.
+ *
  * Fallback:
- *   - If GLX_EXT_texture_from_pixmap is unavailable the compositor falls
- *     back to the original XRender path (comp_do_repaint_xrender) so the
- *     WM still works on software-only X servers.
+ *   - If EGL_KHR_image_pixmap is unavailable the compositor falls back to
+ *     the original XRender path (comp_do_repaint_xrender) so the WM still
+ *     works on software-only X servers.
  *
  * Compile-time guard: the entire file is dead code unless -DCOMPOSITOR.
  */
@@ -34,7 +44,6 @@
 
 #include <X11/Xlib.h>
 #include <X11/Xlibint.h>
-#include <X11/Xlib-xcb.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/shape.h>
 #include <X11/extensions/Xcomposite.h>
@@ -42,12 +51,12 @@
 #include <X11/extensions/Xfixes.h>
 #include <X11/extensions/Xrender.h>
 
-/* GL/GLX — only included when -DCOMPOSITOR is active */
+/* EGL + GL — only included when -DCOMPOSITOR is active */
 #define GL_GLEXT_PROTOTYPES
-#define GLX_GLXEXT_PROTOTYPES
 #include <GL/gl.h>
-#include <GL/glx.h>
-#include <GL/glxext.h>
+#include <GL/glext.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 
 #include <glib.h>
 
@@ -65,17 +74,17 @@ typedef struct CompWin {
 	Pixmap  pixmap; /* XCompositeNameWindowPixmap result          */
 	/* XRender path (fallback) */
 	Picture picture; /* XRenderCreatePicture on pixmap             */
-	/* GL/TFP path */
-	GLXPixmap       glx_pixmap; /* glXCreatePixmap (TFP)                  */
-	GLuint          texture;    /* GL_TEXTURE_2D bound via TFP             */
-	Damage          damage;
-	int             x, y, w, h, bw; /* last known geometry                */
-	int             depth;   /* window depth                              */
-	int             argb;    /* depth == 32                               */
-	double          opacity; /* 0.0 – 1.0                                 */
-	int             redirected; /* 0 = bypass (fullscreen/bypass-hint)    */
-	int             hidden;     /* 1 = moved off-screen by showhide()        */
-	int             ever_damaged; /* 0 = no damage received yet (since map) */
+	/* GL/EGL path */
+	EGLImageKHR egl_image; /* EGL image wrapping pixmap (KHR_image_pixmap) */
+	GLuint      texture;   /* GL_TEXTURE_2D bound via EGL image            */
+	Damage      damage;
+	int         x, y, w, h, bw; /* last known geometry                */
+	int         depth;          /* window depth                              */
+	int         argb;           /* depth == 32                               */
+	double      opacity;      /* 0.0 – 1.0                                 */
+	int         redirected;   /* 0 = bypass (fullscreen/bypass-hint)    */
+	int         hidden;       /* 1 = moved off-screen by showhide()        */
+	int         ever_damaged; /* 0 = no damage received yet (since map) */
 	struct CompWin *next;
 } CompWin;
 
@@ -88,36 +97,32 @@ static struct {
 	Window overlay;
 
 	/* ---- GL path (primary) ---- */
-	int      use_gl; /* 1 if TFP is available and context ok  */
-	Display *gl_dpy; /* separate X connection used for all GLX calls;
-	                  * keeps GLX/Mesa XCB sequence numbering isolated
-	                  * from the WM's Xlib connection to prevent
-	                  * "Xlib: sequence lost" warnings on DRI3/Intel */
-	GLXContext glx_ctx;
-	GLXWindow  glx_win; /* GLX drawable wrapping comp.overlay    */
-	GLuint     prog;    /* shader program                        */
-	GLuint     vbo;     /* quad vertex buffer                    */
-	GLuint     vao;     /* vertex array object                   */
+	int        use_gl;  /* 1 if EGL_KHR_image_pixmap available and ctx ok */
+	EGLDisplay egl_dpy; /* EGL display wrapping the main X connection      */
+	EGLContext egl_ctx; /* EGL/GL context                                  */
+	EGLSurface egl_win; /* EGL surface wrapping comp.overlay               */
+	GLuint     prog;    /* shader program                                  */
+	GLuint     vbo;     /* quad vertex buffer                              */
+	GLuint     vao;     /* vertex array object                             */
 	/* uniform locations */
 	GLint u_tex;
 	GLint u_opacity;
-	GLint u_flip_y; /* reserved: flip V coord (unused for TFP) */
-	GLint u_solid;  /* 1 = draw solid colour quad (borders)  */
-	GLint u_color;  /* solid colour (borders)                */
-	GLint u_rect;   /* x, y, w, h in pixels (cached)         */
-	GLint u_screen; /* screen width, height (cached)         */
-	/* TFP function pointers (loaded at runtime) */
-	PFNGLXBINDTEXIMAGEEXTPROC    glx_bind_tex;
-	PFNGLXRELEASETEXIMAGEEXTPROC glx_release_tex;
-	/* swap control (vsync) */
-	PFNGLXSWAPINTERVALMESAPROC glx_swap_interval;
-	/* GLX_EXT_buffer_age partial repaint ring buffer.
+	GLint u_flip_y; /* reserved: flip V coord (unused for EGL images)  */
+	GLint u_solid;  /* 1 = draw solid colour quad (borders)            */
+	GLint u_color;  /* solid colour (borders)                          */
+	GLint u_rect;   /* x, y, w, h in pixels (cached)                   */
+	GLint u_screen; /* screen width, height (cached)                   */
+	/* EGL_KHR_image_pixmap function pointers (loaded at runtime) */
+	PFNEGLCREATEIMAGEKHRPROC            egl_create_image;
+	PFNEGLDESTROYIMAGEKHRPROC           egl_destroy_image;
+	PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_tex;
+	/* EGL_EXT_buffer_age partial repaint ring buffer.
 	 * Each slot holds the bounding box of one past frame's dirty region.
 	 * ring_idx is the slot that will be written after the *next* swap. */
 #define DAMAGE_RING_SIZE 6
 	XRectangle damage_ring[DAMAGE_RING_SIZE];
 	int        ring_idx; /* next write position (0..DAMAGE_RING_SIZE-1) */
-	int        has_buffer_age; /* 1 if GLX_EXT_buffer_age is available    */
+	int        has_buffer_age; /* 1 if EGL_EXT_buffer_age is available    */
 
 	/* ---- XRender path (fallback) ---- */
 	Picture target; /* XRenderPicture on overlay                   */
@@ -136,18 +141,15 @@ static struct {
 	CompWin      *windows;
 	GMainContext *ctx;
 	/* Wallpaper support */
-	Atom      atom_rootpmap;
-	Atom      atom_esetroot;
-	Pixmap    wallpaper_pixmap;
-	Picture   wallpaper_pict;       /* XRender picture (fallback path)       */
-	GLXPixmap wallpaper_glx_pixmap; /* TFP GLXPixmap for wallpaper (GL)   */
-	GLuint    wallpaper_texture;    /* GL texture for wallpaper (GL)      */
+	Atom        atom_rootpmap;
+	Atom        atom_esetroot;
+	Pixmap      wallpaper_pixmap;
+	Picture     wallpaper_pict;      /* XRender picture (fallback path)      */
+	EGLImageKHR wallpaper_egl_image; /* EGL image for wallpaper (GL)         */
+	GLuint      wallpaper_texture;   /* GL texture for wallpaper (GL)        */
 	/* XRender extension codes — needed for error whitelisting */
 	int render_request_base;
 	int render_err_base;
-	/* GLX extension codes — needed for error whitelisting */
-	int glx_req_base;
-	int glx_err_base;
 	/* XShape extension — optional */
 	int has_xshape;
 	int shape_ev_base;
@@ -333,27 +335,6 @@ static const char *frag_src =
  * GL init helpers
  * ---------------------------------------------------------------------- */
 
-/* Pick the first FBConfig in the list whose RGB channel sizes are exactly
- * 8 bits, and optionally also has an 8-bit alpha channel.
- * Mesa on Intel Arc sorts 10bpc configs first; if we blindly take
- * fbc[0] we get a 10bpc config and the TFP texture data is misinterpreted.
- * Returns NULL if none qualify (caller falls back to fbc[0]). */
-static GLXFBConfig
-gl_pick_8bpc(GLXFBConfig *fbc, int nfbc, int need_alpha)
-{
-	int i;
-	for (i = 0; i < nfbc; i++) {
-		int r = 0, g = 0, b = 0, a = 0;
-		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_RED_SIZE, &r);
-		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_GREEN_SIZE, &g);
-		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_BLUE_SIZE, &b);
-		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_ALPHA_SIZE, &a);
-		if (r == 8 && g == 8 && b == 8 && (!need_alpha || a == 8))
-			return fbc[i];
-	}
-	return NULL;
-}
-
 static GLuint
 gl_compile_shader(GLenum type, const char *src)
 {
@@ -393,17 +374,15 @@ gl_link_program(GLuint vert, GLuint frag)
 	return p;
 }
 
-/* Attempt to initialise the GL/TFP path.  Returns 0 on success, -1 if GL
+/* Attempt to initialise the GL/EGL path.  Returns 0 on success, -1 if EGL
  * is unavailable (caller falls back to XRender). */
 static int
 comp_init_gl(void)
 {
-	const char  *exts;
-	GLXFBConfig *fbc    = NULL;
-	int          nfbc   = 0;
-	GLXFBConfig  chosen = NULL;
-	GLuint       vert = 0, frag = 0;
-	int          i;
+	const char *egl_exts;
+	EGLConfig   cfg     = NULL;
+	EGLint      num_cfg = 0;
+	GLuint      vert = 0, frag = 0;
 
 	/* Unit-quad geometry: two triangles covering [0,1]×[0,1] */
 	static const float quad[] = {
@@ -426,128 +405,133 @@ comp_init_gl(void)
 		1.0f,
 	};
 
-	/* --- Check for GLX_EXT_texture_from_pixmap -------------------------*/
-	exts = glXQueryExtensionsString(comp.gl_dpy, screen);
-	if (!exts || !strstr(exts, "GLX_EXT_texture_from_pixmap")) {
-		awm_warn("compositor: GLX_EXT_texture_from_pixmap unavailable, "
+	/* --- Get EGL display wrapping the main X connection ----------------*/
+	comp.egl_dpy = eglGetDisplay((EGLNativeDisplayType) dpy);
+	if (comp.egl_dpy == EGL_NO_DISPLAY) {
+		awm_warn("compositor: eglGetDisplay failed, "
 		         "falling back to XRender");
 		return -1;
 	}
 
-	/* Load TFP function pointers */
-	comp.glx_bind_tex = (PFNGLXBINDTEXIMAGEEXTPROC) glXGetProcAddressARB(
-	    (const GLubyte *) "glXBindTexImageEXT");
-	comp.glx_release_tex = (PFNGLXRELEASETEXIMAGEEXTPROC) glXGetProcAddressARB(
-	    (const GLubyte *) "glXReleaseTexImageEXT");
-	if (!comp.glx_bind_tex || !comp.glx_release_tex) {
-		awm_warn("compositor: glXBindTexImageEXT not found, "
-		         "falling back to XRender");
-		return -1;
-	}
-
-	/* Vsync via GLX_MESA_swap_control (preferred on Mesa) */
-	comp.glx_swap_interval = (PFNGLXSWAPINTERVALMESAPROC) glXGetProcAddressARB(
-	    (const GLubyte *) "glXSwapIntervalMESA");
-
-	/* --- Find an appropriate FBConfig for the overlay window -----------
-	 * We want one that:
-	 *   - supports GLX_DOUBLEBUFFER
-	 *   - supports GLX_BIND_TO_TEXTURE_RGBA_EXT (for ARGB windows)
-	 *   - depth matches DefaultDepth
-	 * Start with a broad query and filter manually.
-	 */
 	{
-		int attr[] = { GLX_RENDER_TYPE, GLX_RGBA_BIT, GLX_DRAWABLE_TYPE,
-			GLX_WINDOW_BIT | GLX_PIXMAP_BIT, GLX_DOUBLEBUFFER, True,
-			GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8,
-			GLX_ALPHA_SIZE, 8, GLX_DEPTH_SIZE, 0, GLX_STENCIL_SIZE, 0, None };
-		fbc        = glXChooseFBConfig(comp.gl_dpy, screen, attr, &nfbc);
+		EGLint major = 0, minor = 0;
+		if (!eglInitialize(comp.egl_dpy, &major, &minor)) {
+			awm_warn("compositor: eglInitialize failed (0x%x), "
+			         "falling back to XRender",
+			    (unsigned int) eglGetError());
+			comp.egl_dpy = EGL_NO_DISPLAY;
+			return -1;
+		}
+		awm_debug("compositor: EGL %d.%d initialised", major, minor);
 	}
 
-	if (!fbc || nfbc == 0) {
-		awm_warn("compositor: no suitable GLX FBConfig found, "
+	/* --- Check for required EGL extensions ----------------------------*/
+	egl_exts = eglQueryString(comp.egl_dpy, EGL_EXTENSIONS);
+
+	if (!egl_exts || !strstr(egl_exts, "EGL_KHR_image_pixmap")) {
+		awm_warn("compositor: EGL_KHR_image_pixmap unavailable, "
 		         "falling back to XRender");
+		eglTerminate(comp.egl_dpy);
+		comp.egl_dpy = EGL_NO_DISPLAY;
 		return -1;
 	}
 
-	/* Pick the first 8bpc config that supports TFP for both RGB and RGBA.
-	 * Mesa on Intel Arc sorts 10bpc configs first; using one of those
-	 * causes the GPU to misinterpret 8-bit X11 pixmap data as 10-bit,
-	 * producing badly garbled colours.  We must insist on r==g==b==8. */
-	for (i = 0; i < nfbc; i++) {
-		int rgb_ok = 0, rgba_ok = 0, r = 0, g = 0, b = 0;
-		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_RED_SIZE, &r);
-		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_GREEN_SIZE, &g);
-		glXGetFBConfigAttrib(comp.gl_dpy, fbc[i], GLX_BLUE_SIZE, &b);
-		if (r != 8 || g != 8 || b != 8)
-			continue;
-		glXGetFBConfigAttrib(
-		    comp.gl_dpy, fbc[i], GLX_BIND_TO_TEXTURE_RGB_EXT, &rgb_ok);
-		glXGetFBConfigAttrib(
-		    comp.gl_dpy, fbc[i], GLX_BIND_TO_TEXTURE_RGBA_EXT, &rgba_ok);
-		if (rgb_ok && rgba_ok) {
-			chosen = fbc[i];
-			break;
-		}
-	}
-	/* Fallback: any 8bpc config (no alpha needed for the overlay window) */
-	if (!chosen)
-		chosen = gl_pick_8bpc(fbc, nfbc, 0);
-	/* Last resort: first config (may be 10bpc, colours will be wrong) */
-	if (!chosen)
-		chosen = fbc[0];
-	XFree(fbc);
+	/* --- Load EGL/GL extension function pointers ----------------------*/
+	comp.egl_create_image =
+	    (PFNEGLCREATEIMAGEKHRPROC) eglGetProcAddress("eglCreateImageKHR");
+	comp.egl_destroy_image =
+	    (PFNEGLDESTROYIMAGEKHRPROC) eglGetProcAddress("eglDestroyImageKHR");
+	comp.egl_image_target_tex =
+	    (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC) eglGetProcAddress(
+	        "glEGLImageTargetTexture2DOES");
 
-	/* --- Create GL context ---------------------------------------------*/
+	if (!comp.egl_create_image || !comp.egl_destroy_image ||
+	    !comp.egl_image_target_tex) {
+		awm_warn("compositor: EGL image extension procs not found, "
+		         "falling back to XRender");
+		eglTerminate(comp.egl_dpy);
+		comp.egl_dpy = EGL_NO_DISPLAY;
+		return -1;
+	}
+
+	/* --- Bind desktop OpenGL API (not GLES) ---------------------------*/
+	if (!eglBindAPI(EGL_OPENGL_API)) {
+		awm_warn("compositor: eglBindAPI(EGL_OPENGL_API) failed (0x%x), "
+		         "falling back to XRender",
+		    (unsigned int) eglGetError());
+		eglTerminate(comp.egl_dpy);
+		comp.egl_dpy = EGL_NO_DISPLAY;
+		return -1;
+	}
+
+	/* --- Choose EGL config --------------------------------------------*/
 	{
-		/* Request a core 2.1 context for compatibility with glxext.h
-		 * function signatures; we only use GLSL 1.30 features anyway. */
-		int ctx_attr[] = { GLX_CONTEXT_MAJOR_VERSION_ARB, 2,
-			GLX_CONTEXT_MINOR_VERSION_ARB, 1, None };
-		PFNGLXCREATECONTEXTATTRIBSARBPROC create_ctx =
-		    (PFNGLXCREATECONTEXTATTRIBSARBPROC) glXGetProcAddressARB(
-		        (const GLubyte *) "glXCreateContextAttribsARB");
-		if (create_ctx) {
-			xerror_push_ignore();
-			comp.glx_ctx =
-			    create_ctx(comp.gl_dpy, chosen, NULL, True, ctx_attr);
-			xerror_pop();
-		}
-		if (!comp.glx_ctx) {
-			/* Fall back to legacy glXCreateNewContext */
-			comp.glx_ctx = glXCreateNewContext(
-			    comp.gl_dpy, chosen, GLX_RGBA_TYPE, NULL, True);
+		EGLint attr[] = { EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+			EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_RED_SIZE, 8,
+			EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE };
+		if (!eglChooseConfig(comp.egl_dpy, attr, &cfg, 1, &num_cfg) ||
+		    num_cfg == 0) {
+			/* Retry without alpha requirement */
+			EGLint attr2[] = { EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+				EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_RED_SIZE, 8,
+				EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_NONE };
+			if (!eglChooseConfig(comp.egl_dpy, attr2, &cfg, 1, &num_cfg) ||
+			    num_cfg == 0) {
+				awm_warn("compositor: no suitable EGL config found, "
+				         "falling back to XRender");
+				eglTerminate(comp.egl_dpy);
+				comp.egl_dpy = EGL_NO_DISPLAY;
+				return -1;
+			}
 		}
 	}
-	if (!comp.glx_ctx) {
-		awm_warn("compositor: failed to create GL context, "
-		         "falling back to XRender");
+
+	/* --- Create GL context --------------------------------------------*/
+	{
+		EGLint ctx_attr[] = { EGL_CONTEXT_MAJOR_VERSION, 2,
+			EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE };
+		comp.egl_ctx =
+		    eglCreateContext(comp.egl_dpy, cfg, EGL_NO_CONTEXT, ctx_attr);
+	}
+	if (comp.egl_ctx == EGL_NO_CONTEXT) {
+		awm_warn("compositor: eglCreateContext failed (0x%x), "
+		         "falling back to XRender",
+		    (unsigned int) eglGetError());
+		eglTerminate(comp.egl_dpy);
+		comp.egl_dpy = EGL_NO_DISPLAY;
 		return -1;
 	}
 
-	/* --- Wrap the overlay window as a GLX drawable ---------------------*/
-	comp.glx_win = glXCreateWindow(comp.gl_dpy, chosen, comp.overlay, NULL);
-	if (!comp.glx_win) {
-		awm_warn("compositor: glXCreateWindow failed, "
-		         "falling back to XRender");
-		glXDestroyContext(comp.gl_dpy, comp.glx_ctx);
-		comp.glx_ctx = NULL;
+	/* --- Create EGL window surface wrapping overlay -------------------*/
+	comp.egl_win = eglCreateWindowSurface(
+	    comp.egl_dpy, cfg, (EGLNativeWindowType) comp.overlay, NULL);
+	if (comp.egl_win == EGL_NO_SURFACE) {
+		awm_warn("compositor: eglCreateWindowSurface failed (0x%x), "
+		         "falling back to XRender",
+		    (unsigned int) eglGetError());
+		eglDestroyContext(comp.egl_dpy, comp.egl_ctx);
+		comp.egl_ctx = EGL_NO_CONTEXT;
+		eglTerminate(comp.egl_dpy);
+		comp.egl_dpy = EGL_NO_DISPLAY;
 		return -1;
 	}
 
-	if (!glXMakeCurrent(comp.gl_dpy, comp.glx_win, comp.glx_ctx)) {
-		awm_warn("compositor: glXMakeCurrent failed, "
-		         "falling back to XRender");
-		glXDestroyWindow(comp.gl_dpy, comp.glx_win);
-		glXDestroyContext(comp.gl_dpy, comp.glx_ctx);
-		comp.glx_ctx = 0;
-		comp.glx_win = 0;
+	if (!eglMakeCurrent(
+	        comp.egl_dpy, comp.egl_win, comp.egl_win, comp.egl_ctx)) {
+		awm_warn("compositor: eglMakeCurrent failed (0x%x), "
+		         "falling back to XRender",
+		    (unsigned int) eglGetError());
+		eglDestroySurface(comp.egl_dpy, comp.egl_win);
+		eglDestroyContext(comp.egl_dpy, comp.egl_ctx);
+		comp.egl_win = EGL_NO_SURFACE;
+		comp.egl_ctx = EGL_NO_CONTEXT;
+		eglTerminate(comp.egl_dpy);
+		comp.egl_dpy = EGL_NO_DISPLAY;
 		return -1;
 	}
 
 	/* Enable vsync */
-	if (comp.glx_swap_interval)
-		comp.glx_swap_interval(1);
+	eglSwapInterval(comp.egl_dpy, 1);
 
 	/* --- Compile shaders -----------------------------------------------*/
 	vert = gl_compile_shader(GL_VERTEX_SHADER, vert_src);
@@ -557,11 +541,14 @@ comp_init_gl(void)
 			glDeleteShader(vert);
 		if (frag)
 			glDeleteShader(frag);
-		glXMakeCurrent(comp.gl_dpy, None, NULL);
-		glXDestroyWindow(comp.gl_dpy, comp.glx_win);
-		glXDestroyContext(comp.gl_dpy, comp.glx_ctx);
-		comp.glx_ctx = 0;
-		comp.glx_win = 0;
+		eglMakeCurrent(
+		    comp.egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+		eglDestroySurface(comp.egl_dpy, comp.egl_win);
+		eglDestroyContext(comp.egl_dpy, comp.egl_ctx);
+		comp.egl_win = EGL_NO_SURFACE;
+		comp.egl_ctx = EGL_NO_CONTEXT;
+		eglTerminate(comp.egl_dpy);
+		comp.egl_dpy = EGL_NO_DISPLAY;
 		return -1;
 	}
 
@@ -569,11 +556,14 @@ comp_init_gl(void)
 	glDeleteShader(vert);
 	glDeleteShader(frag);
 	if (!comp.prog) {
-		glXMakeCurrent(comp.gl_dpy, None, NULL);
-		glXDestroyWindow(comp.gl_dpy, comp.glx_win);
-		glXDestroyContext(comp.gl_dpy, comp.glx_ctx);
-		comp.glx_ctx = 0;
-		comp.glx_win = 0;
+		eglMakeCurrent(
+		    comp.egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+		eglDestroySurface(comp.egl_dpy, comp.egl_win);
+		eglDestroyContext(comp.egl_dpy, comp.egl_ctx);
+		comp.egl_win = EGL_NO_SURFACE;
+		comp.egl_ctx = EGL_NO_CONTEXT;
+		eglTerminate(comp.egl_dpy);
+		comp.egl_dpy = EGL_NO_DISPLAY;
 		return -1;
 	}
 
@@ -586,7 +576,6 @@ comp_init_gl(void)
 	comp.u_rect    = glGetUniformLocation(comp.prog, "u_rect");
 	comp.u_screen  = glGetUniformLocation(comp.prog, "u_screen");
 
-	/* Cache the u_rect and u_screen locations via use */
 	glUseProgram(comp.prog);
 	glUniform1i(comp.u_tex, 0); /* texture unit 0 */
 	glUseProgram(0);
@@ -621,113 +610,61 @@ comp_init_gl(void)
 
 	comp.use_gl = 1;
 
-	/* Detect GLX_EXT_buffer_age for partial repaints */
-	{
-		const char *glx_exts = glXQueryExtensionsString(comp.gl_dpy, screen);
-		comp.has_buffer_age =
-		    (glx_exts && strstr(glx_exts, "GLX_EXT_buffer_age") != NULL);
-	}
+	/* Detect EGL_EXT_buffer_age for partial repaints */
+	comp.has_buffer_age =
+	    (egl_exts && strstr(egl_exts, "EGL_EXT_buffer_age") != NULL);
 	memset(comp.damage_ring, 0, sizeof(comp.damage_ring));
 	comp.ring_idx = 0;
 
-	awm_debug("compositor: GL/TFP path initialised (renderer: %s, "
+	awm_debug("compositor: EGL/GL path initialised (renderer: %s, "
 	          "buffer_age=%d)",
 	    (const char *) glGetString(GL_RENDERER), comp.has_buffer_age);
 	return 0;
 }
 
-/* Create a TFP GLXPixmap + GL texture for cw->pixmap.
- * Fills cw->glx_pixmap and cw->texture.
+/* Create an EGLImageKHR from cw->pixmap and attach it to a GL texture.
+ * Fills cw->egl_image and cw->texture.
  * Called after comp_refresh_pixmap() sets cw->pixmap. */
 static void
 comp_bind_tfp(CompWin *cw)
 {
-	int          tfp_attr[7];
-	int          n    = 0;
-	GLXFBConfig *fbc  = NULL;
-	int          nfbc = 0;
+	EGLint img_attr[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
 
 	if (!comp.use_gl || !cw->pixmap)
 		return;
 
-	/* Release any existing TFP resources first */
+	/* Release any existing EGL image / texture first */
 	if (cw->texture) {
-		if (cw->glx_pixmap)
-			comp.glx_release_tex(
-			    comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
 		glDeleteTextures(1, &cw->texture);
 		cw->texture = 0;
 	}
-	if (cw->glx_pixmap) {
-		glXDestroyPixmap(comp.gl_dpy, cw->glx_pixmap);
-		cw->glx_pixmap = 0;
+	if (cw->egl_image != EGL_NO_IMAGE_KHR) {
+		comp.egl_destroy_image(comp.egl_dpy, cw->egl_image);
+		cw->egl_image = EGL_NO_IMAGE_KHR;
 	}
 
-	/* Find an FBConfig that supports the pixmap's depth */
-	{
-		int depth_attr[] = { GLX_RENDER_TYPE, GLX_RGBA_BIT, GLX_DRAWABLE_TYPE,
-			GLX_PIXMAP_BIT, GLX_BIND_TO_TEXTURE_TARGETS_EXT,
-			GLX_TEXTURE_2D_BIT_EXT,
-			cw->argb ? GLX_BIND_TO_TEXTURE_RGBA_EXT
-			         : GLX_BIND_TO_TEXTURE_RGB_EXT,
-			True, GLX_DOUBLEBUFFER, False, None };
-		fbc = glXChooseFBConfig(comp.gl_dpy, screen, depth_attr, &nfbc);
-	}
-	if (!fbc || nfbc == 0) {
-		if (fbc)
-			XFree(fbc);
-		return;
-	}
+	/* Create EGL image from the X pixmap */
+	cw->egl_image = comp.egl_create_image(comp.egl_dpy, EGL_NO_CONTEXT,
+	    EGL_NATIVE_PIXMAP_KHR, (EGLClientBuffer) (uintptr_t) cw->pixmap,
+	    img_attr);
 
-	/* Build TFP pixmap attribute list */
-	tfp_attr[n++] = GLX_TEXTURE_TARGET_EXT;
-	tfp_attr[n++] = GLX_TEXTURE_2D_EXT;
-	tfp_attr[n++] = GLX_TEXTURE_FORMAT_EXT;
-	tfp_attr[n++] =
-	    cw->argb ? GLX_TEXTURE_FORMAT_RGBA_EXT : GLX_TEXTURE_FORMAT_RGB_EXT;
-	tfp_attr[n++] = GLX_MIPMAP_TEXTURE_EXT;
-	tfp_attr[n++] = False;
-	tfp_attr[n++] = None;
-
-	/* Use an 8bpc config to avoid the 10bpc misinterpretation bug.
-	 * For ARGB windows we must also have a==8 or the alpha channel is
-	 * lost and the window renders fully opaque. */
-	{
-		GLXFBConfig cfg = gl_pick_8bpc(fbc, nfbc, cw->argb);
-		if (!cfg)
-			cfg = fbc[0]; /* last resort */
-		xerror_push_ignore();
-		cw->glx_pixmap =
-		    glXCreatePixmap(comp.gl_dpy, cfg, cw->pixmap, tfp_attr);
-		XSync(comp.gl_dpy, False);
-		xerror_pop();
-	}
-
-	XFree(fbc);
-
-	if (!cw->glx_pixmap)
+	if (cw->egl_image == EGL_NO_IMAGE_KHR)
 		return;
 
-	/* Allocate GL texture */
+	/* Allocate GL texture and attach the EGL image */
 	glGenTextures(1, &cw->texture);
 	glBindTexture(GL_TEXTURE_2D, cw->texture);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-	/* Bind the TFP pixmap as the texture's image */
-	xerror_push_ignore();
-	comp.glx_bind_tex(comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
-	XSync(comp.gl_dpy, False);
-	xerror_pop();
-
+	comp.egl_image_target_tex(GL_TEXTURE_2D, (GLeglImageOES) cw->egl_image);
 	glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-/* Release TFP resources for a CompWin without touching its XRender Picture.
- * Must be called before comp_free_win() when use_gl==1 so textures are
- * released before the underlying pixmap is freed. */
+/* Release EGL image + GL texture for a CompWin.
+ * Must be called before comp_free_win() when use_gl==1 so the EGL image
+ * is destroyed before the underlying pixmap is freed. */
 static void
 comp_release_tfp(CompWin *cw)
 {
@@ -735,15 +672,12 @@ comp_release_tfp(CompWin *cw)
 		return;
 
 	if (cw->texture) {
-		if (cw->glx_pixmap)
-			comp.glx_release_tex(
-			    comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
 		glDeleteTextures(1, &cw->texture);
 		cw->texture = 0;
 	}
-	if (cw->glx_pixmap) {
-		glXDestroyPixmap(comp.gl_dpy, cw->glx_pixmap);
-		cw->glx_pixmap = 0;
+	if (cw->egl_image != EGL_NO_IMAGE_KHR) {
+		comp.egl_destroy_image(comp.egl_dpy, cw->egl_image);
+		cw->egl_image = EGL_NO_IMAGE_KHR;
 	}
 }
 
@@ -806,14 +740,9 @@ compositor_init(GMainContext *ctx)
 		if (XQueryExtension(dpy, "RENDER", &op, &ev_dummy, &err_dummy))
 			comp.render_request_base = op;
 	}
-	/* Query GLX extension opcode/error base for error whitelisting */
-	{
-		int op, ev_dummy, err_dummy;
-		if (XQueryExtension(dpy, "GLX", &op, &ev_dummy, &err_dummy)) {
-			comp.glx_req_base = op;
-			comp.glx_err_base = err_dummy;
-		}
-	}
+	/* Query GLX extension opcode for error whitelisting — EGL has no X
+	 * request codes, but the glx_errors stub in compositor.h still exists
+	 * to avoid changing events.c; it will always return -1 after this. */
 
 	if (XShapeQueryExtension(dpy, &comp.shape_ev_base, &comp.shape_err_base))
 		comp.has_xshape = 1;
@@ -841,25 +770,13 @@ compositor_init(GMainContext *ctx)
 	XFixesSetWindowShapeRegion(dpy, comp.overlay, ShapeInput, 0, 0, empty);
 	XFixesDestroyRegion(dpy, empty);
 
-	/* --- Try to initialise the GL/TFP path --------------------------------
+	/* --- Try to initialise the EGL/GL path --------------------------------
+	 * EGL wraps the main X connection — no separate Display* needed.
+	 * eglSwapBuffers and eglCreateImageKHR bypass Xlib's request/reply
+	 * machinery entirely, so no "Xlib: sequence lost" warnings occur.
 	 */
 
-	/* Open a dedicated Display connection for all GLX operations.
-	 * Mesa's DRI3 backend sends xcb_present_pixmap / xcb_get_geometry
-	 * requests directly via the XCB connection underlying gl_dpy, bypassing
-	 * Xlib's dpy->request counter.  Hand XCB ownership of the event queue
-	 * (same approach as picom) so XCB becomes the authoritative sequence
-	 * counter owner for this connection, preventing Xlib/XCB counter
-	 * divergence and the resulting "Xlib: sequence lost" warnings. */
-	comp.gl_dpy = XOpenDisplay(NULL);
-	if (!comp.gl_dpy) {
-		awm_warn("compositor: XOpenDisplay for GL failed, "
-		         "GL path unavailable");
-	}
-	if (comp.gl_dpy)
-		XSetEventQueueOwner(comp.gl_dpy, XCBOwnsEventQueue);
-
-	if (comp.gl_dpy && comp_init_gl() != 0) {
+	if (comp_init_gl() != 0) {
 		/* GL path unavailable — set up XRender back-buffer + target */
 		fmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
 		pa.subwindow_mode = IncludeInferiors;
@@ -988,11 +905,14 @@ compositor_cleanup(void)
 			glDeleteVertexArrays(1, &comp.vao);
 		if (comp.vbo)
 			glDeleteBuffers(1, &comp.vbo);
-		glXMakeCurrent(comp.gl_dpy, None, NULL);
-		if (comp.glx_win)
-			glXDestroyWindow(comp.gl_dpy, comp.glx_win);
-		if (comp.glx_ctx)
-			glXDestroyContext(comp.gl_dpy, comp.glx_ctx);
+		eglMakeCurrent(
+		    comp.egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+		if (comp.egl_win != EGL_NO_SURFACE)
+			eglDestroySurface(comp.egl_dpy, comp.egl_win);
+		if (comp.egl_ctx != EGL_NO_CONTEXT)
+			eglDestroyContext(comp.egl_dpy, comp.egl_ctx);
+		if (comp.egl_dpy != EGL_NO_DISPLAY)
+			eglTerminate(comp.egl_dpy);
 	} else {
 		/* XRender path cleanup */
 		for (i = 0; i < 256; i++)
@@ -1009,16 +929,12 @@ compositor_cleanup(void)
 	if (comp.wallpaper_pict)
 		XRenderFreePicture(dpy, comp.wallpaper_pict);
 
-	/* Release cached GL wallpaper texture */
+	/* Release cached GL wallpaper resources */
 	if (comp.use_gl) {
-		if (comp.wallpaper_texture) {
-			if (comp.wallpaper_glx_pixmap)
-				comp.glx_release_tex(comp.gl_dpy, comp.wallpaper_glx_pixmap,
-				    GLX_FRONT_LEFT_EXT);
+		if (comp.wallpaper_texture)
 			glDeleteTextures(1, &comp.wallpaper_texture);
-		}
-		if (comp.wallpaper_glx_pixmap)
-			glXDestroyPixmap(comp.gl_dpy, comp.wallpaper_glx_pixmap);
+		if (comp.wallpaper_egl_image != EGL_NO_IMAGE_KHR)
+			comp.egl_destroy_image(comp.egl_dpy, comp.wallpaper_egl_image);
 	}
 
 	if (comp.overlay)
@@ -1035,12 +951,6 @@ compositor_cleanup(void)
 
 	XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
 	XFlush(dpy);
-
-	/* Close the dedicated GL display connection last */
-	if (comp.gl_dpy) {
-		XCloseDisplay(comp.gl_dpy);
-		comp.gl_dpy = NULL;
-	}
 
 	comp.active = 0;
 }
@@ -1215,18 +1125,15 @@ comp_update_wallpaper(void)
 		comp.wallpaper_pict   = None;
 		comp.wallpaper_pixmap = None;
 	}
-	/* Release cached GL wallpaper texture if any */
+	/* Release cached GL wallpaper resources if any */
 	if (comp.use_gl) {
 		if (comp.wallpaper_texture) {
-			if (comp.wallpaper_glx_pixmap)
-				comp.glx_release_tex(comp.gl_dpy, comp.wallpaper_glx_pixmap,
-				    GLX_FRONT_LEFT_EXT);
 			glDeleteTextures(1, &comp.wallpaper_texture);
 			comp.wallpaper_texture = 0;
 		}
-		if (comp.wallpaper_glx_pixmap) {
-			glXDestroyPixmap(comp.gl_dpy, comp.wallpaper_glx_pixmap);
-			comp.wallpaper_glx_pixmap = 0;
+		if (comp.wallpaper_egl_image != EGL_NO_IMAGE_KHR) {
+			comp.egl_destroy_image(comp.egl_dpy, comp.wallpaper_egl_image);
+			comp.wallpaper_egl_image = EGL_NO_IMAGE_KHR;
 		}
 	}
 
@@ -1267,51 +1174,28 @@ comp_update_wallpaper(void)
 			comp.wallpaper_pixmap = pmap;
 	}
 
-	/* For the GL path, build and cache a TFP texture for the wallpaper.
-	 * This is expensive (GLX round-trips), so we only do it here when the
-	 * wallpaper changes — not every frame. */
+	/* For the GL path, build an EGL image from the wallpaper pixmap.
+	 * EGLImageKHR is a live mapping — the GPU always sees the current
+	 * pixmap contents, so no per-frame rebind is needed. */
 	if (comp.use_gl && comp.wallpaper_pixmap) {
-		int          nfbc = 0;
-		GLXFBConfig *fbc  = NULL;
-		int wp_attr[]     = { GLX_RENDER_TYPE, GLX_RGBA_BIT, GLX_DRAWABLE_TYPE,
-			    GLX_PIXMAP_BIT, GLX_BIND_TO_TEXTURE_TARGETS_EXT,
-			    GLX_TEXTURE_2D_BIT_EXT, GLX_BIND_TO_TEXTURE_RGB_EXT, True,
-			    GLX_DOUBLEBUFFER, False, None };
-		int tfp_attr[]    = { GLX_TEXTURE_TARGET_EXT, GLX_TEXTURE_2D_EXT,
-			   GLX_TEXTURE_FORMAT_EXT, GLX_TEXTURE_FORMAT_RGB_EXT,
-			   GLX_MIPMAP_TEXTURE_EXT, False, None };
+		EGLint img_attr[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
 
-		fbc = glXChooseFBConfig(comp.gl_dpy, screen, wp_attr, &nfbc);
-		if (fbc && nfbc > 0) {
-			GLXFBConfig wp_cfg = gl_pick_8bpc(fbc, nfbc, 0);
-			if (!wp_cfg)
-				wp_cfg = fbc[0];
-			xerror_push_ignore();
-			comp.wallpaper_glx_pixmap = glXCreatePixmap(
-			    comp.gl_dpy, wp_cfg, comp.wallpaper_pixmap, tfp_attr);
-			XSync(comp.gl_dpy, False);
-			xerror_pop();
+		comp.wallpaper_egl_image = comp.egl_create_image(comp.egl_dpy,
+		    EGL_NO_CONTEXT, EGL_NATIVE_PIXMAP_KHR,
+		    (EGLClientBuffer) (uintptr_t) comp.wallpaper_pixmap, img_attr);
 
-			if (comp.wallpaper_glx_pixmap) {
-				glGenTextures(1, &comp.wallpaper_texture);
-				glBindTexture(GL_TEXTURE_2D, comp.wallpaper_texture);
-				glTexParameteri(
-				    GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-				glTexParameteri(
-				    GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-				glTexParameteri(
-				    GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-				glTexParameteri(
-				    GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-				xerror_push_ignore();
-				comp.glx_bind_tex(comp.gl_dpy, comp.wallpaper_glx_pixmap,
-				    GLX_FRONT_LEFT_EXT, NULL);
-				XSync(comp.gl_dpy, False);
-				xerror_pop();
-
-				glBindTexture(GL_TEXTURE_2D, 0);
-			}
-			XFree(fbc);
+		if (comp.wallpaper_egl_image != EGL_NO_IMAGE_KHR) {
+			glGenTextures(1, &comp.wallpaper_texture);
+			glBindTexture(GL_TEXTURE_2D, comp.wallpaper_texture);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			glTexParameteri(
+			    GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(
+			    GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			comp.egl_image_target_tex(
+			    GL_TEXTURE_2D, (GLeglImageOES) comp.wallpaper_egl_image);
+			glBindTexture(GL_TEXTURE_2D, 0);
 		}
 	}
 }
@@ -1817,13 +1701,10 @@ compositor_damage_errors(int *err_base)
 void
 compositor_glx_errors(int *req_base, int *err_base)
 {
-	if (!comp.active || !comp.use_gl) {
-		*req_base = -1;
-		*err_base = -1;
-		return;
-	}
-	*req_base = comp.glx_req_base;
-	*err_base = comp.glx_err_base;
+	/* EGL has no X request codes — always return sentinel values so
+	 * the error-whitelisting logic in events.c is always a no-op. */
+	*req_base = -1;
+	*err_base = -1;
 }
 
 void
@@ -2211,11 +2092,11 @@ comp_do_repaint_gl(void)
 	XRectangle scissor;
 	int        use_scissor = 0;
 
-	/* --- Partial repaint via GLX_EXT_buffer_age + glScissor ------------- */
+	/* --- Partial repaint via EGL_EXT_buffer_age + glScissor ------------- */
 	if (comp.has_buffer_age) {
 		unsigned int age = 0;
-		glXQueryDrawable(
-		    comp.gl_dpy, comp.glx_win, GLX_BACK_BUFFER_AGE_EXT, &age);
+		eglQuerySurface(
+		    comp.egl_dpy, comp.egl_win, EGL_BUFFER_AGE_EXT, (EGLint *) &age);
 
 		/* age==0 means undefined (e.g. first frame or after resize);
 		 * fall back to full repaint.  age==1 means back buffer is one
@@ -2295,13 +2176,7 @@ comp_do_repaint_gl(void)
 	/* Paint wallpaper via cached TFP texture if available */
 	if (comp.wallpaper_texture) {
 		glBindTexture(GL_TEXTURE_2D, comp.wallpaper_texture);
-		/* Re-bind to ensure the GPU sees the latest pixmap contents */
-		if (comp.wallpaper_glx_pixmap) {
-			comp.glx_release_tex(
-			    comp.gl_dpy, comp.wallpaper_glx_pixmap, GLX_FRONT_LEFT_EXT);
-			comp.glx_bind_tex(comp.gl_dpy, comp.wallpaper_glx_pixmap,
-			    GLX_FRONT_LEFT_EXT, NULL);
-		}
+		/* EGLImageKHR is a live mapping — no rebind needed */
 		glUniform4f(comp.u_rect, 0.0f, 0.0f, (float) sw, (float) sh);
 		glUniform1f(comp.u_opacity, 1.0f);
 		glUniform1i(comp.u_flip_y, 0);
@@ -2324,15 +2199,9 @@ comp_do_repaint_gl(void)
 		if (!cw->redirected || !cw->texture || cw->hidden)
 			continue;
 
-		/* Re-bind the TFP texture so the GL sees the latest pixmap
-		 * contents (the server may have updated it since last frame). */
+		/* EGLImageKHR is a live mapping — GPU always sees current pixmap
+		 * contents, no per-frame rebind needed. */
 		glBindTexture(GL_TEXTURE_2D, cw->texture);
-		if (cw->glx_pixmap) {
-			comp.glx_release_tex(
-			    comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT);
-			comp.glx_bind_tex(
-			    comp.gl_dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
-		}
 
 		/* Draw the full window pixmap (XCompositeNameWindowPixmap includes
 		 * borders), positioned at cw->x,cw->y with full outer size.
@@ -2386,10 +2255,6 @@ comp_do_repaint_gl(void)
 	}
 
 	glBindVertexArray(0);
-	/* Drain pending GLX replies from the per-window TFP rebind calls above
-	 * before popping the error handler, so any errors on gl_dpy are
-	 * processed before Xlib's sequence counter advances further. */
-	XSync(comp.gl_dpy, False);
 	xerror_pop();
 
 	glUseProgram(0);
@@ -2400,15 +2265,14 @@ comp_do_repaint_gl(void)
 	/* Reset dirty region */
 	XFixesSetRegion(dpy, comp.dirty, NULL, 0);
 
-	/* Present — glXSwapBuffers is vsync-aware (swap interval = 1).
+	/* Present — eglSwapBuffers is vsync-aware (swap interval = 1).
 	 * Re-check paused immediately before the swap: if a fullscreen bypass
 	 * raced in between the repaint start and here, the overlay window may
 	 * already be lowered and the GL context in an inconsistent state.
 	 * Skipping the swap is safe — the dirty region is already cleared. */
 
 	if (!comp.paused)
-		glXSwapBuffers(comp.gl_dpy, comp.glx_win);
-	XSync(comp.gl_dpy, False);
+		eglSwapBuffers(comp.egl_dpy, comp.egl_win);
 }
 
 /* -------------------------------------------------------------------------
