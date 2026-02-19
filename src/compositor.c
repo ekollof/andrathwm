@@ -889,7 +889,11 @@ compositor_init(GMainContext *ctx)
 
 		/* Select SelectionClear on the owner window so we are notified
 		 * if another program takes the selection from us. */
-		XSelectInput(dpy, comp.cm_owner_win, StructureNotifyMask);
+		{
+			uint32_t evmask = StructureNotifyMask;
+			xcb_change_window_attributes(XGetXCBConnection(dpy),
+			    comp.cm_owner_win, XCB_CW_EVENT_MASK, &evmask);
+		}
 	}
 
 	/* --- Scan existing windows --------------------------------------------
@@ -922,8 +926,13 @@ compositor_init(GMainContext *ctx)
 	comp.active = 1;
 
 	/* Raise overlay so it sits above all windows */
-	XRaiseWindow(dpy, comp.overlay);
-	XMapWindow(dpy, comp.overlay);
+	{
+		xcb_connection_t *xc    = XGetXCBConnection(dpy);
+		uint32_t          stack = XCB_STACK_MODE_ABOVE;
+		xcb_configure_window(
+		    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		xcb_map_window(xc, comp.overlay);
+	}
 
 	schedule_repaint();
 
@@ -1013,7 +1022,7 @@ compositor_cleanup(void)
 		XFixesDestroyRegion(dpy, comp.dirty);
 
 	XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
-	XFlush(dpy);
+	xflush(dpy);
 
 	/* Close the dedicated EGL/GL display connection last — after all EGL
 	 * objects have been destroyed by eglTerminate above. */
@@ -1742,7 +1751,11 @@ compositor_raise_overlay(void)
 {
 	if (!comp.active)
 		return;
-	XRaiseWindow(dpy, comp.overlay);
+	{
+		uint32_t stack = XCB_STACK_MODE_ABOVE;
+		xcb_configure_window(XGetXCBConnection(dpy), comp.overlay,
+		    XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+	}
 }
 
 /*
@@ -1810,7 +1823,11 @@ compositor_check_unredirect(void)
 				}
 			}
 		}
-		XLowerWindow(dpy, comp.overlay);
+		{
+			uint32_t stack = XCB_STACK_MODE_BELOW;
+			xcb_configure_window(XGetXCBConnection(dpy), comp.overlay,
+			    XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		}
 		awm_debug("compositor: suspended (fullscreen unredirect)");
 	} else {
 		/* Resume: re-redirect any fullscreen windows that were bypassed
@@ -1840,7 +1857,11 @@ compositor_check_unredirect(void)
 			}
 		}
 		/* Raise overlay and repaint everything. */
-		XRaiseWindow(dpy, comp.overlay);
+		{
+			uint32_t stack = XCB_STACK_MODE_ABOVE;
+			xcb_configure_window(XGetXCBConnection(dpy), comp.overlay,
+			    XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		}
 		compositor_damage_all();
 		awm_debug("compositor: resumed");
 	}
@@ -2584,7 +2605,7 @@ comp_do_repaint_xrender(void)
 	XFixesSetRegion(dpy, comp.dirty, NULL, 0);
 
 	XFixesSetPictureClipRegion(dpy, comp.back, 0, 0, None);
-	XFlush(dpy);
+	xflush(dpy);
 }
 
 #endif /* COMPOSITOR */
