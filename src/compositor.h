@@ -61,6 +61,12 @@ void compositor_handle_event(XEvent *ev);
 /* Force a full-screen repaint — used after xrdb hot-reload. */
 void compositor_damage_all(void);
 
+/*
+ * Called from focus() and unfocus() to dirty the border region of a client
+ * so that the compositor repaints it in the correct focus colour.
+ */
+void compositor_focus_window(Client *c);
+
 /* Raise the compositor overlay above all windows — called after unfullscreen.
  */
 void compositor_raise_overlay(void);

@@ -844,6 +844,35 @@ compositor_set_opacity(Client *c, unsigned long raw)
 }
 
 void
+compositor_focus_window(Client *c)
+{
+	CompWin      *cw;
+	XRectangle    r;
+	XserverRegion sr;
+
+	if (!comp.active || !c)
+		return;
+
+	cw = comp_find_by_client(c);
+	if (!cw || cw->bw <= 0)
+		return;
+
+	/* Dirty the full outer rect (window interior + all four border strips)
+	 * so that comp_do_repaint() repaints the borders in the new focus colour.
+	 * This is needed because a pure focus-change carries no geometry change,
+	 * so compositor_configure_window() is never called and the dirty region
+	 * would otherwise be empty for these pixels. */
+	r.x      = (short) cw->x;
+	r.y      = (short) cw->y;
+	r.width  = (unsigned short) (cw->w + 2 * cw->bw);
+	r.height = (unsigned short) (cw->h + 2 * cw->bw);
+	sr       = XFixesCreateRegion(dpy, &r, 1);
+	XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
+	XFixesDestroyRegion(dpy, sr);
+	schedule_repaint();
+}
+
+void
 compositor_damage_all(void)
 {
 	XRectangle full;
