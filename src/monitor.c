@@ -305,12 +305,18 @@ monocle(Monitor *m)
 	     c = c->snext)
 		;
 	if (c && !c->isfloating) {
+		/* Use resizeclient() directly, bypassing applysizehints().
+		 * resize() skips the XConfigureWindow call when the stored
+		 * c->x/y/w/h already match the target — which happens when this
+		 * window was previously shown in monocle and then hidden via
+		 * XMoveWindow (which moves the window off-screen without updating
+		 * c->x).  The window would stay off-screen. */
 		if (m->pertag->drawwithgaps[m->pertag->curtag]) {
 			unsigned int gp = m->pertag->gappx[m->pertag->curtag];
-			resize(c, m->wx + gp, m->wy + gp, m->ww - 2 * gp - 2 * c->bw,
-			    m->wh - 2 * gp - 2 * c->bw, 0);
+			resizeclient(c, m->wx + gp, m->wy + gp, m->ww - 2 * gp - 2 * c->bw,
+			    m->wh - 2 * gp - 2 * c->bw);
 		} else {
-			resize(c, m->wx - c->bw, m->wy, m->ww, m->wh, False);
+			resizeclient(c, m->wx - c->bw, m->wy, m->ww, m->wh);
 		}
 		c = c->snext;
 	}
