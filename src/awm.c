@@ -606,13 +606,6 @@ main(int argc, char *argv[])
 		die("usage: awm [-v]");
 	if (!setlocale(LC_CTYPE, "") || !XSupportsLocale())
 		fputs("warning: no locale support\n", stderr);
-	/* XInitThreads() must be called before XOpenDisplay() when using
-	 * GLX with modern XCB-backed libX11.  Without it, GLX requests
-	 * increment the XCB sequence counter independently of Xlib's, causing
-	 * "Xlib: sequence lost" warnings whenever the 16-bit wire counter
-	 * wraps.  Calling XInitThreads() enables the XCB/Xlib sequence
-	 * synchronisation path that resolves this. */
-	XInitThreads();
 	if (!(dpy = XOpenDisplay(NULL)))
 		die("awm: cannot open display");
 	XSetIOErrorHandler(xioerror);
