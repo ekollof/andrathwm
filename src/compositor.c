@@ -1769,9 +1769,11 @@ comp_do_repaint_gl(void)
 			comp.glx_bind_tex(dpy, cw->glx_pixmap, GLX_FRONT_LEFT_EXT, NULL);
 		}
 
-		/* Draw window interior quad */
-		glUniform4f(u_rect, (float) (cw->x + cw->bw), (float) (cw->y + cw->bw),
-		    (float) cw->w, (float) cw->h);
+		/* Draw the full window pixmap (XCompositeNameWindowPixmap includes
+		 * borders), positioned at cw->x,cw->y with full outer size.
+		 * Using the inner w/h caused the bottom bw rows to be clipped. */
+		glUniform4f(u_rect, (float) cw->x, (float) cw->y,
+		    (float) (cw->w + 2 * cw->bw), (float) (cw->h + 2 * cw->bw));
 		glUniform1f(comp.u_opacity, (float) cw->opacity);
 		glUniform1i(comp.u_flip_y, 0); /* NDC Y-flip in vert shader suffices */
 		glUniform1i(comp.u_solid, 0);
@@ -1792,8 +1794,8 @@ comp_do_repaint_gl(void)
 
 			glBindTexture(GL_TEXTURE_2D, 0);
 			glUniform1i(comp.u_solid, 1);
-			/* Borders are opaque — pre-multiplied: rgb*a = rgb (a==1) */
-			glUniform4f(comp.u_color, r * a, g * a, b * a, a);
+			/* Straight-alpha: pass r,g,b,a directly */
+			glUniform4f(comp.u_color, r, g, b, a);
 
 			/* top */
 			glUniform4f(
