@@ -5,6 +5,7 @@
 #include "awm.h"
 #include <X11/XKBlib.h>
 #include "client.h"
+#include "compositor.h"
 #include "ewmh.h"
 #include "monitor.h"
 #include "spawn.h"
@@ -258,6 +259,9 @@ configurenotify(XEvent *e)
 			focus(NULL);
 			arrange(NULL);
 		}
+#ifdef COMPOSITOR
+		compositor_notify_screen_resize();
+#endif
 	}
 }
 

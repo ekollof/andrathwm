@@ -1416,6 +1416,30 @@ struct MenuItemProperties {
 	int            toggle_state;
 };
 
+/*
+ * Strip DBusMenu mnemonic underscores from a label in-place.
+ * Per spec: "_X" -> "X" (mnemonic), "__" -> "_" (literal underscore).
+ * The result is always <= the input length so no reallocation is needed.
+ */
+static void
+sni_strip_mnemonics(char *s)
+{
+	char *r = s, *w = s;
+	while (*r) {
+		if (*r == '_') {
+			r++;
+			if (*r == '\0')
+				break; /* trailing lone underscore: drop it */
+			/* "__" -> "_", "_X" -> "X" */
+			*w++ = (*r == '_') ? '_' : *r;
+			r++;
+		} else {
+			*w++ = *r++;
+		}
+	}
+	*w = '\0';
+}
+
 /* Callback for parsing menu item property dict */
 static void
 sni_parse_menu_property(
@@ -1425,6 +1449,8 @@ sni_parse_menu_property(
 
 	if (strcmp(key, "label") == 0) {
 		props->label = dbus_iter_get_variant_string(value);
+		if (props->label)
+			sni_strip_mnemonics(props->label);
 	} else if (strcmp(key, "enabled") == 0) {
 		dbus_iter_get_variant_bool(value, &props->enabled);
 	} else if (strcmp(key, "visible") == 0) {

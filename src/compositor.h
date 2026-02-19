@@ -101,5 +101,22 @@ void compositor_repaint_now(void);
  */
 void compositor_set_hidden(Client *c, int hidden);
 
+/*
+ * Re-evaluate whether compositing should be suspended because a fullscreen
+ * opaque window covers the entire monitor.  Call after focus changes and
+ * after fullscreen state changes.  When suspended the compositor overlay is
+ * lowered so the window renders directly to the display with zero GL
+ * overhead; it is raised again automatically on resume.
+ */
+void compositor_check_unredirect(void);
+
+/*
+ * Called from configurenotify() in events.c after sw/sh have been updated
+ * following an xrandr screen resize.  Updates the GL viewport, resizes the
+ * XRender back-buffer, resets the partial-repaint damage ring (all old
+ * bounding boxes are now stale), and forces a full repaint.
+ */
+void compositor_notify_screen_resize(void);
+
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */

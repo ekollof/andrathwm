@@ -122,6 +122,7 @@ static struct {
 	int           xfixes_ev_base;
 	int           xfixes_err_base;
 	guint         repaint_id; /* GLib idle source id, 0 = none            */
+	int           paused;     /* 1 = overlay hidden, repaints suppressed  */
 	XserverRegion dirty;      /* accumulated dirty region                 */
 	CompWin      *windows;
 	GMainContext *ctx;
@@ -1401,12 +1402,109 @@ compositor_damage_all(void)
 	schedule_repaint();
 }
 
+/*
+ * Called from the root ConfigureNotify handler (events.c) after sw/sh have
+ * been updated to reflect a screen resize (xrandr).  Updates the GL viewport,
+ * resizes the XRender back-buffer, resets the damage ring (all old bboxes are
+ * now stale), and forces a full repaint.
+ */
+void
+compositor_notify_screen_resize(void)
+{
+	if (!comp.active)
+		return;
+
+	if (comp.use_gl) {
+		glViewport(0, 0, sw, sh);
+		/* Old damage ring entries are in the old coordinate space —
+		 * invalidate them so the next frame does a full repaint. */
+		memset(comp.damage_ring, 0, sizeof(comp.damage_ring));
+		comp.ring_idx = 0;
+	} else {
+		/* XRender: rebuild back pixmap at new size */
+		if (comp.back) {
+			XRenderFreePicture(dpy, comp.back);
+			comp.back = None;
+		}
+		if (comp.back_pixmap) {
+			XFreePixmap(dpy, comp.back_pixmap);
+			comp.back_pixmap = None;
+		}
+		comp.back_pixmap = XCreatePixmap(dpy, root, (unsigned int) sw,
+		    (unsigned int) sh, (unsigned int) DefaultDepth(dpy, screen));
+		if (comp.back_pixmap) {
+			XRenderPictFormat *fmt =
+			    XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
+			XRenderPictureAttributes pa = { 0 };
+			pa.subwindow_mode           = IncludeInferiors;
+			comp.back                   = XRenderCreatePicture(
+                dpy, comp.back_pixmap, fmt, CPSubwindowMode, &pa);
+		}
+	}
+
+	compositor_damage_all();
+}
+
 void
 compositor_raise_overlay(void)
 {
 	if (!comp.active)
 		return;
 	XRaiseWindow(dpy, comp.overlay);
+}
+
+/*
+ * Evaluate whether the topmost visible window warrants suspending all
+ * compositing.  Called from focus() and setfullscreen() whenever the
+ * window stack or fullscreen state changes.
+ *
+ * Suspend criteria (all must hold):
+ *   - compositor is active and using the GL path
+ *   - the focused window is fullscreen
+ *   - it covers the entire monitor geometry
+ *   - it is opaque (opacity == 1.0)
+ *
+ * On suspend  : lower the overlay below all windows and cancel repaints.
+ * On resume   : raise the overlay, force a full dirty, schedule repaint.
+ */
+void
+compositor_check_unredirect(void)
+{
+	Client *sel;
+	int     should_pause;
+
+	if (!comp.active || !comp.use_gl)
+		return;
+
+	sel          = selmon ? selmon->sel : NULL;
+	should_pause = 0;
+
+	if (sel && sel->isfullscreen && sel->opacity >= 1.0 &&
+	    sel->x == sel->mon->mx && sel->y == sel->mon->my &&
+	    sel->w == sel->mon->mw && sel->h == sel->mon->mh) {
+		should_pause = 1;
+	}
+
+	if (should_pause == comp.paused)
+		return; /* no change */
+
+	comp.paused = should_pause;
+
+	if (comp.paused) {
+		/* Hide overlay: lower it below the fullscreen window so the
+		 * window draws directly to the display with no GL overhead. */
+		if (comp.repaint_id) {
+			g_source_remove(comp.repaint_id);
+			comp.repaint_id = 0;
+		}
+		XLowerWindow(dpy, comp.overlay);
+		awm_debug("compositor: suspended (fullscreen unredirect)");
+	} else {
+		/* Resume: raise overlay and repaint everything. */
+		XRaiseWindow(dpy, comp.overlay);
+		compositor_damage_all();
+		awm_debug("compositor: resumed");
+	}
 }
 
 void
@@ -1624,7 +1722,7 @@ compositor_handle_event(XEvent *ev)
 static void
 schedule_repaint(void)
 {
-	if (!comp.active || comp.repaint_id)
+	if (!comp.active || comp.paused || comp.repaint_id)
 		return;
 
 	comp.repaint_id =

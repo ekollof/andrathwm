@@ -289,5 +289,8 @@ removesniiconsystray(Window w)
 
 	awm_debug("Removing SNI window 0x%lx from systray", w);
 	removesystrayicon(i);
-	updatesystray();
+	/* Guard against teardown: mons/selmon may already be freed when
+	 * sni_cleanup() is called after cleanupmon() during WM exit. */
+	if (mons)
+		updatesystray();
 }

@@ -265,6 +265,9 @@ focus(Client *c)
 	/* Dirty the border region of both the newly focused and previously
 	 * focused client so the compositor repaints them in the correct colour. */
 	compositor_focus_window(c);
+	/* Re-evaluate fullscreen unredirect — the topmost window may have
+	 * changed. */
+	compositor_check_unredirect();
 #endif
 }
 
@@ -992,6 +995,9 @@ setfullscreen(Client *c, int fullscreen)
 #endif
 		resizeclient(c, c->mon->mx, c->mon->my, c->mon->mw, c->mon->mh);
 		XRaiseWindow(dpy, c->win);
+#ifdef COMPOSITOR
+		compositor_check_unredirect();
+#endif
 	} else if (!fullscreen && c->isfullscreen) {
 		c->isfullscreen = 0;
 		c->isfloating   = c->oldstate;
@@ -1007,6 +1013,7 @@ setfullscreen(Client *c, int fullscreen)
 		resizeclient(c, c->x, c->y, c->w, c->h);
 #ifdef COMPOSITOR
 		compositor_raise_overlay();
+		compositor_check_unredirect();
 #endif
 		arrange(c->mon);
 	}
