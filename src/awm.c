@@ -73,6 +73,7 @@ void (*handler[LASTEvent])(XEvent *) = { [ButtonPress] = buttonpress,
 	[ResizeRequest]                                    = resizerequest,
 	[UnmapNotify]                                      = unmapnotify };
 Atom              wmatom[WMLast], netatom[NetLast], xatom[XLast];
+static Atom       utf8string_atom; /* UTF8_STRING — used in setup() */
 int               restart         = 0;
 int               barsdirty       = 0;
 Time              last_event_time = CurrentTime;
@@ -410,12 +411,97 @@ scan(void)
 	}
 }
 
+/* Batch-intern all atoms using async XCB cookies on the connection that Xlib
+ * already owns.  All requests are sent in one go before any reply is read, so
+ * the round-trip cost is that of a single request instead of N sequential
+ * ones.  The two COMPOSITOR-only atoms are included unconditionally in the
+ * table (their slots in netatom[] exist regardless of the build flag); we just
+ * always populate them so the table stays flat and branch-free. */
+static void
+intern_atoms(void)
+{
+	/* Each entry maps one atom name to the Atom* that should receive it. */
+	static const struct {
+		Atom       *dest;
+		const char *name;
+	} tbl[] = {
+		{ &utf8string_atom, "UTF8_STRING" },
+		{ &wmatom[WMProtocols], "WM_PROTOCOLS" },
+		{ &wmatom[WMDelete], "WM_DELETE_WINDOW" },
+		{ &wmatom[WMState], "WM_STATE" },
+		{ &wmatom[WMTakeFocus], "WM_TAKE_FOCUS" },
+		{ &netatom[NetActiveWindow], "_NET_ACTIVE_WINDOW" },
+		{ &netatom[NetSupported], "_NET_SUPPORTED" },
+		{ &netatom[NetSystemTray], "_NET_SYSTEM_TRAY_S0" },
+		{ &netatom[NetSystemTrayOP], "_NET_SYSTEM_TRAY_OPCODE" },
+		{ &netatom[NetSystemTrayOrientation], "_NET_SYSTEM_TRAY_ORIENTATION" },
+		{ &netatom[NetSystemTrayOrientationHorz],
+		    "_NET_SYSTEM_TRAY_ORIENTATION_HORZ" },
+		{ &netatom[NetSystemTrayColors], "_NET_SYSTEM_TRAY_COLORS" },
+		{ &netatom[NetSystemTrayVisual], "_NET_SYSTEM_TRAY_VISUAL" },
+		{ &netatom[NetWMName], "_NET_WM_NAME" },
+		{ &netatom[NetWMIcon], "_NET_WM_ICON" },
+		{ &netatom[NetWMState], "_NET_WM_STATE" },
+		{ &netatom[NetWMCheck], "_NET_SUPPORTING_WM_CHECK" },
+		{ &netatom[NetWMFullscreen], "_NET_WM_STATE_FULLSCREEN" },
+		{ &netatom[NetWMStateDemandsAttention],
+		    "_NET_WM_STATE_DEMANDS_ATTENTION" },
+		{ &netatom[NetWMStateSticky], "_NET_WM_STATE_STICKY" },
+		{ &netatom[NetWMStateAbove], "_NET_WM_STATE_ABOVE" },
+		{ &netatom[NetWMStateBelow], "_NET_WM_STATE_BELOW" },
+		{ &netatom[NetWMStateHidden], "_NET_WM_STATE_HIDDEN" },
+		{ &netatom[NetWMWindowType], "_NET_WM_WINDOW_TYPE" },
+		{ &netatom[NetWMWindowTypeDialog], "_NET_WM_WINDOW_TYPE_DIALOG" },
+		{ &netatom[NetClientList], "_NET_CLIENT_LIST" },
+		{ &netatom[NetClientListStacking], "_NET_CLIENT_LIST_STACKING" },
+		{ &netatom[NetWMDesktop], "_NET_WM_DESKTOP" },
+		{ &netatom[NetWMPid], "_NET_WM_PID" },
+		{ &netatom[NetDesktopViewport], "_NET_DESKTOP_VIEWPORT" },
+		{ &netatom[NetNumberOfDesktops], "_NET_NUMBER_OF_DESKTOPS" },
+		{ &netatom[NetCurrentDesktop], "_NET_CURRENT_DESKTOP" },
+		{ &netatom[NetDesktopNames], "_NET_DESKTOP_NAMES" },
+		{ &netatom[NetWorkarea], "_NET_WORKAREA" },
+		{ &netatom[NetCloseWindow], "_NET_CLOSE_WINDOW" },
+		{ &netatom[NetMoveResizeWindow], "_NET_MOVERESIZE_WINDOW" },
+		{ &netatom[NetFrameExtents], "_NET_FRAME_EXTENTS" },
+		{ &netatom[NetWMWindowOpacity], "_NET_WM_WINDOW_OPACITY" },
+		{ &netatom[NetWMBypassCompositor], "_NET_WM_BYPASS_COMPOSITOR" },
+		{ &xatom[Manager], "MANAGER" },
+		{ &xatom[Xembed], "_XEMBED" },
+		{ &xatom[XembedInfo], "_XEMBED_INFO" },
+	};
+	static const int N = (int) (sizeof tbl / sizeof tbl[0]);
+
+	xcb_connection_t         *xcb = XGetXCBConnection(dpy);
+	xcb_intern_atom_cookie_t *cookies;
+	xcb_intern_atom_reply_t  *reply;
+	int                       i;
+
+	cookies = ecalloc((size_t) N, sizeof *cookies);
+
+	/* Fire all requests — no round-trip yet. */
+	for (i = 0; i < N; i++) {
+		uint16_t nlen = (uint16_t) strlen(tbl[i].name);
+		cookies[i]    = xcb_intern_atom(xcb, 0, nlen, tbl[i].name);
+	}
+
+	/* Collect replies — one round-trip covers all. */
+	for (i = 0; i < N; i++) {
+		reply = xcb_intern_atom_reply(xcb, cookies[i], NULL);
+		if (reply) {
+			*tbl[i].dest = reply->atom;
+			free(reply);
+		}
+	}
+
+	free(cookies);
+}
+
 void
 setup(void)
 {
 	int                  i;
 	XSetWindowAttributes wa;
-	Atom                 utf8string;
 	struct sigaction     sa;
 
 	/* do not transform children into zombies when they terminate */
@@ -450,68 +536,8 @@ setup(void)
 		XRRSelectInput(dpy, root, RRScreenChangeNotifyMask);
 	}
 #endif
-	/* init atoms */
-	utf8string               = XInternAtom(dpy, "UTF8_STRING", False);
-	wmatom[WMProtocols]      = XInternAtom(dpy, "WM_PROTOCOLS", False);
-	wmatom[WMDelete]         = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
-	wmatom[WMState]          = XInternAtom(dpy, "WM_STATE", False);
-	wmatom[WMTakeFocus]      = XInternAtom(dpy, "WM_TAKE_FOCUS", False);
-	netatom[NetActiveWindow] = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
-	netatom[NetSupported]    = XInternAtom(dpy, "_NET_SUPPORTED", False);
-	netatom[NetSystemTray]   = XInternAtom(dpy, "_NET_SYSTEM_TRAY_S0", False);
-	netatom[NetSystemTrayOP] =
-	    XInternAtom(dpy, "_NET_SYSTEM_TRAY_OPCODE", False);
-	netatom[NetSystemTrayOrientation] =
-	    XInternAtom(dpy, "_NET_SYSTEM_TRAY_ORIENTATION", False);
-	netatom[NetSystemTrayOrientationHorz] =
-	    XInternAtom(dpy, "_NET_SYSTEM_TRAY_ORIENTATION_HORZ", False);
-	netatom[NetSystemTrayColors] =
-	    XInternAtom(dpy, "_NET_SYSTEM_TRAY_COLORS", False);
-	netatom[NetSystemTrayVisual] =
-	    XInternAtom(dpy, "_NET_SYSTEM_TRAY_VISUAL", False);
-	netatom[NetWMName]  = XInternAtom(dpy, "_NET_WM_NAME", False);
-	netatom[NetWMIcon]  = XInternAtom(dpy, "_NET_WM_ICON", False);
-	netatom[NetWMState] = XInternAtom(dpy, "_NET_WM_STATE", False);
-	netatom[NetWMCheck] = XInternAtom(dpy, "_NET_SUPPORTING_WM_CHECK", False);
-	netatom[NetWMFullscreen] =
-	    XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
-	netatom[NetWMStateDemandsAttention] =
-	    XInternAtom(dpy, "_NET_WM_STATE_DEMANDS_ATTENTION", False);
-	netatom[NetWMStateSticky] =
-	    XInternAtom(dpy, "_NET_WM_STATE_STICKY", False);
-	netatom[NetWMStateAbove] = XInternAtom(dpy, "_NET_WM_STATE_ABOVE", False);
-	netatom[NetWMStateBelow] = XInternAtom(dpy, "_NET_WM_STATE_BELOW", False);
-	netatom[NetWMStateHidden] =
-	    XInternAtom(dpy, "_NET_WM_STATE_HIDDEN", False);
-	netatom[NetWMWindowType] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
-	netatom[NetWMWindowTypeDialog] =
-	    XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
-	netatom[NetClientList] = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
-	netatom[NetClientListStacking] =
-	    XInternAtom(dpy, "_NET_CLIENT_LIST_STACKING", False);
-	netatom[NetWMDesktop] = XInternAtom(dpy, "_NET_WM_DESKTOP", False);
-	netatom[NetWMPid]     = XInternAtom(dpy, "_NET_WM_PID", False);
-	netatom[NetDesktopViewport] =
-	    XInternAtom(dpy, "_NET_DESKTOP_VIEWPORT", False);
-	netatom[NetNumberOfDesktops] =
-	    XInternAtom(dpy, "_NET_NUMBER_OF_DESKTOPS", False);
-	netatom[NetCurrentDesktop] =
-	    XInternAtom(dpy, "_NET_CURRENT_DESKTOP", False);
-	netatom[NetDesktopNames] = XInternAtom(dpy, "_NET_DESKTOP_NAMES", False);
-	netatom[NetWorkarea]     = XInternAtom(dpy, "_NET_WORKAREA", False);
-	netatom[NetCloseWindow]  = XInternAtom(dpy, "_NET_CLOSE_WINDOW", False);
-	netatom[NetMoveResizeWindow] =
-	    XInternAtom(dpy, "_NET_MOVERESIZE_WINDOW", False);
-	netatom[NetFrameExtents] = XInternAtom(dpy, "_NET_FRAME_EXTENTS", False);
-#ifdef COMPOSITOR
-	netatom[NetWMWindowOpacity] =
-	    XInternAtom(dpy, "_NET_WM_WINDOW_OPACITY", False);
-	netatom[NetWMBypassCompositor] =
-	    XInternAtom(dpy, "_NET_WM_BYPASS_COMPOSITOR", False);
-#endif
-	xatom[Manager]    = XInternAtom(dpy, "MANAGER", False);
-	xatom[Xembed]     = XInternAtom(dpy, "_XEMBED", False);
-	xatom[XembedInfo] = XInternAtom(dpy, "_XEMBED_INFO", False);
+	/* init atoms — all interned in a single async XCB batch */
+	intern_atoms();
 	/* init cursors */
 	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
 	cursor[CurResize] = drw_cur_create(drw, XC_sizing);
@@ -530,7 +556,7 @@ setup(void)
 	wmcheckwin = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
 	XChangeProperty(dpy, wmcheckwin, netatom[NetWMCheck], XA_WINDOW, 32,
 	    PropModeReplace, (unsigned char *) &wmcheckwin, 1);
-	XChangeProperty(dpy, wmcheckwin, netatom[NetWMName], utf8string, 8,
+	XChangeProperty(dpy, wmcheckwin, netatom[NetWMName], utf8string_atom, 8,
 	    PropModeReplace, (unsigned char *) "awm", 3);
 	XChangeProperty(dpy, root, netatom[NetWMCheck], XA_WINDOW, 32,
 	    PropModeReplace, (unsigned char *) &wmcheckwin, 1);
