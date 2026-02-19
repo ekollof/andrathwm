@@ -24,6 +24,8 @@
 /* Forward declaration for awm integration */
 extern void addsniiconsystray(Window w, int width, int height);
 extern void removesniiconsystray(Window w);
+/* Schedule a D-Bus reconnect from the awm main loop (defined in awm.c). */
+extern void sni_schedule_reconnect(void);
 
 /* D-Bus interface names */
 #define WATCHER_BUS_NAME "org.kde.StatusNotifierWatcher"
@@ -211,9 +213,13 @@ sni_cleanup(void)
 		sni_menu = NULL;
 	}
 
-	/* Release D-Bus name */
+	/* Release D-Bus name and close the private connection.
+	 * dbus_connection_close() flushes pending outgoing messages and signals
+	 * the daemon that the connection is gone (name released).  The subsequent
+	 * unref drops our last reference and frees the connection object. */
 	if (sni_watcher->conn) {
 		dbus_bus_release_name(sni_watcher->conn, WATCHER_BUS_NAME, NULL);
+		dbus_connection_close(sni_watcher->conn);
 		dbus_connection_unref(sni_watcher->conn);
 	}
 
@@ -507,6 +513,20 @@ sni_handle_name_owner_changed(
 			sni_remove_item(item);
 			return DBUS_HANDLER_RESULT_HANDLED;
 		}
+	}
+
+	/* Detect when our own watcher name is stolen by another process.
+	 * NameOwnerChanged fires with old_owner == our unique name and a
+	 * non-empty new_owner when someone else takes the well-known name.
+	 * Schedule a reconnect so we reclaim it. */
+	if (name && strcmp(name, WATCHER_BUS_NAME) == 0 && old_owner &&
+	    new_owner && strlen(new_owner) > 0 && sni_watcher &&
+	    sni_watcher->unique_name &&
+	    strcmp(old_owner, sni_watcher->unique_name) == 0) {
+		awm_warn("SNI: watcher name '%s' stolen by %s — scheduling reconnect",
+		    WATCHER_BUS_NAME, new_owner);
+		sni_schedule_reconnect();
+		return DBUS_HANDLER_RESULT_HANDLED;
 	}
 
 	return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;

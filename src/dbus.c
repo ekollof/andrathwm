@@ -3,6 +3,8 @@
  * Generic D-Bus helper functions
  */
 
+#include <fcntl.h>
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -544,14 +546,19 @@ dbus_helper_session_connect(const char *well_known_name,
 	DBusConnection *conn;
 	DBusError       err;
 	int             ret;
+	int             fd;
 
 	if (!filter)
 		return NULL;
 
 	dbus_error_init(&err);
 
-	/* Connect to session bus */
-	conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+	/* Connect to session bus using a private (non-shared) connection so that
+	 * dbus_connection_close() + dbus_connection_unref() actually closes the
+	 * socket and releases any well-known names.  dbus_bus_get() returns a
+	 * process-wide singleton that libdbus keeps alive internally, meaning
+	 * release_name + unref does not close the fd. */
+	conn = dbus_bus_get_private(DBUS_BUS_SESSION, &err);
 	if (dbus_error_is_set(&err)) {
 		awm_error("D-Bus connection error: %s", err.message);
 		dbus_error_free(&err);
@@ -560,6 +567,13 @@ dbus_helper_session_connect(const char *well_known_name,
 
 	if (!conn)
 		return NULL;
+
+	/* Mark the D-Bus fd close-on-exec so it is not inherited by child
+	 * processes or the new image after execvp.  Without this the old
+	 * connection's fd survives exec and the bus keeps the well-known name
+	 * alive, causing the next sni_init() to fail with "not primary owner". */
+	if (dbus_connection_get_unix_fd(conn, &fd) && fd >= 0)
+		fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
 
 	/* Get and store unique name if requested */
 	if (unique_name_out) {
@@ -576,14 +590,16 @@ dbus_helper_session_connect(const char *well_known_name,
 			free(*unique_name_out);
 			*unique_name_out = NULL;
 		}
+		dbus_connection_close(conn);
 		dbus_connection_unref(conn);
 		return NULL;
 	}
 
 	/* Request well-known name if provided */
 	if (well_known_name) {
-		ret = dbus_bus_request_name(
-		    conn, well_known_name, DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
+		ret = dbus_bus_request_name(conn, well_known_name,
+		    DBUS_NAME_FLAG_REPLACE_EXISTING | DBUS_NAME_FLAG_DO_NOT_QUEUE,
+		    &err);
 		if (dbus_error_is_set(&err)) {
 			awm_error("Failed to register D-Bus name '%s': %s",
 			    well_known_name, err.message);
@@ -599,6 +615,7 @@ dbus_helper_session_connect(const char *well_known_name,
 				free(*unique_name_out);
 				*unique_name_out = NULL;
 			}
+			dbus_connection_close(conn);
 			dbus_connection_unref(conn);
 			return NULL;
 		}

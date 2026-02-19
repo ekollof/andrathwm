@@ -292,6 +292,26 @@ sni_attach_dbus_source(GMainContext *ctx)
 
 /* One-shot timer callback: attempt to reconnect to D-Bus after a disconnect.
  */
+static gboolean dbus_reconnect_cb(gpointer user_data);
+
+/* Called from sni.c when NameOwnerChanged reveals our watcher name was stolen.
+ * Schedules a reconnect on the GLib main context (idempotent: no-op if a
+ * retry is already in flight). */
+void
+sni_schedule_reconnect(void)
+{
+	GMainContext *ctx;
+
+	if (dbus_retry_id > 0)
+		return; /* already scheduled */
+
+	ctx           = g_main_loop_get_context(main_loop);
+	dbus_retry_id = g_timeout_add_seconds(1, dbus_reconnect_cb, ctx);
+	awm_warn("D-Bus: name-loss detected — reconnect scheduled in 1 s");
+}
+
+/* One-shot timer callback: attempt to reconnect to D-Bus after a disconnect.
+ */
 static gboolean
 dbus_reconnect_cb(gpointer user_data)
 {
@@ -598,6 +618,22 @@ main(int argc, char *argv[])
 	run();
 	if (restart) {
 		setenv("RESTARTED", "1", 1); /* overwrite=1: always update */
+#ifdef STATUSNOTIFIER
+		/* Release D-Bus name and connection before exec so the new process
+		 * image can claim org.kde.StatusNotifierWatcher immediately.
+		 * Without this, the libdbus shared connection fd survives across
+		 * execvp and the bus still sees the name as owned, causing
+		 * sni_init() in the new image to fail with "not primary owner". */
+		if (dbus_retry_id > 0) {
+			g_source_remove(dbus_retry_id);
+			dbus_retry_id = 0;
+		}
+		if (dbus_src_id > 0) {
+			g_source_remove(dbus_src_id);
+			dbus_src_id = 0;
+		}
+		sni_cleanup();
+#endif
 		execvp(argv[0], argv);
 		awm_error("execvp failed: %s", strerror(errno));
 	}
