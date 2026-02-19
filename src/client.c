@@ -13,7 +13,8 @@
 
 /* ---- compile-time invariants ---- */
 _Static_assert(sizeof(Atom) >= 4,
-    "sizeof(Atom) is used as the XGetWindowProperty length argument; must be >= 4 bytes");
+    "sizeof(Atom) is used as the XGetWindowProperty length argument; must be "
+    ">= 4 bytes");
 
 /* module-local strings */
 static const char broken[] = "broken";
@@ -21,7 +22,7 @@ static const char broken[] = "broken";
 void
 applyrules(Client *c)
 {
-	const char  *class, *instance;
+	const char *class, *instance;
 	unsigned int i;
 	const Rule  *r;
 	Monitor     *m;
@@ -52,8 +53,8 @@ applyrules(Client *c)
 			if (r->opacity > 0.0)
 				c->opacity = r->opacity;
 			for (m = mons; m && (m->tagset[m->seltags] & c->tags) == 0;
-			    m  = m->next)
-                ;
+			     m = m->next)
+				;
 			if (m)
 				c->mon = m;
 		}
@@ -274,8 +275,8 @@ focusstack(const Arg *arg)
 			;
 		if (!c)
 			for (c = selmon->cl->clients; c && !ISVISIBLE(c, selmon);
-			    c  = c->next)
-                ;
+			     c = c->next)
+				;
 	} else {
 		for (i = selmon->cl->clients; i != selmon->sel; i = i->next)
 			if (ISVISIBLE(i, selmon))
@@ -301,11 +302,12 @@ focusstackhidden(const Arg *arg)
 
 	if (arg->i > 0) {
 		for (c = selmon->sel->next;
-		    c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
+		     c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
 			;
 		if (!c)
 			for (c = selmon->cl->clients;
-			    c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
+			     c && !(c->tags & selmon->tagset[selmon->seltags]);
+			     c = c->next)
 				;
 	} else {
 		for (i = selmon->cl->clients; i != selmon->sel; i = i->next)
@@ -718,7 +720,7 @@ manage(Window w, XWindowAttributes *wa)
 	        StructureNotifyMask);
 	grabbuttons(c, 0);
 	if (!c->isfloating)
-		c->isfloating = c->oldstate = trans != None || c->isfixed;
+		c->isfloating = c->oldstate = t != NULL || c->isfixed;
 	if (c->isfloating)
 		XRaiseWindow(dpy, c->win);
 	attach(c);
@@ -822,7 +824,7 @@ Client *
 nexttiled(Client *c, Monitor *m)
 {
 	for (; c && (c->isfloating || !ISVISIBLE(c, m) || c->ishidden);
-	    c = c->next)
+	     c = c->next)
 		;
 	return c;
 }
@@ -1140,7 +1142,8 @@ togglescratch(const Arg *arg)
 	unsigned int found = 0;
 
 	for (c = selmon->cl->clients;
-	    c && !(found = c->scratchkey == ((char **) arg->v)[0][0]); c = c->next)
+	     c && !(found = c->scratchkey == ((char **) arg->v)[0][0]);
+	     c = c->next)
 		;
 	if (found) {
 		if (ISVISIBLE(c, selmon)) {
@@ -1202,7 +1205,7 @@ toggleview(const Arg *arg)
 					selmon_curtag = 0;
 				else {
 					for (i = 0; !(selmon->tagset[selmon->seltags] & 1 << i);
-					    i++)
+					     i++)
 						;
 					selmon_curtag = i + 1;
 				}
@@ -1631,11 +1634,11 @@ movestack(const Arg *arg)
 	if (arg->i > 0) {
 		/* find the client after selmon->sel */
 		for (c = selmon->sel->next;
-		    c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
+		     c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
 			;
 		if (!c)
 			for (c = selmon->cl->clients;
-			    c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
+			     c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
 				;
 
 	} else {
