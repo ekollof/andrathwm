@@ -9,7 +9,9 @@
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
-#include <cairo/cairo-xlib.h>
+#include <cairo/cairo-xcb.h>
+#include <xcb/xcb.h>
+#include <xcb/render.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -50,7 +52,11 @@ SNIWatcher            *sni_watcher    = NULL;
 static DBusDispatcher *sni_dispatcher = NULL;
 
 /* awm globals - set during sni_init() */
-static Display     *sni_dpy    = NULL;
+static Display          *sni_dpy = NULL; /* WM connection: window management */
+static xcb_connection_t *sni_cairo_xcb =
+    NULL; /* dedicated XCB conn for cairo */
+static xcb_visualtype_t *sni_xcb_visual =
+    NULL; /* default visual for cairo surfaces */
 static Window       sni_root   = 0;
 static Drw         *sni_drw    = NULL;
 static Clr        **sni_scheme = NULL;
@@ -98,7 +104,8 @@ static void sni_fetch_item_properties(SNIItem *item);
  */
 
 int
-sni_init(Display *display, Window rootwin, Drw *drw, Clr **scheme,
+sni_init(Display *display, xcb_connection_t *cairo_xcb,
+    xcb_visualtype_t *xcb_visual, Window rootwin, Drw *drw, Clr **scheme,
     unsigned int icon_size)
 {
 	DBusError err;
@@ -106,11 +113,13 @@ sni_init(Display *display, Window rootwin, Drw *drw, Clr **scheme,
 	if (!display)
 		return 0;
 
-	sni_dpy    = display;
-	sni_root   = rootwin;
-	sni_drw    = drw;
-	sni_scheme = scheme;
-	sniconsize = icon_size;
+	sni_dpy        = display;
+	sni_cairo_xcb  = cairo_xcb;
+	sni_xcb_visual = xcb_visual;
+	sni_root       = rootwin;
+	sni_drw        = drw;
+	sni_scheme     = scheme;
+	sniconsize     = icon_size;
 
 	/* Disable glycin loaders - they use subprocesses which can deadlock
 	 * with async operations and window manager event loops */
@@ -245,17 +254,19 @@ sni_cleanup(void)
 int
 sni_reconnect(void)
 {
-	Display     *dpy    = sni_dpy;
-	Window       root   = sni_root;
-	Drw         *drw    = sni_drw;
-	Clr        **scheme = sni_scheme;
-	unsigned int sz     = sniconsize;
+	Display          *dpy        = sni_dpy;
+	xcb_connection_t *cairo_xcb  = sni_cairo_xcb;
+	xcb_visualtype_t *xcb_visual = sni_xcb_visual;
+	Window            root       = sni_root;
+	Drw              *drw        = sni_drw;
+	Clr             **scheme     = sni_scheme;
+	unsigned int      sz         = sniconsize;
 
 	if (!dpy)
 		return 0; /* never successfully initialised — cannot reconnect */
 
 	sni_cleanup();
-	return sni_init(dpy, root, drw, scheme, sz);
+	return sni_init(dpy, cairo_xcb, xcb_visual, root, drw, scheme, sz);
 }
 
 int
@@ -998,11 +1009,28 @@ sni_icon_render(SNIItem *item, int icon_size, cairo_surface_t *icon_surface)
 
 	awm_debug("SNI: Rendering icon for %s", item->service);
 
-	/* Render the icon to window */
-	pixmap         = XCreatePixmap(sni_dpy, item->win, icon_size, icon_size,
-	            DefaultDepth(sni_dpy, DefaultScreen(sni_dpy)));
-	pixmap_surface = cairo_xlib_surface_create(sni_dpy, pixmap,
-	    DefaultVisual(sni_dpy, DefaultScreen(sni_dpy)), icon_size, icon_size);
+	/* Render the icon to window.
+	 * Use a dedicated xcb_connection_t (sni_cairo_xcb) for all cairo/pixmap
+	 * operations so that libcairo's raw XCB requests never touch the Xlib
+	 * sequence counter on the primary WM connection (sni_dpy). */
+	if (!sni_cairo_xcb || !sni_xcb_visual) {
+		awm_error("SNI: No XCB cairo connection for %s", item->service);
+		cairo_surface_destroy(icon_surface);
+		return;
+	}
+
+	{
+		xcb_pixmap_t xcb_pm = xcb_generate_id(sni_cairo_xcb);
+		uint8_t      depth =
+		    (uint8_t) DefaultDepth(sni_dpy, DefaultScreen(sni_dpy));
+		xcb_create_pixmap(sni_cairo_xcb, depth, xcb_pm,
+		    (xcb_drawable_t) item->win, (uint16_t) icon_size,
+		    (uint16_t) icon_size);
+		pixmap = (Pixmap) xcb_pm;
+	}
+
+	pixmap_surface = cairo_xcb_surface_create(sni_cairo_xcb,
+	    (xcb_drawable_t) pixmap, sni_xcb_visual, icon_size, icon_size);
 
 	cr = cairo_create(pixmap_surface);
 	/* Fill with bar background colour — the pixmap is 24-bit (no alpha
@@ -1025,11 +1053,14 @@ sni_icon_render(SNIItem *item, int icon_size, cairo_surface_t *icon_surface)
 	cairo_destroy(cr);
 	cairo_surface_destroy(icon_surface);
 
-	/* Set as window background */
+	/* Flush cairo's xcb commands before handing the pixmap to Xlib */
+	cairo_surface_flush(pixmap_surface);
+	cairo_surface_destroy(pixmap_surface);
+
+	/* Set as window background — pixmap XID is global to the X server */
 	XSetWindowBackgroundPixmap(sni_dpy, item->win, pixmap);
 	XClearWindow(sni_dpy, item->win);
-	cairo_surface_destroy(pixmap_surface);
-	XFreePixmap(sni_dpy, pixmap);
+	xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
 
 	awm_debug("SNI: Icon rendered for %s", item->service);
 }
@@ -1187,18 +1218,33 @@ sni_render_item(SNIItem *item)
 		item->mapped = 1;
 	}
 
-	/* Render placeholder immediately (non-blocking) */
-	pixmap = XCreatePixmap(sni_dpy, item->win, sniconsize, sniconsize,
-	    DefaultDepth(sni_dpy, DefaultScreen(sni_dpy)));
+	/* Render placeholder immediately (non-blocking).
+	 * Use sni_cairo_xcb for all cairo operations — see comment in
+	 * sni_icon_render() for rationale. */
+	if (!sni_cairo_xcb || !sni_xcb_visual) {
+		awm_error(
+		    "SNI: No XCB cairo connection for placeholder %s", item->service);
+		return;
+	}
 
-	pixmap_surface = cairo_xlib_surface_create(sni_dpy, pixmap,
-	    DefaultVisual(sni_dpy, DefaultScreen(sni_dpy)), sniconsize,
-	    sniconsize);
+	{
+		xcb_pixmap_t xcb_pm = xcb_generate_id(sni_cairo_xcb);
+		uint8_t      depth =
+		    (uint8_t) DefaultDepth(sni_dpy, DefaultScreen(sni_dpy));
+		xcb_create_pixmap(sni_cairo_xcb, depth, xcb_pm,
+		    (xcb_drawable_t) item->win, (uint16_t) sniconsize,
+		    (uint16_t) sniconsize);
+		pixmap = (Pixmap) xcb_pm;
+	}
+
+	pixmap_surface =
+	    cairo_xcb_surface_create(sni_cairo_xcb, (xcb_drawable_t) pixmap,
+	        sni_xcb_visual, (int) sniconsize, (int) sniconsize);
 
 	if (cairo_surface_status(pixmap_surface) != CAIRO_STATUS_SUCCESS) {
 		awm_error(
 		    "SNI: Failed to create pixmap surface for %s", item->service);
-		XFreePixmap(sni_dpy, pixmap);
+		xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
 		return;
 	}
 
@@ -1227,10 +1273,10 @@ sni_render_item(SNIItem *item)
 	cairo_surface_flush(pixmap_surface);
 	cairo_surface_destroy(pixmap_surface);
 
-	/* Set as window background */
+	/* Set as window background — pixmap XID is global to the X server */
 	XSetWindowBackgroundPixmap(sni_dpy, item->win, pixmap);
 	XClearWindow(sni_dpy, item->win);
-	XFreePixmap(sni_dpy, pixmap);
+	xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
 
 	awm_debug("SNI: Placeholder rendered for %s", item->service);
 

@@ -80,7 +80,8 @@ typedef struct {
 /* Function declarations */
 
 /* Initialization and cleanup */
-int  sni_init(Display *display, Window rootwin, Drw *drw, Clr **scheme,
+int  sni_init(Display *display, xcb_connection_t *cairo_xcb,
+     xcb_visualtype_t *xcb_visual, Window rootwin, Drw *drw, Clr **scheme,
      unsigned int icon_size);
 void sni_cleanup(void);
 int  sni_reconnect(void); /* cleanup + re-init preserving awm globals */

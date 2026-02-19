@@ -435,7 +435,10 @@ setup(void)
 	if (!(cl = (Clientlist *) calloc(1, sizeof(Clientlist))))
 		die("fatal: could not malloc() %u bytes\n", sizeof(Clientlist));
 	root = RootWindow(dpy, screen);
-	drw  = drw_create(dpy, screen, root, sw, sh);
+	/* drw uses a dedicated bare xcb_connection_t (opened inside drw_create)
+	 * for all cairo rendering, so Xlib's sequence counter on dpy is never
+	 * disturbed by cairo's raw XCB traffic. */
+	drw = drw_create(dpy, screen, root, sw, sh);
 	if (!drw_fontset_create(drw, fonts, LENGTH(fonts)))
 		die("no fonts could be loaded.");
 	lrpad = drw->fonts->h;
@@ -558,7 +561,8 @@ setup(void)
 	icon_init();
 #ifdef STATUSNOTIFIER
 	/* Initialize StatusNotifier support */
-	if (!sni_init(dpy, root, drw, scheme, sniconsize))
+	if (!sni_init(dpy, drw->cairo_xcb, drw->xcb_visual, root, drw, scheme,
+	        sniconsize))
 		awm_warn("Failed to initialize StatusNotifier support");
 #endif
 	/* Initialize launcher */

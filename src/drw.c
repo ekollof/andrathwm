@@ -1,9 +1,32 @@
 /* See LICENSE file for copyright and license details. */
 #include <stdlib.h>
+#include <string.h>
 
 #include "drw.h"
 #include "log.h"
 #include "util.h"
+
+/* Find the xcb_visualtype_t matching a given visual ID on the given screen.
+ * Returns NULL if not found (should never happen for DefaultVisual). */
+static xcb_visualtype_t *
+xcb_find_visualtype(xcb_connection_t *conn, int screen_num, xcb_visualid_t vid)
+{
+	const xcb_setup_t    *setup = xcb_get_setup(conn);
+	xcb_screen_iterator_t si    = xcb_setup_roots_iterator(setup);
+
+	for (int i = 0; i < screen_num; i++)
+		xcb_screen_next(&si);
+
+	xcb_depth_iterator_t di = xcb_screen_allowed_depths_iterator(si.data);
+	for (; di.rem; xcb_depth_next(&di)) {
+		xcb_visualtype_iterator_t vi = xcb_depth_visuals_iterator(di.data);
+		for (; vi.rem; xcb_visualtype_next(&vi)) {
+			if (vi.data->visual_id == vid)
+				return vi.data;
+		}
+	}
+	return NULL;
+}
 
 #define UTF_INVALID 0xFFFD
 #define UTF_SIZ 4
@@ -75,9 +98,27 @@ drw_create(
 	drw->gc       = XCreateGC(dpy, root, 0, NULL);
 	XSetLineAttributes(dpy, drw->gc, 1, LineSolid, CapButt, JoinMiter);
 
+	/* Open a dedicated XCB connection for Cairo.  Cairo's xlib backend
+	 * sends raw xcb_render_* requests on whatever xcb_connection_t it gets.
+	 * Using a separate connection that is never read from via Xlib prevents
+	 * the _XSetLastRequestRead "sequence lost" warning that fires whenever
+	 * the wire sequence counter wraps past 0xffff on a shared Display*. */
+	drw->cairo_xcb = xcb_connect(NULL, NULL);
+	if (xcb_connection_has_error(drw->cairo_xcb)) {
+		xcb_disconnect(drw->cairo_xcb);
+		drw->cairo_xcb = NULL;
+	}
+
+	if (drw->cairo_xcb) {
+		xcb_visualid_t vid = XVisualIDFromVisual(DefaultVisual(dpy, screen));
+		drw->xcb_visual    = xcb_find_visualtype(drw->cairo_xcb, screen, vid);
+	}
+
 	/* Create persistent Cairo surface for icon rendering */
-	drw->cairo_surface = cairo_xlib_surface_create(
-	    dpy, drw->drawable, DefaultVisual(dpy, screen), w, h);
+	if (drw->cairo_xcb && drw->xcb_visual) {
+		drw->cairo_surface = cairo_xcb_surface_create(drw->cairo_xcb,
+		    (xcb_drawable_t) drw->drawable, drw->xcb_visual, (int) w, (int) h);
+	}
 
 	return drw;
 }
@@ -98,8 +139,11 @@ drw_resize(Drw *drw, unsigned int w, unsigned int h)
 	/* Recreate Cairo surface for new drawable */
 	if (drw->cairo_surface)
 		cairo_surface_destroy(drw->cairo_surface);
-	drw->cairo_surface = cairo_xlib_surface_create(
-	    drw->dpy, drw->drawable, DefaultVisual(drw->dpy, drw->screen), w, h);
+	drw->cairo_surface = NULL;
+	if (drw->cairo_xcb && drw->xcb_visual) {
+		drw->cairo_surface = cairo_xcb_surface_create(drw->cairo_xcb,
+		    (xcb_drawable_t) drw->drawable, drw->xcb_visual, (int) w, (int) h);
+	}
 }
 
 void
@@ -107,6 +151,8 @@ drw_free(Drw *drw)
 {
 	if (drw->cairo_surface)
 		cairo_surface_destroy(drw->cairo_surface);
+	if (drw->cairo_xcb)
+		xcb_disconnect(drw->cairo_xcb);
 	XFreePixmap(drw->dpy, drw->drawable);
 	XFreeGC(drw->dpy, drw->gc);
 	drw_fontset_free(drw->fonts);
@@ -396,8 +442,8 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 				if (usedfont &&
 				    XftCharExists(drw->dpy, usedfont->xfont, utf8codepoint)) {
 					for (curfont = drw->fonts; curfont->next;
-					     curfont = curfont->next)
-						; /* NOP */
+					    curfont  = curfont->next)
+                        ; /* NOP */
 					curfont->next = usedfont;
 				} else {
 					xfont_free(usedfont);
