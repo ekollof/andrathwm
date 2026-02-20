@@ -173,7 +173,8 @@ clientmessage(XEvent *e)
 			c->tags = 1;
 			updatesizehints(c);
 			updatesystrayicongeom(c, c->w, c->h);
-			XAddToSaveSet(dpy, c->win);
+			xcb_change_save_set(
+			    XGetXCBConnection(dpy), XCB_SET_MODE_INSERT, c->win);
 			{
 				uint32_t mask = StructureNotifyMask | PropertyChangeMask |
 				    ResizeRedirectMask;
@@ -407,15 +408,15 @@ expose(XEvent *e)
 static int
 iswindowdescendant(Window w, Window ancestor)
 {
-	Window       root_ret, parent, *children;
-	unsigned int nchildren;
+	xcb_connection_t *xc = XGetXCBConnection(dpy);
 
 	while (w && w != ancestor && w != root) {
-		if (!XQueryTree(dpy, w, &root_ret, &parent, &children, &nchildren))
+		xcb_query_tree_reply_t *r =
+		    xcb_query_tree_reply(xc, xcb_query_tree(xc, w), NULL);
+		if (!r)
 			break;
-		if (children)
-			XFree(children);
-		w = parent;
+		w = r->parent;
+		free(r);
 	}
 	return w == ancestor;
 }
