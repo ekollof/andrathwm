@@ -90,10 +90,10 @@ typedef struct CompWin {
 	int         x, y, w, h, bw; /* last known geometry                */
 	int         depth;          /* window depth                              */
 	int         argb;           /* depth == 32                               */
-	double      opacity;        /* 0.0 – 1.0                                 */
-	int         redirected;     /* 0 = bypass (fullscreen/bypass-hint)    */
-	int         hidden;         /* 1 = moved off-screen by showhide()        */
-	int         ever_damaged;   /* 0 = no damage received yet (since map) */
+	double      opacity;      /* 0.0 – 1.0                                 */
+	int         redirected;   /* 0 = bypass (fullscreen/bypass-hint)    */
+	int         hidden;       /* 1 = moved off-screen by showhide()        */
+	int         ever_damaged; /* 0 = no damage received yet (since map) */
 	xcb_present_event_t present_eid; /* 0 = not subscribed to Present events */
 	struct CompWin     *next;
 } CompWin;
@@ -1014,7 +1014,7 @@ compositor_cleanup(void)
 
 	/* Release _NET_WM_CM_Sn selection */
 	if (comp.cm_owner_win) {
-		XDestroyWindow(dpy, comp.cm_owner_win);
+		xcb_destroy_window(XGetXCBConnection(dpy), comp.cm_owner_win);
 		comp.cm_owner_win = 0;
 	}
 
@@ -1238,13 +1238,12 @@ comp_apply_shape(CompWin *cw)
 static void
 comp_update_wallpaper(void)
 {
-	Atom           actual_type;
-	int            actual_fmt;
-	unsigned long  nitems, bytes_after;
-	unsigned char *prop = NULL;
-	Pixmap         pmap = None;
-	Atom           atoms[2];
-	int            i;
+	xcb_connection_t         *xc   = XGetXCBConnection(dpy);
+	Pixmap                    pmap = None;
+	xcb_atom_t                atoms[2];
+	int                       i;
+	xcb_get_property_cookie_t ck;
+	xcb_get_property_reply_t *r;
 
 	/* Release previous wallpaper resources */
 	if (comp.wallpaper_pict) {
@@ -1268,16 +1267,13 @@ comp_update_wallpaper(void)
 	atoms[1] = comp.atom_esetroot;
 
 	for (i = 0; i < 2 && pmap == None; i++) {
-		prop = NULL;
-		if (XGetWindowProperty(dpy, root, atoms[i], 0, 1, False, XA_PIXMAP,
-		        &actual_type, &actual_fmt, &nitems, &bytes_after,
-		        &prop) == Success &&
-		    prop && actual_type == XA_PIXMAP && actual_fmt == 32 &&
-		    nitems == 1) {
-			pmap = *(Pixmap *) prop;
-		}
-		if (prop)
-			XFree(prop);
+		ck = xcb_get_property(xc, 0, (xcb_window_t) root,
+		    (xcb_atom_t) atoms[i], XCB_ATOM_PIXMAP, 0, 1);
+		r  = xcb_get_property_reply(xc, ck, NULL);
+		if (r &&
+		    xcb_get_property_value_length(r) >= (int) sizeof(xcb_pixmap_t))
+			pmap = (Pixmap) * (xcb_pixmap_t *) xcb_get_property_value(r);
+		free(r);
 	}
 
 	if (pmap == None)
@@ -2128,25 +2124,25 @@ compositor_handle_event(XEvent *ev)
 			 * Read the new value and propagate it to the CompWin. */
 			CompWin *cw = comp_find_by_xid(pev->window);
 			if (cw && cw->client) {
-				Atom           actual_type;
-				int            actual_fmt;
-				unsigned long  nitems, bytes_after;
-				unsigned char *prop = NULL;
+				xcb_connection_t         *xc2 = XGetXCBConnection(dpy);
+				xcb_get_property_cookie_t ck2;
+				xcb_get_property_reply_t *r2;
 
-				if (XGetWindowProperty(dpy, pev->window,
-				        comp.atom_net_wm_opacity, 0, 1, False, XA_CARDINAL,
-				        &actual_type, &actual_fmt, &nitems, &bytes_after,
-				        &prop) == Success &&
-				    prop && actual_type == XA_CARDINAL && actual_fmt == 32 &&
-				    nitems == 1) {
-					unsigned long raw = *(unsigned long *) prop;
+				ck2 = xcb_get_property(xc2, 0, (xcb_window_t) pev->window,
+				    (xcb_atom_t) comp.atom_net_wm_opacity, XCB_ATOM_CARDINAL,
+				    0, 1);
+				r2  = xcb_get_property_reply(xc2, ck2, NULL);
+				if (r2 &&
+				    xcb_get_property_value_length(r2) >=
+				        (int) sizeof(uint32_t)) {
+					unsigned long raw =
+					    *(uint32_t *) xcb_get_property_value(r2);
 					compositor_set_opacity(cw->client, raw);
 				} else {
 					/* Property deleted — restore to fully opaque */
 					compositor_set_opacity(cw->client, 0xFFFFFFFFUL);
 				}
-				if (prop)
-					XFree(prop);
+				free(r2);
 			}
 		}
 		return;
