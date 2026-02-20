@@ -58,6 +58,7 @@
 #include <X11/extensions/Xrender.h>
 
 #include <xcb/xcb.h>
+#include <xcb/render.h>
 #include <xcb/present.h>
 
 /* EGL + GL — only included when -DCOMPOSITOR is active */
@@ -770,9 +771,11 @@ compositor_init(GMainContext *ctx)
 	}
 	comp.render_err_base = render_err;
 	{
-		int op, ev_dummy, err_dummy;
-		if (XQueryExtension(dpy, "RENDER", &op, &ev_dummy, &err_dummy))
-			comp.render_request_base = op;
+		xcb_connection_t                  *xc0 = XGetXCBConnection(dpy);
+		const xcb_query_extension_reply_t *ext;
+		ext = xcb_get_extension_data(xc0, &xcb_render_id);
+		if (ext && ext->present)
+			comp.render_request_base = ext->major_opcode;
 	}
 	/* Query GLX extension opcode for error whitelisting — EGL has no X
 	 * request codes, but the glx_errors stub in compositor.h still exists
@@ -867,24 +870,37 @@ compositor_init(GMainContext *ctx)
 	 * (SelectionClear).
 	 */
 	{
-		char sel_name[32];
+		char                     sel_name[32];
+		xcb_connection_t        *xc = XGetXCBConnection(dpy);
+		xcb_intern_atom_cookie_t ck;
+		xcb_intern_atom_reply_t *r;
 		snprintf(sel_name, sizeof(sel_name), "_NET_WM_CM_S%d", screen);
-		comp.atom_cm_sn = XInternAtom(dpy, sel_name, False);
+		ck = xcb_intern_atom(xc, 0, (uint16_t) strlen(sel_name), sel_name);
+		r  = xcb_intern_atom_reply(xc, ck, NULL);
+		comp.atom_cm_sn = r ? (Atom) r->atom : None;
+		free(r);
 
 		/* Create a small, invisible utility window to hold the selection. */
 		comp.cm_owner_win =
 		    XCreateSimpleWindow(dpy, root, -1, -1, 1, 1, 0, 0, 0);
 
-		XSetSelectionOwner(
-		    dpy, comp.atom_cm_sn, comp.cm_owner_win, CurrentTime);
+		xcb_set_selection_owner(xc, comp.cm_owner_win,
+		    (xcb_atom_t) comp.atom_cm_sn, XCB_CURRENT_TIME);
 
-		if (XGetSelectionOwner(dpy, comp.atom_cm_sn) != comp.cm_owner_win) {
-			awm_warn("compositor: could not claim _NET_WM_CM_S%d — "
-			         "another compositor may be running",
-			    screen);
-			/* Non-fatal: proceed anyway, but log the warning. */
-		} else {
-			awm_debug("compositor: claimed _NET_WM_CM_S%d selection", screen);
+		{
+			xcb_get_selection_owner_cookie_t gck;
+			xcb_get_selection_owner_reply_t *gr;
+			gck = xcb_get_selection_owner(xc, (xcb_atom_t) comp.atom_cm_sn);
+			gr  = xcb_get_selection_owner_reply(xc, gck, NULL);
+			if (!gr || gr->owner != comp.cm_owner_win) {
+				awm_warn("compositor: could not claim _NET_WM_CM_S%d — "
+				         "another compositor may be running",
+				    screen);
+			} else {
+				awm_debug(
+				    "compositor: claimed _NET_WM_CM_S%d selection", screen);
+			}
+			free(gr);
 		}
 
 		/* Select SelectionClear on the owner window so we are notified
@@ -900,27 +916,45 @@ compositor_init(GMainContext *ctx)
 	 */
 
 	{
-		Window       root_ret, parent_ret;
-		Window      *children  = NULL;
-		unsigned int nchildren = 0;
-		unsigned int j;
+		xcb_connection_t       *xc2 = XGetXCBConnection(dpy);
+		xcb_query_tree_cookie_t qtck;
+		xcb_query_tree_reply_t *qtr;
+		uint32_t                j;
 
-		if (XQueryTree(
-		        dpy, root, &root_ret, &parent_ret, &children, &nchildren)) {
-			for (j = 0; j < nchildren; j++)
-				comp_add_by_xid(children[j]);
-			if (children)
-				XFree(children);
+		qtck = xcb_query_tree(xc2, root);
+		qtr  = xcb_query_tree_reply(xc2, qtck, NULL);
+		if (qtr) {
+			xcb_window_t *ch = xcb_query_tree_children(qtr);
+			int           nc = xcb_query_tree_children_length(qtr);
+			for (j = 0; j < (uint32_t) nc; j++)
+				comp_add_by_xid(ch[j]);
+			free(qtr);
+		} else {
+			awm_warn("compositor: xcb_query_tree failed on root during scan");
 		}
 	}
 
 	/* --- Intern wallpaper atoms and read initial wallpaper ---------------
 	 */
 
-	comp.atom_rootpmap = XInternAtom(dpy, "_XROOTPMAP_ID", False);
-	comp.atom_esetroot = XInternAtom(dpy, "ESETROOT_PMAP_ID", False);
-	comp.atom_net_wm_opacity =
-	    XInternAtom(dpy, "_NET_WM_WINDOW_OPACITY", False);
+	{
+		xcb_connection_t        *xc = XGetXCBConnection(dpy);
+		xcb_intern_atom_cookie_t ck0 =
+		    xcb_intern_atom(xc, 0, 12, "_XROOTPMAP_ID");
+		xcb_intern_atom_cookie_t ck1 =
+		    xcb_intern_atom(xc, 0, 15, "ESETROOT_PMAP_ID");
+		xcb_intern_atom_cookie_t ck2 =
+		    xcb_intern_atom(xc, 0, 24, "_NET_WM_WINDOW_OPACITY");
+		xcb_intern_atom_reply_t *r0 = xcb_intern_atom_reply(xc, ck0, NULL);
+		xcb_intern_atom_reply_t *r1 = xcb_intern_atom_reply(xc, ck1, NULL);
+		xcb_intern_atom_reply_t *r2 = xcb_intern_atom_reply(xc, ck2, NULL);
+		comp.atom_rootpmap          = r0 ? (Atom) r0->atom : None;
+		comp.atom_esetroot          = r1 ? (Atom) r1->atom : None;
+		comp.atom_net_wm_opacity    = r2 ? (Atom) r2->atom : None;
+		free(r0);
+		free(r1);
+		free(r2);
+	}
 	comp_update_wallpaper();
 
 	comp.active = 1;
@@ -1168,15 +1202,19 @@ comp_refresh_pixmap(CompWin *cw)
 		return;
 
 	{
-		Window       root_ret;
-		int          x, y;
-		unsigned int w, h, bw, depth;
-		if (!XGetGeometry(
-		        dpy, cw->pixmap, &root_ret, &x, &y, &w, &h, &bw, &depth)) {
+		xcb_connection_t         *xc3 = XGetXCBConnection(dpy);
+		xcb_get_geometry_cookie_t gck;
+		xcb_get_geometry_reply_t *gr;
+		gck = xcb_get_geometry(xc3, (xcb_drawable_t) cw->pixmap);
+		gr  = xcb_get_geometry_reply(xc3, gck, NULL);
+		if (!gr) {
+			awm_warn("compositor: pixmap geometry query failed — releasing "
+			         "stale pixmap");
 			XFreePixmap(dpy, cw->pixmap);
 			cw->pixmap = None;
 			return;
 		}
+		free(gr);
 	}
 
 	if (comp.use_gl) {
