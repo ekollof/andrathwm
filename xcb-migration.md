@@ -64,6 +64,7 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `615729e` | Phase 3b complete: replace global `Display *dpy` with `xcb_connection_t *xc` across all TUs — `awm.c/h`: `xcb_connect`/`xcb_disconnect`, `extern xcb_connection_t *xc`; `client.c`: remove local `xc` self-assign, fix `gettextprop`; `compositor.c`: remove Xlib headers, fix `pext` variable corruption, remove self-assigns; `drw.c/h`: `drw_create` shim accepts `xc`, opens private `Display*` for Phase 3c scaffolding; `events.c`, `ewmh.c`, `monitor.c`, `systray.c`: self-assigns removed, `DefaultDepth`/`DefaultScreen` replaced; `launcher.c/h`, `menu.c/h`, `xsource.c/h`: full `xcb_connection_t *xc` migration; `sni.c/h`: `sni_init` takes `xc`, local `xcb_screen_root_depth_sni` helper, `extern int screen`; `spawn.c`: replace `dpy` with `xc` in child fork fd-close guard |
 | `23cf5a7` | Phase 3c complete: `drw.h`/`drw.c` fully rewritten to pure XCB+xcb-renderutil (no Xlib); `awm.h` drops Xlib-xcb bridge and Xlib extension headers; `config.mk` fixes `xcb-renderutil` pkg-config name; `menu.h/c`, `sni.h/c`, `systray.h/c`, `launcher.h/c`: `Window`→`xcb_window_t`, `Time`→`xcb_timestamp_t`, `Pixmap`→`xcb_pixmap_t`, `Button[123]`→`1/2/3`, `CurrentTime`→`XCB_CURRENT_TIME` throughout; orphaned `SNIIconLoadData` struct and stale placeholder body removed from `sni.c` |
 | `016c377` | Phase 4 complete: eliminate all remaining Xlib types — `Window`→`xcb_window_t`, `Atom`→`xcb_atom_t`, `Pixmap`→`xcb_pixmap_t`, `Time`→`xcb_timestamp_t`, `CurrentTime`→`XCB_CURRENT_TIME`, `None`→`XCB_ATOM_NONE`/`0` across `awm.h`, `awm.c`, `client.h/c`, `ewmh.h/c`, `events.c`, `monitor.h/c`, `compositor.c`, `systray.c`; `manage()` takes `xcb_get_geometry_reply_t*` directly; `sendevent()` fully typed as XCB |
+| `875085b` | Phase 5 complete: eliminate all remaining Xlib symbolic constants, dead headers and `Bool`/`True`/`False` — `awm.h`: drop `X11/Xatom.h`, `X11/Xutil.h`, `X11/keysym.h`, `X11/X.h`, `X11/extensions/scrnsaver.h` (XSS block); add `<xkbcommon/xkbcommon-keysyms.h>`; `CLEANMASK` uses `XCB_MOD_MASK_*`; `config.def.h`+`config.h`: `XK_*`→`XKB_KEY_*`, `ShiftMask`/`ControlMask`/`Mod[1-5]Mask`/`LockMask`→`XCB_MOD_MASK_*`, `MODKEY`/`ALTKEY` → `XCB_MOD_MASK_4`/`XCB_MOD_MASK_1`; `awm.c`: cursor integer literals replace `XC_*`, drop `X11/cursorfont.h`, all event masks → `XCB_EVENT_MASK_*`, `IsViewable`→`XCB_MAP_STATE_VIEWABLE`, `IconicState`→`XCB_ICCCM_WM_STATE_ICONIC`; `client.c`: `Bool`/`True`/`False`→`int`/`1`/`0`, `NoEventMask`→`0`, `XA_WM_NAME`→`XCB_ATOM_WM_NAME`, WM state/event mask consts replaced; `ewmh.c`: `True`/`False`→`1`/`0`, `NoEventMask`→`0`; `events.c`: `X11/XKBlib.h`→`xkbcommon-keysyms.h`, `XK_Num_Lock`→`XKB_KEY_Num_Lock`, all `XA_*`/state/event mask consts replaced; `monitor.c`: `False`→`0`, event masks replaced; `systray.c`: `False`→`0`, WM state + event mask consts replaced; `compositor.c`: `None`→`0` on pixmap/picture fields, event masks replaced; `menu.c`+`launcher.c`: `X11/keysym.h`→`xkbcommon-keysyms.h`, `XK_*`→`XKB_KEY_*` |
 
 ---
 
@@ -157,6 +158,10 @@ These are permanently Xlib and should not be touched:
 **Phase 3b (global `Display *dpy` → `xcb_connection_t *xc`) is complete as of `615729e`.**
 
 **Phase 3c (drw rewrite to pure XCB; Xlib types removed from all headers) is complete as of `23cf5a7`.**
+
+**Phase 4 (eliminate all remaining Xlib types) is complete as of `016c377`.**
+
+**Phase 5 (eliminate all remaining Xlib symbolic constants, dead headers, Bool/True/False) is complete as of `875085b`.**
 
 All Xlib event-dispatch APIs (`XMaskEvent`, `XNextEvent`, `XPending`, `XCheckTypedEvent`,
 `XPutBackEvent`) have been replaced with XCB equivalents.  All `handler[]` callbacks are
@@ -547,7 +552,8 @@ The migration is complete when:
 2. ~~**Phase 3b** (global `Display *dpy` → `xcb_connection_t *xc`) is implemented~~ — **Done as of `615729e`.**
 3. ~~**Phase 3c** (`drw.c`/`drw.h` rewritten to pure XCB; Xlib types purged from all headers)~~ — **Done as of `23cf5a7`.**
 4. ~~**Phase 4** (migrate remaining `Window`/`Atom`/`Pixmap`/`Time` Xlib types to XCB equivalents)~~ — **Done as of `016c377`.**
-5. `make clean && make` produces zero warnings and zero errors.
+5. ~~**Phase 5** (eliminate all remaining Xlib symbolic constants, dead headers, `Bool`/`True`/`False`)~~ — **Done as of `875085b`.**
+6. `make clean && make` produces zero warnings and zero errors.
 
 At that point:
 - `XGetWindowProperty` will be fully eliminated from the core WM files.
