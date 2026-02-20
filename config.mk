@@ -27,6 +27,10 @@ SNIINC = $(shell pkg-config --cflags dbus-1 cairo gtk+-3.0 librsvg-2.0)
 SNILIBS = $(shell pkg-config --libs dbus-1 cairo gtk+-3.0 librsvg-2.0)
 SNIFLAGS = -DSTATUSNOTIFIER
 
+# XCB utility libraries
+XCBLIBS  = $(shell pkg-config --libs xcb-icccm xcb-randr xcb-keysyms)
+XCBINC   = $(shell pkg-config --cflags xcb-icccm xcb-randr xcb-keysyms)
+
 # Built-in XRender compositor, comment if you don't want it
 COMPOSITORLIBS  = -lXcomposite -lXdamage -lXrender -lXfixes -lXext -lGL -lEGL -l:libX11-xcb.so.1 -lxcb -lxcb-render -lxcb-present
 COMPOSITORFLAGS = -DCOMPOSITOR
@@ -39,8 +43,8 @@ FREETYPEINC = /usr/include/freetype2
 MANPREFIX = ${PREFIX}/man
 
 # includes and libs
-INCS = -I. -Isrc -Ithird_party -I${X11INC} -I${FREETYPEINC} ${SNIINC}
-LIBS = -L${X11LIB} -lX11 ${XINERAMALIBS} ${RANDRLIBS} ${XSSLIBS} ${FREETYPELIBS} ${SNILIBS} ${COMPOSITORLIBS}
+INCS = -I. -Isrc -Ithird_party -I${X11INC} -I${FREETYPEINC} ${SNIINC} ${XCBINC}
+LIBS = -L${X11LIB} -lX11 ${XINERAMALIBS} ${RANDRLIBS} ${XSSLIBS} ${FREETYPELIBS} ${SNILIBS} ${COMPOSITORLIBS} ${XCBLIBS}
 
 # flags
 CPPFLAGS = -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_XOPEN_SOURCE=700L -DVERSION=\"${VERSION}\" ${XINERAMAFLAGS} ${RANDRFLAGS} ${XSSFLAGS} ${SNIFLAGS} ${COMPOSITORFLAGS}

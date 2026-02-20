@@ -14,11 +14,6 @@
 #include "xrdb.h"
 #include "config.h"
 
-/* ---- compile-time invariants ---- */
-_Static_assert(sizeof(Atom) >= 4,
-    "sizeof(Atom) is used as the XGetWindowProperty length argument; must be "
-    ">= 4 bytes");
-
 /* module-local strings */
 static const char broken[] = "broken";
 
@@ -415,18 +410,19 @@ freeicon(Client *c)
 Atom
 getatomprop(Client *c, Atom prop)
 {
-	int            di;
-	unsigned long  dl;
-	unsigned char *p = NULL;
-	Atom           da, atom = None;
-	Atom req = (prop == xatom[XembedInfo]) ? xatom[XembedInfo] : XA_ATOM;
+	xcb_connection_t         *xc  = XGetXCBConnection(dpy);
+	xcb_atom_t                req = (prop == (Atom) xatom[XembedInfo])
+	                   ? (xcb_atom_t) xatom[XembedInfo]
+	                   : XCB_ATOM_ATOM;
+	xcb_get_property_cookie_t ck  = xcb_get_property(
+        xc, 0, (xcb_window_t) c->win, (xcb_atom_t) prop, req, 0, 1);
+	xcb_get_property_reply_t *r    = xcb_get_property_reply(xc, ck, NULL);
+	Atom                      atom = None;
 
-	if (XGetWindowProperty(dpy, c->win, prop, 0L, sizeof atom, False, req, &da,
-	        &di, &dl, &dl, &p) == Success &&
-	    p) {
-		atom = *(Atom *) p;
-		XFree(p);
+	if (r && xcb_get_property_value_length(r) >= (int) sizeof(xcb_atom_t)) {
+		atom = (Atom) * (xcb_atom_t *) xcb_get_property_value(r);
 	}
+	free(r);
 	return atom;
 }
 
@@ -448,19 +444,16 @@ getrootptr(int *x, int *y)
 long
 getstate(Window w)
 {
-	int            format;
-	long           result = -1;
-	unsigned char *p      = NULL;
-	unsigned long  n, extra;
-	Atom           real;
+	xcb_connection_t         *xc = XGetXCBConnection(dpy);
+	xcb_get_property_cookie_t ck = xcb_get_property(xc, 0, (xcb_window_t) w,
+	    (xcb_atom_t) wmatom[WMState], (xcb_atom_t) wmatom[WMState], 0, 2);
+	xcb_get_property_reply_t *r  = xcb_get_property_reply(xc, ck, NULL);
+	long                      result = -1;
 
-	if (XGetWindowProperty(dpy, w, wmatom[WMState], 0L, 2L, False,
-	        wmatom[WMState], &real, &format, &n, &extra,
-	        (unsigned char **) &p) != Success)
-		return -1;
-	if (n != 0)
-		result = *p;
-	XFree(p);
+	if (r && xcb_get_property_value_length(r) > 0) {
+		result = (long) *(uint32_t *) xcb_get_property_value(r);
+	}
+	free(r);
 	return result;
 }
 
@@ -491,101 +484,107 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size)
 cairo_surface_t *
 getwmicon(Window w, int size)
 {
-	Atom             type;
-	int              format;
-	unsigned long    nitems, bytes;
-	unsigned char   *prop    = NULL;
-	cairo_surface_t *surface = NULL;
+	xcb_connection_t         *xc = XGetXCBConnection(dpy);
+	xcb_get_property_cookie_t ck = xcb_get_property(xc, 0, (xcb_window_t) w,
+	    (xcb_atom_t) netatom[NetWMIcon], XCB_ATOM_ANY, 0, UINT32_MAX / 4);
+	xcb_get_property_reply_t *r  = xcb_get_property_reply(xc, ck, NULL);
+	cairo_surface_t          *surface = NULL;
 
-	if (XGetWindowProperty(dpy, w, netatom[NetWMIcon], 0, LONG_MAX, False,
-	        AnyPropertyType, &type, &format, &nitems, &bytes,
-	        &prop) != Success ||
-	    !prop)
+	if (!r || xcb_get_property_value_length(r) == 0) {
+		free(r);
 		return NULL;
+	}
 
-	if (nitems > 2) {
-		unsigned long *data   = (unsigned long *) prop;
-		unsigned long  icon_w = data[0];
-		unsigned long  icon_h = data[1];
+	{
+		int            vlen   = xcb_get_property_value_length(r);
+		unsigned long *data   = (unsigned long *) xcb_get_property_value(r);
+		unsigned long  nitems = (unsigned long) vlen / sizeof(unsigned long);
 
-		if (nitems >= 2 + icon_w * icon_h) {
-			cairo_surface_t *src;
-			cairo_t         *cr;
-			unsigned char   *argb_data;
-			unsigned long    i;
-			int              stride;
+		if (nitems > 2) {
+			unsigned long icon_w = data[0];
+			unsigned long icon_h = data[1];
 
-			awm_debug(
-			    "extracting %lux%lu icon, nitems=%lu", icon_w, icon_h, nitems);
+			if (nitems >= 2 + icon_w * icon_h) {
+				cairo_surface_t *src;
+				cairo_t         *cr;
+				unsigned char   *argb_data;
+				unsigned long    i;
+				int              stride;
 
-			stride =
-			    cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, icon_w);
-			argb_data = calloc(icon_h, stride);
-			if (!argb_data) {
-				XFree(prop);
-				return NULL;
-			}
+				awm_debug("extracting %lux%lu icon, nitems=%lu", icon_w,
+				    icon_h, nitems);
 
-			for (i = 0; i < icon_w * icon_h; i++) {
-				unsigned long pixel = data[2 + i];
-				unsigned char a     = (pixel >> 24) & 0xff;
-				unsigned char r     = (pixel >> 16) & 0xff;
-				unsigned char g     = (pixel >> 8) & 0xff;
-				unsigned char b     = pixel & 0xff;
-
-				unsigned char *q =
-				    argb_data + (i / icon_w) * stride + (i % icon_w) * 4;
-
-				if (a == 0) {
-					q[0] = q[1] = q[2] = q[3] = 0;
-				} else if (a == 255) {
-					q[0] = b;
-					q[1] = g;
-					q[2] = r;
-					q[3] = a;
-				} else {
-					q[0] = (b * a) / 255;
-					q[1] = (g * a) / 255;
-					q[2] = (r * a) / 255;
-					q[3] = a;
+				stride =
+				    cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, icon_w);
+				argb_data = calloc(icon_h, stride);
+				if (!argb_data) {
+					free(r);
+					return NULL;
 				}
+
+				for (i = 0; i < icon_w * icon_h; i++) {
+					unsigned long pixel = data[2 + i];
+					unsigned char a     = (pixel >> 24) & 0xff;
+					unsigned char rv    = (pixel >> 16) & 0xff;
+					unsigned char g     = (pixel >> 8) & 0xff;
+					unsigned char b     = pixel & 0xff;
+
+					unsigned char *q =
+					    argb_data + (i / icon_w) * stride + (i % icon_w) * 4;
+
+					if (a == 0) {
+						q[0] = q[1] = q[2] = q[3] = 0;
+					} else if (a == 255) {
+						q[0] = b;
+						q[1] = g;
+						q[2] = rv;
+						q[3] = a;
+					} else {
+						q[0] = (b * a) / 255;
+						q[1] = (g * a) / 255;
+						q[2] = (rv * a) / 255;
+						q[3] = a;
+					}
+				}
+
+				awm_debug("first 4 pixels (BGRA): [%02x%02x%02x%02x] "
+				          "[%02x%02x%02x%02x] "
+				          "[%02x%02x%02x%02x] [%02x%02x%02x%02x]",
+				    argb_data[3], argb_data[2], argb_data[1], argb_data[0],
+				    argb_data[7], argb_data[6], argb_data[5], argb_data[4],
+				    argb_data[11], argb_data[10], argb_data[9], argb_data[8],
+				    argb_data[15], argb_data[14], argb_data[13],
+				    argb_data[12]);
+
+				src = cairo_image_surface_create_for_data(
+				    argb_data, CAIRO_FORMAT_ARGB32, icon_w, icon_h, stride);
+
+				surface = cairo_image_surface_create(
+				    CAIRO_FORMAT_ARGB32, size, size);
+				cr = cairo_create(surface);
+
+				cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+				cairo_paint(cr);
+				cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+				if (icon_w != (unsigned long) size ||
+				    icon_h != (unsigned long) size) {
+					double scale_x = (double) size / icon_w;
+					double scale_y = (double) size / icon_h;
+					cairo_scale(cr, scale_x, scale_y);
+				}
+
+				cairo_set_source_surface(cr, src, 0, 0);
+				cairo_paint(cr);
+
+				cairo_destroy(cr);
+				cairo_surface_destroy(src);
+				free(argb_data);
 			}
-
-			awm_debug(
-			    "first 4 pixels (BGRA): [%02x%02x%02x%02x] [%02x%02x%02x%02x] "
-			    "[%02x%02x%02x%02x] [%02x%02x%02x%02x]",
-			    argb_data[3], argb_data[2], argb_data[1], argb_data[0],
-			    argb_data[7], argb_data[6], argb_data[5], argb_data[4],
-			    argb_data[11], argb_data[10], argb_data[9], argb_data[8],
-			    argb_data[15], argb_data[14], argb_data[13], argb_data[12]);
-
-			src = cairo_image_surface_create_for_data(
-			    argb_data, CAIRO_FORMAT_ARGB32, icon_w, icon_h, stride);
-
-			surface =
-			    cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
-			cr = cairo_create(surface);
-
-			cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
-			cairo_paint(cr);
-			cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-
-			if (icon_w != size || icon_h != size) {
-				double scale_x = (double) size / icon_w;
-				double scale_y = (double) size / icon_h;
-				cairo_scale(cr, scale_x, scale_y);
-			}
-
-			cairo_set_source_surface(cr, src, 0, 0);
-			cairo_paint(cr);
-
-			cairo_destroy(cr);
-			cairo_surface_destroy(src);
-			free(argb_data);
 		}
 	}
 
-	XFree(prop);
+	free(r);
 	return surface;
 }
 
@@ -1215,15 +1214,19 @@ setmfact(const Arg *arg)
 void
 seturgent(Client *c, int urg)
 {
-	XWMHints *wmh;
-
 	c->isurgent = urg;
-	if (!(wmh = XGetWMHints(dpy, c->win)))
-		return;
-	wmh->flags =
-	    urg ? (wmh->flags | XUrgencyHint) : (wmh->flags & ~XUrgencyHint);
-	XSetWMHints(dpy, c->win, wmh);
-	XFree(wmh);
+	{
+		xcb_connection_t         *xc = XGetXCBConnection(dpy);
+		xcb_get_property_cookie_t ck = xcb_icccm_get_wm_hints(xc, c->win);
+		xcb_icccm_wm_hints_t      wmh;
+		if (xcb_icccm_get_wm_hints_reply(xc, ck, &wmh, NULL)) {
+			if (urg)
+				wmh.flags |= XCB_ICCCM_WM_HINT_X_URGENCY;
+			else
+				wmh.flags &= ~XCB_ICCCM_WM_HINT_X_URGENCY;
+			xcb_icccm_set_wm_hints(xc, c->win, &wmh);
+		}
+	}
 	setwmstate(c);
 }
 
@@ -1545,40 +1548,41 @@ unmanage(Client *c, int destroyed)
 void
 updatesizehints(Client *c)
 {
-	long       msize;
-	XSizeHints size;
+	xcb_connection_t         *xc = XGetXCBConnection(dpy);
+	xcb_get_property_cookie_t ck = xcb_icccm_get_wm_normal_hints(xc, c->win);
+	xcb_size_hints_t          size;
 
-	if (!XGetWMNormalHints(dpy, c->win, &size, &msize))
-		size.flags = PSize;
-	if (size.flags & PBaseSize) {
+	if (!xcb_icccm_get_wm_normal_hints_reply(xc, ck, &size, NULL))
+		size.flags = XCB_ICCCM_SIZE_HINT_P_SIZE;
+	if (size.flags & XCB_ICCCM_SIZE_HINT_BASE_SIZE) {
 		c->basew = size.base_width;
 		c->baseh = size.base_height;
-	} else if (size.flags & PMinSize) {
+	} else if (size.flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) {
 		c->basew = size.min_width;
 		c->baseh = size.min_height;
 	} else
 		c->basew = c->baseh = 0;
-	if (size.flags & PResizeInc) {
+	if (size.flags & XCB_ICCCM_SIZE_HINT_P_RESIZE_INC) {
 		c->incw = size.width_inc;
 		c->inch = size.height_inc;
 	} else
 		c->incw = c->inch = 0;
-	if (size.flags & PMaxSize) {
+	if (size.flags & XCB_ICCCM_SIZE_HINT_P_MAX_SIZE) {
 		c->maxw = size.max_width;
 		c->maxh = size.max_height;
 	} else
 		c->maxw = c->maxh = 0;
-	if (size.flags & PMinSize) {
+	if (size.flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) {
 		c->minw = size.min_width;
 		c->minh = size.min_height;
-	} else if (size.flags & PBaseSize) {
+	} else if (size.flags & XCB_ICCCM_SIZE_HINT_BASE_SIZE) {
 		c->minw = size.base_width;
 		c->minh = size.base_height;
 	} else
 		c->minw = c->minh = 0;
-	if (size.flags & PAspect) {
-		c->mina = (float) size.min_aspect.y / size.min_aspect.x;
-		c->maxa = (float) size.max_aspect.x / size.max_aspect.y;
+	if (size.flags & XCB_ICCCM_SIZE_HINT_P_ASPECT) {
+		c->mina = (float) size.min_aspect_den / size.min_aspect_num;
+		c->maxa = (float) size.max_aspect_num / size.max_aspect_den;
 	} else
 		c->maxa = c->mina = 0.0;
 	c->isfixed =
@@ -1612,19 +1616,20 @@ updatewindowtype(Client *c)
 void
 updatewmhints(Client *c)
 {
-	XWMHints *wmh;
+	xcb_connection_t         *xc = XGetXCBConnection(dpy);
+	xcb_get_property_cookie_t ck = xcb_icccm_get_wm_hints(xc, c->win);
+	xcb_icccm_wm_hints_t      wmh;
 
-	if ((wmh = XGetWMHints(dpy, c->win))) {
-		if (c == selmon->sel && wmh->flags & XUrgencyHint) {
-			wmh->flags &= ~XUrgencyHint;
-			XSetWMHints(dpy, c->win, wmh);
+	if (xcb_icccm_get_wm_hints_reply(xc, ck, &wmh, NULL)) {
+		if (c == selmon->sel && (wmh.flags & XCB_ICCCM_WM_HINT_X_URGENCY)) {
+			wmh.flags &= ~XCB_ICCCM_WM_HINT_X_URGENCY;
+			xcb_icccm_set_wm_hints(xc, c->win, &wmh);
 		} else
-			c->isurgent = (wmh->flags & XUrgencyHint) ? 1 : 0;
-		if (wmh->flags & InputHint)
-			c->neverfocus = !wmh->input;
+			c->isurgent = (wmh.flags & XCB_ICCCM_WM_HINT_X_URGENCY) ? 1 : 0;
+		if (wmh.flags & XCB_ICCCM_WM_HINT_INPUT)
+			c->neverfocus = !wmh.input;
 		else
 			c->neverfocus = 0;
-		XFree(wmh);
 	}
 }
 

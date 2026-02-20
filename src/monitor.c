@@ -594,118 +594,66 @@ updategeom(void)
 	int dirty = 0;
 
 #ifdef XRANDR
-	if (XRRQueryExtension(dpy, &randrbase, &rrerrbase)) {
-		int                 i, j, n, nn;
-		Client             *c;
-		Monitor            *m;
-		XRRScreenResources *sr;
-		XRRCrtcInfo        *ci;
-		typedef struct {
-			int x, y, w, h;
-		} ScreenGeom;
-		ScreenGeom *unique = NULL;
+	{
+		xcb_connection_t                  *xc = XGetXCBConnection(dpy);
+		const xcb_query_extension_reply_t *ext =
+		    xcb_get_extension_data(xc, &xcb_randr_id);
+		if (ext && ext->present) {
+			int                                     i, j, n, nn;
+			Client                                 *c;
+			Monitor                                *m;
+			xcb_randr_get_screen_resources_cookie_t src;
+			xcb_randr_get_screen_resources_reply_t *sr;
+			xcb_randr_crtc_t                       *crtcs;
+			typedef struct {
+				int x, y, w, h;
+			} ScreenGeom;
+			ScreenGeom *unique = NULL;
 
-		sr = XRRGetScreenResources(dpy, root);
-		if (!sr)
-			goto xinerama_fallback;
+			src = xcb_randr_get_screen_resources(xc, root);
+			sr  = xcb_randr_get_screen_resources_reply(xc, src, NULL);
+			if (!sr)
+				goto xinerama_fallback;
 
-		nn     = 0;
-		unique = ecalloc(sr->ncrtc, sizeof(ScreenGeom));
-		/* Get active CRTC geometries */
-		for (i = 0; i < sr->ncrtc; i++) {
-			ci = XRRGetCrtcInfo(dpy, sr, sr->crtcs[i]);
-			if (!ci || ci->noutput == 0) {
-				if (ci)
-					XRRFreeCrtcInfo(ci);
-				continue;
-			}
-			/* Check if geometry is unique */
-			int is_unique = 1;
-			for (j = 0; j < nn; j++) {
-				if (unique[j].x == ci->x && unique[j].y == ci->y &&
-				    unique[j].w == (int) ci->width &&
-				    unique[j].h == (int) ci->height) {
-					is_unique = 0;
-					break;
+			crtcs  = xcb_randr_get_screen_resources_crtcs(sr);
+			nn     = 0;
+			unique = ecalloc(sr->num_crtcs, sizeof(ScreenGeom));
+			/* Get active CRTC geometries */
+			for (i = 0; i < (int) sr->num_crtcs; i++) {
+				xcb_randr_get_crtc_info_cookie_t cic =
+				    xcb_randr_get_crtc_info(xc, crtcs[i], XCB_CURRENT_TIME);
+				xcb_randr_get_crtc_info_reply_t *ci =
+				    xcb_randr_get_crtc_info_reply(xc, cic, NULL);
+				if (!ci || ci->num_outputs == 0) {
+					free(ci);
+					continue;
 				}
+				/* Check if geometry is unique */
+				int is_unique = 1;
+				for (j = 0; j < nn; j++) {
+					if (unique[j].x == (int) ci->x &&
+					    unique[j].y == (int) ci->y &&
+					    unique[j].w == (int) ci->width &&
+					    unique[j].h == (int) ci->height) {
+						is_unique = 0;
+						break;
+					}
+				}
+				if (is_unique) {
+					unique[nn].x = ci->x;
+					unique[nn].y = ci->y;
+					unique[nn].w = ci->width;
+					unique[nn].h = ci->height;
+					nn++;
+				}
+				free(ci);
 			}
-			if (is_unique) {
-				unique[nn].x = ci->x;
-				unique[nn].y = ci->y;
-				unique[nn].w = ci->width;
-				unique[nn].h = ci->height;
-				nn++;
-			}
-			XRRFreeCrtcInfo(ci);
-		}
-		XRRFreeScreenResources(sr);
-
-		for (n = 0, m = mons; m; m = m->next, n++)
-			;
-
-		/* Create new monitors if nn > n */
-		for (i = n; i < nn; i++) {
-			for (m = mons; m && m->next; m = m->next)
-				;
-			if (m)
-				m->next = createmon();
-			else
-				mons = createmon();
-		}
-
-		/* Update monitor geometries */
-		for (i = 0, m = mons; i < nn && m; m = m->next, i++) {
-			if (i >= n || unique[i].x != m->mx || unique[i].y != m->my ||
-			    unique[i].w != m->mw || unique[i].h != m->mh) {
-				dirty  = 1;
-				m->num = i;
-				m->mx = m->wx = unique[i].x;
-				m->my = m->wy = unique[i].y;
-				m->mw = m->ww = unique[i].w;
-				m->mh = m->wh = unique[i].h;
-				updatebarpos(m);
-			}
-		}
-
-		/* Remove monitors if n > nn */
-		for (i = nn; i < n; i++) {
-			for (m = mons; m && m->next; m = m->next)
-				;
-			if (m == selmon)
-				selmon = mons;
-			for (c = m->cl->clients; c; c = c->next) {
-				dirty = 1;
-				if (c->mon == m)
-					c->mon = selmon;
-			}
-			cleanupmon(m);
-		}
-		free(unique);
-	} else
-	xinerama_fallback:
-#endif /* XRANDR */
-#ifdef XINERAMA
-		if (XineramaIsActive(dpy)) {
-			int                 i, j, n, nn;
-			Client             *c;
-			Monitor            *m;
-			XineramaScreenInfo *info   = XineramaQueryScreens(dpy, &nn);
-			XineramaScreenInfo *unique = NULL;
-
-			if (!info)
-				goto default_monitor;
+			free(sr);
 
 			for (n = 0, m = mons; m; m = m->next, n++)
 				;
-			/* only consider unique geometries as separate screens */
-			unique = ecalloc(nn, sizeof(XineramaScreenInfo));
-			for (i = 0, j = 0; i < nn; i++)
-				if (isuniquegeom(unique, j, &info[i]))
-					memcpy(&unique[j++], &info[i], sizeof(XineramaScreenInfo));
-			XFree(info);
-			nn = j;
 
-			/* new monitors if nn > n */
+			/* Create new monitors if nn > n */
 			for (i = n; i < nn; i++) {
 				for (m = mons; m && m->next; m = m->next)
 					;
@@ -714,47 +662,112 @@ updategeom(void)
 				else
 					mons = createmon();
 			}
-			for (i = 0, m = mons; i < nn && m; m = m->next, i++)
-				if (i >= n || unique[i].x_org != m->mx ||
-				    unique[i].y_org != m->my || unique[i].width != m->mw ||
-				    unique[i].height != m->mh) {
+
+			/* Update monitor geometries */
+			for (i = 0, m = mons; i < nn && m; m = m->next, i++) {
+				if (i >= n || unique[i].x != m->mx || unique[i].y != m->my ||
+				    unique[i].w != m->mw || unique[i].h != m->mh) {
 					dirty  = 1;
 					m->num = i;
-					m->mx = m->wx = unique[i].x_org;
-					m->my = m->wy = unique[i].y_org;
-					m->mw = m->ww = unique[i].width;
-					m->mh = m->wh = unique[i].height;
+					m->mx = m->wx = unique[i].x;
+					m->my = m->wy = unique[i].y;
+					m->mw = m->ww = unique[i].w;
+					m->mh = m->wh = unique[i].h;
 					updatebarpos(m);
 				}
-			/* removed monitors if n > nn */
+			}
+
+			/* Remove monitors if n > nn */
 			for (i = nn; i < n; i++) {
 				for (m = mons; m && m->next; m = m->next)
 					;
 				if (m == selmon)
 					selmon = mons;
 				for (c = m->cl->clients; c; c = c->next) {
-					dirty = True;
+					dirty = 1;
 					if (c->mon == m)
 						c->mon = selmon;
 				}
 				cleanupmon(m);
 			}
 			free(unique);
-		} else
-		default_monitor:
-#endif    /* XINERAMA */
-		{ /* default monitor setup */
-			if (!mons)
-				mons = createmon();
-			if (mons->mw != sw || mons->mh != sh) {
-				dirty    = 1;
-				mons->mw = mons->ww = sw;
-				mons->mh = mons->wh = sh;
-				updatebarpos(mons);
-			}
+			goto geom_done;
 		}
-			if (dirty)
-				selmon = wintomon(root);
+	}
+xinerama_fallback:
+#endif /* XRANDR */
+#ifdef XINERAMA
+	if (XineramaIsActive(dpy)) {
+		int                 i, j, n, nn;
+		Client             *c;
+		Monitor            *m;
+		XineramaScreenInfo *info   = XineramaQueryScreens(dpy, &nn);
+		XineramaScreenInfo *unique = NULL;
+
+		if (!info)
+			goto default_monitor;
+
+		for (n = 0, m = mons; m; m = m->next, n++)
+			;
+		/* only consider unique geometries as separate screens */
+		unique = ecalloc(nn, sizeof(XineramaScreenInfo));
+		for (i = 0, j = 0; i < nn; i++)
+			if (isuniquegeom(unique, j, &info[i]))
+				memcpy(&unique[j++], &info[i], sizeof(XineramaScreenInfo));
+		XFree(info);
+		nn = j;
+
+		/* new monitors if nn > n */
+		for (i = n; i < nn; i++) {
+			for (m = mons; m && m->next; m = m->next)
+				;
+			if (m)
+				m->next = createmon();
+			else
+				mons = createmon();
+		}
+		for (i = 0, m = mons; i < nn && m; m = m->next, i++)
+			if (i >= n || unique[i].x_org != m->mx ||
+			    unique[i].y_org != m->my || unique[i].width != m->mw ||
+			    unique[i].height != m->mh) {
+				dirty  = 1;
+				m->num = i;
+				m->mx = m->wx = unique[i].x_org;
+				m->my = m->wy = unique[i].y_org;
+				m->mw = m->ww = unique[i].width;
+				m->mh = m->wh = unique[i].height;
+				updatebarpos(m);
+			}
+		/* removed monitors if n > nn */
+		for (i = nn; i < n; i++) {
+			for (m = mons; m && m->next; m = m->next)
+				;
+			if (m == selmon)
+				selmon = mons;
+			for (c = m->cl->clients; c; c = c->next) {
+				dirty = True;
+				if (c->mon == m)
+					c->mon = selmon;
+			}
+			cleanupmon(m);
+		}
+		free(unique);
+	} else
+	default_monitor:
+#endif /* XINERAMA */
+	{  /* default monitor setup */
+		if (!mons)
+			mons = createmon();
+		if (mons->mw != sw || mons->mh != sh) {
+			dirty    = 1;
+			mons->mw = mons->ww = sw;
+			mons->mh = mons->wh = sh;
+			updatebarpos(mons);
+		}
+	}
+	geom_done:
+		if (dirty)
+			selmon = wintomon(root);
 	return dirty;
 }
 

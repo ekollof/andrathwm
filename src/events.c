@@ -481,14 +481,15 @@ void
 keypress(XEvent *e)
 {
 	unsigned int i;
-	KeySym       keysym;
+	xcb_keysym_t keysym;
 	XKeyEvent   *ev;
 
 	ev              = &e->xkey;
 	last_event_time = ev->time;
-	keysym          = XkbKeycodeToKeysym(dpy, (KeyCode) ev->keycode, 0, 0);
+	keysym =
+	    xcb_key_symbols_get_keysym(keysyms, (xcb_keycode_t) ev->keycode, 0);
 	for (i = 0; i < LENGTH(keys); i++)
-		if (keysym == keys[i].keysym &&
+		if ((KeySym) keysym == keys[i].keysym &&
 		    CLEANMASK(keys[i].mod) == CLEANMASK(ev->state) && keys[i].func)
 			keys[i].func(&(keys[i].arg));
 }
@@ -541,9 +542,13 @@ fake_signal(void)
 void
 mappingnotify(XEvent *e)
 {
-	XMappingEvent *ev = &e->xmapping;
+	XMappingEvent             *ev  = &e->xmapping;
+	xcb_mapping_notify_event_t mne = { 0 };
 
-	XRefreshKeyboardMapping(ev);
+	mne.request       = (uint8_t) ev->request;
+	mne.first_keycode = (xcb_keycode_t) ev->first_keycode;
+	mne.count         = (uint8_t) ev->count;
+	xcb_refresh_keyboard_mapping(keysyms, &mne);
 	if (ev->request == MappingKeyboard)
 		grabkeys();
 }
@@ -706,17 +711,31 @@ unmapnotify(XEvent *e)
 void
 updatenumlockmask(void)
 {
-	unsigned int     i, j;
-	XModifierKeymap *modmap;
+	unsigned int                      i, j;
+	xcb_connection_t                 *xc = XGetXCBConnection(dpy);
+	xcb_get_modifier_mapping_cookie_t ck = xcb_get_modifier_mapping(xc);
+	xcb_get_modifier_mapping_reply_t *mr;
+	xcb_keycode_t                    *nlcodes;
+	xcb_keycode_t                    *modcodes;
 
 	numlockmask = 0;
-	modmap      = XGetModifierMapping(dpy);
-	for (i = 0; i < 8; i++)
-		for (j = 0; j < modmap->max_keypermod; j++)
-			if (modmap->modifiermap[i * modmap->max_keypermod + j] ==
-			    XKeysymToKeycode(dpy, XK_Num_Lock))
-				numlockmask = (1 << i);
-	XFreeModifiermap(modmap);
+	mr          = xcb_get_modifier_mapping_reply(xc, ck, NULL);
+	if (!mr)
+		return;
+	nlcodes  = xcb_key_symbols_get_keycode(keysyms, XK_Num_Lock);
+	modcodes = xcb_get_modifier_mapping_keycodes(mr);
+	if (nlcodes) {
+		for (i = 0; i < 8; i++)
+			for (j = 0; j < mr->keycodes_per_modifier; j++) {
+				xcb_keycode_t kc = modcodes[i * mr->keycodes_per_modifier + j];
+				xcb_keycode_t *nl;
+				for (nl = nlcodes; *nl != XCB_NO_SYMBOL; nl++)
+					if (kc == *nl)
+						numlockmask = (1u << i);
+			}
+		free(nlcodes);
+	}
+	free(mr);
 }
 
 int

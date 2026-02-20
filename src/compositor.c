@@ -1382,8 +1382,7 @@ comp_restack_above(CompWin *cw, Window above_xid)
 static void
 comp_add_by_xid(Window w)
 {
-	XWindowAttributes wa;
-	CompWin          *cw;
+	CompWin *cw;
 
 	if (comp_find_by_xid(w))
 		return;
@@ -1391,32 +1390,50 @@ comp_add_by_xid(Window w)
 	if (w == comp.overlay)
 		return;
 
-	xerror_push_ignore();
-	int ok = XGetWindowAttributes(dpy, w, &wa);
-	XSync(dpy, False);
-	xerror_pop();
+	{
+		xcb_connection_t                  *xc = XGetXCBConnection(dpy);
+		xcb_get_window_attributes_cookie_t wac =
+		    xcb_get_window_attributes(xc, (xcb_window_t) w);
+		xcb_get_geometry_cookie_t gc =
+		    xcb_get_geometry(xc, (xcb_drawable_t) w);
+		xcb_get_window_attributes_reply_t *war =
+		    xcb_get_window_attributes_reply(xc, wac, NULL);
+		xcb_get_geometry_reply_t *gr = xcb_get_geometry_reply(xc, gc, NULL);
 
-	if (!ok)
-		return;
+		if (!war || !gr) {
+			free(war);
+			free(gr);
+			return;
+		}
+		if (war->_class == XCB_WINDOW_CLASS_INPUT_ONLY) {
+			free(war);
+			free(gr);
+			return;
+		}
+		if (war->map_state != XCB_MAP_STATE_VIEWABLE) {
+			free(war);
+			free(gr);
+			return;
+		}
 
-	if (wa.class == InputOnly)
-		return;
+		cw = (CompWin *) calloc(1, sizeof(CompWin));
+		if (!cw) {
+			free(war);
+			free(gr);
+			return;
+		}
 
-	if (wa.map_state != IsViewable)
-		return;
-
-	cw = (CompWin *) calloc(1, sizeof(CompWin));
-	if (!cw)
-		return;
-
-	cw->win        = w;
-	cw->x          = wa.x;
-	cw->y          = wa.y;
-	cw->w          = wa.width;
-	cw->h          = wa.height;
-	cw->bw         = wa.border_width;
-	cw->depth      = wa.depth;
-	cw->argb       = (wa.depth == 32);
+		cw->win   = w;
+		cw->x     = gr->x;
+		cw->y     = gr->y;
+		cw->w     = gr->width;
+		cw->h     = gr->height;
+		cw->bw    = gr->border_width;
+		cw->depth = gr->depth;
+		cw->argb  = (gr->depth == 32);
+		free(war);
+		free(gr);
+	}
 	cw->opacity    = 1.0;
 	cw->redirected = 1;
 

@@ -72,19 +72,20 @@ void (*handler[LASTEvent])(XEvent *) = { [ButtonPress] = buttonpress,
 	[PropertyNotify]                                   = propertynotify,
 	[ResizeRequest]                                    = resizerequest,
 	[UnmapNotify]                                      = unmapnotify };
-Atom              wmatom[WMLast], netatom[NetLast], xatom[XLast];
-static Atom       utf8string_atom; /* UTF8_STRING — used in setup() */
-int               restart         = 0;
-int               barsdirty       = 0;
-Time              last_event_time = CurrentTime;
-static GMainLoop *main_loop       = NULL;
-Cur              *cursor[CurLast];
-Clr             **scheme;
-Display          *dpy;
-Drw              *drw;
-Monitor          *mons, *selmon;
-Window            root, wmcheckwin;
-Clientlist       *cl;
+Atom               wmatom[WMLast], netatom[NetLast], xatom[XLast];
+static Atom        utf8string_atom; /* UTF8_STRING — used in setup() */
+int                restart         = 0;
+int                barsdirty       = 0;
+Time               last_event_time = CurrentTime;
+static GMainLoop  *main_loop       = NULL;
+Cur               *cursor[CurLast];
+Clr              **scheme;
+Display           *dpy;
+Drw               *drw;
+Monitor           *mons, *selmon;
+Window             root, wmcheckwin;
+Clientlist        *cl;
+xcb_key_symbols_t *keysyms;
 
 /* ---- compile-time invariants ---- */
 _Static_assert(LENGTH(tags) <= 31,
@@ -151,6 +152,8 @@ cleanup(void)
 	free(scheme);
 	xcb_destroy_window(XGetXCBConnection(dpy), wmcheckwin);
 	drw_free(drw);
+	xcb_key_symbols_free(keysyms);
+	keysyms = NULL;
 	xflush(dpy);
 	xcb_set_input_focus(XGetXCBConnection(dpy), XCB_INPUT_FOCUS_POINTER_ROOT,
 	    XCB_INPUT_FOCUS_POINTER_ROOT, XCB_CURRENT_TIME);
@@ -583,12 +586,22 @@ setup(void)
 	updategeom();
 	/* Enable RandR screen change notifications */
 #ifdef XRANDR
-	if (XRRQueryExtension(dpy, &randrbase, &rrerrbase)) {
-		XRRSelectInput(dpy, root, RRScreenChangeNotifyMask);
+	{
+		xcb_connection_t                  *xc = XGetXCBConnection(dpy);
+		const xcb_query_extension_reply_t *ext =
+		    xcb_get_extension_data(xc, &xcb_randr_id);
+		if (ext && ext->present) {
+			randrbase = ext->first_event;
+			rrerrbase = ext->first_error;
+			xcb_randr_select_input(
+			    xc, root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE);
+		}
 	}
 #endif
 	/* init atoms — all interned in a single async XCB batch */
 	intern_atoms();
+	/* init key symbols table */
+	keysyms = xcb_key_symbols_alloc(XGetXCBConnection(dpy));
 	/* init cursors */
 	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
 	cursor[CurResize] = drw_cur_create(drw, XC_sizing);

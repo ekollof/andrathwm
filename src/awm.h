@@ -14,6 +14,9 @@
 #include <X11/Xutil.h>
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
+#include <xcb/randr.h>
+#include <xcb/xcb_icccm.h>
+#include <xcb/xcb_keysyms.h>
 #include <cairo/cairo.h>
 #include <errno.h>
 #include <glib.h>
@@ -308,6 +311,7 @@ extern int          barsdirty;
 extern unsigned int numlockmask;
 extern int (*xerrorxlib)(Display *, XErrorEvent *);
 extern Time last_event_time; /* timestamp of the most recent user event */
+extern xcb_key_symbols_t *keysyms;
 /* config-derived globals referenced by dbus.c / icon.c */
 extern const unsigned int sniconsize;
 extern const unsigned int iconcachesize;
