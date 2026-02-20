@@ -4,12 +4,9 @@
 #ifndef AWM_H
 #define AWM_H
 
-#include <X11/X.h>
-#include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xproto.h>
-#include <X11/Xutil.h>
-#include <X11/keysym.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 #include <xcb/randr.h>
 #include <xcb/xcb_icccm.h>
 #include <xcb/xcb_keysyms.h>
@@ -33,9 +30,6 @@
 #ifdef XRANDR
 /* <X11/extensions/Xrandr.h> removed — XCB randr used exclusively */
 #endif /* XRANDR */
-#ifdef XSS
-#include <X11/extensions/scrnsaver.h>
-#endif /* XSS */
 #ifdef COMPOSITOR
 /* XComposite/XDamage/XFixes/XRender Xlib headers removed — compositor.c
  * uses pure XCB (xcb/composite.h, xcb/damage.h, xcb/xfixes.h, xcb/render.h) */
@@ -50,17 +44,19 @@
 #include "util.h"
 
 /* macros */
-#define BUTTONMASK (ButtonPressMask | ButtonReleaseMask)
-#define CLEANMASK(mask)                                             \
-	(mask & ~(numlockmask | LockMask) &                             \
-	    (ShiftMask | ControlMask | Mod1Mask | Mod2Mask | Mod3Mask | \
-	        Mod4Mask | Mod5Mask))
+#define BUTTONMASK \
+	(XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE)
+#define CLEANMASK(mask)                                               \
+	(mask & ~(numlockmask | XCB_MOD_MASK_LOCK) &                      \
+	    (XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_CONTROL | XCB_MOD_MASK_1 | \
+	        XCB_MOD_MASK_2 | XCB_MOD_MASK_3 | XCB_MOD_MASK_4 |        \
+	        XCB_MOD_MASK_5))
 #define INTERSECT(x, y, w, h, m)                                     \
 	(MAX(0, MIN((x) + (w), (m)->wx + (m)->ww) - MAX((x), (m)->wx)) * \
 	    MAX(0, MIN((y) + (h), (m)->wy + (m)->wh) - MAX((y), (m)->wy)))
 #define ISVISIBLE(C, M) ((C->tags & M->tagset[M->seltags]))
 #define LENGTH(X) (sizeof X / sizeof X[0])
-#define MOUSEMASK (BUTTONMASK | PointerMotionMask)
+#define MOUSEMASK (BUTTONMASK | XCB_EVENT_MASK_POINTER_MOTION)
 #define WIDTH(X) ((X)->w + 2 * (X)->bw)
 #define HEIGHT(X) ((X)->h + 2 * (X)->bw)
 #define TAGMASK ((1 << LENGTH(tags)) - 1)

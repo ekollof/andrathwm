@@ -57,7 +57,7 @@ updatesystrayicongeom(Client *i, int w, int h)
 			i->w = w;
 		else
 			i->w = (int) ((float) bh * ((float) w / (float) h));
-		applysizehints(i, &(i->x), &(i->y), &(i->w), &(i->h), False);
+		applysizehints(i, &(i->x), &(i->y), &(i->w), &(i->h), 0);
 		/* force icons into the systray dimensions if they don't want to */
 		if (i->h > bh) {
 			if (i->w == i->h)
@@ -87,11 +87,11 @@ updatesystrayiconstate(Client *i, xcb_property_notify_event_t *ev)
 			xcb_configure_window(
 			    xc, i->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
 		}
-		setclientstate(i, NormalState);
+		setclientstate(i, XCB_ICCCM_WM_STATE_NORMAL);
 	} else if (!(flags & XEMBED_MAPPED) && i->tags) {
 		i->tags = 0;
 		xcb_unmap_window(xc, i->win);
-		setclientstate(i, WithdrawnState);
+		setclientstate(i, XCB_ICCCM_WM_STATE_WITHDRAWN);
 	}
 }
 
@@ -183,7 +183,7 @@ updatesystray(void)
 
 			uint32_t bgpix =
 			    (uint32_t) clr_to_argb(&scheme[SchemeNorm][ColBg]);
-			uint32_t evmask = ButtonPressMask | ExposureMask;
+			uint32_t evmask = XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE;
 			uint32_t one    = 1; /* override_redirect */
 			uint32_t cmap   = (uint32_t) systray->colormap;
 			uint32_t border = 0;
@@ -204,9 +204,9 @@ updatesystray(void)
 			        XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK |
 			        XCB_CW_COLORMAP,
 			    cw_vals);
-			/* SubstructureNotifyMask for icon embed events */
+			/* XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY for icon embed events */
 			{
-				uint32_t mask = SubstructureNotifyMask;
+				uint32_t mask = XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
 				xcb_change_window_attributes(
 				    xc, systray->win, XCB_CW_EVENT_MASK, &mask);
 			}
@@ -246,7 +246,7 @@ updatesystray(void)
 			int owns = sor && sor->owner == systray->win;
 			free(sor);
 			if (owns) {
-				sendevent(root, xatom[Manager], StructureNotifyMask,
+				sendevent(root, xatom[Manager], XCB_EVENT_MASK_STRUCTURE_NOTIFY,
 				    XCB_CURRENT_TIME, netatom[NetSystemTray], systray->win, 0,
 				    0);
 				xflush();

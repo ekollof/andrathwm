@@ -69,7 +69,7 @@ sendevent(xcb_window_t w, xcb_atom_t proto, int mask, long d0, long d1,
 			}
 		}
 	} else {
-		exists = True;
+		exists = 1;
 		mt     = proto;
 	}
 
@@ -108,7 +108,7 @@ setfocus(Client *c)
 		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
 		    netatom[NetActiveWindow], XCB_ATOM_WINDOW, 32, 1, &win32);
 	}
-	sendevent(c->win, wmatom[WMTakeFocus], NoEventMask, wmatom[WMTakeFocus],
+	sendevent(c->win, wmatom[WMTakeFocus], 0, wmatom[WMTakeFocus],
 	    XCB_CURRENT_TIME, 0, 0, 0);
 }
 

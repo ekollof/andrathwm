@@ -3,7 +3,7 @@
  * Reusable menu system for awm
  */
 
-#include <X11/keysym.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 #ifdef XINERAMA
 #include <xcb/xinerama.h>
 #endif
@@ -790,10 +790,10 @@ menu_handle_event(Menu *menu, xcb_generic_event_t *ev)
 		xcb_keysym_t           key =
 		    xcb_key_symbols_get_keysym(keysyms, (xcb_keycode_t) e->detail, 0);
 		switch (key) {
-		case XK_Escape:
+		case XKB_KEY_Escape:
 			menu_hide(menu);
 			return 1;
-		case XK_Up:
+		case XKB_KEY_Up:
 			/* Move selection up */
 			if (menu->selected > 0)
 				menu->selected--;
@@ -801,7 +801,7 @@ menu_handle_event(Menu *menu, xcb_generic_event_t *ev)
 				menu->selected = menu->item_count - 1;
 			menu_render(menu);
 			return 1;
-		case XK_Down:
+		case XKB_KEY_Down:
 			/* Move selection down */
 			if (menu->selected < menu->item_count - 1)
 				menu->selected++;
@@ -809,8 +809,8 @@ menu_handle_event(Menu *menu, xcb_generic_event_t *ev)
 				menu->selected = 0;
 			menu_render(menu);
 			return 1;
-		case XK_Return:
-		case XK_KP_Enter:
+		case XKB_KEY_Return:
+		case XKB_KEY_KP_Enter:
 			/* Activate selected item */
 			if (menu->selected >= 0) {
 				idx = 0;

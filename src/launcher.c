@@ -4,7 +4,7 @@
  * rofi-style launcher that reads .desktop files and falls back to PATH
  */
 
-#include <X11/keysym.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_keysyms.h>
 #include <xkbcommon/xkbcommon.h>
@@ -1327,14 +1327,14 @@ launcher_handle_event(Launcher *launcher, xcb_generic_event_t *ev)
 		    xcb_key_symbols_get_keysym(keysyms, (xcb_keycode_t) e->detail, 0);
 
 		switch (key) {
-		case XK_Escape:
+		case XKB_KEY_Escape:
 			launcher_hide(launcher);
 			return 1;
-		case XK_Return:
-		case XK_KP_Enter:
+		case XKB_KEY_Return:
+		case XKB_KEY_KP_Enter:
 			launcher_launch_selected(launcher);
 			return 1;
-		case XK_Up:
+		case XKB_KEY_Up:
 			if (launcher->selected > 0) {
 				launcher->selected--;
 				if (launcher->selected < launcher->scroll_offset)
@@ -1342,7 +1342,7 @@ launcher_handle_event(Launcher *launcher, xcb_generic_event_t *ev)
 			}
 			launcher_render(launcher);
 			return 1;
-		case XK_Down:
+		case XKB_KEY_Down:
 			if (launcher->selected < launcher->visible_count - 1) {
 				launcher->selected++;
 				if (launcher->selected >=
@@ -1351,20 +1351,20 @@ launcher_handle_event(Launcher *launcher, xcb_generic_event_t *ev)
 			}
 			launcher_render(launcher);
 			return 1;
-		case XK_Page_Up:
+		case XKB_KEY_Page_Up:
 			launcher_scroll(launcher, -LAUNCHER_MAX_VISIBLE);
 			launcher_render(launcher);
 			return 1;
-		case XK_Page_Down:
+		case XKB_KEY_Page_Down:
 			launcher_scroll(launcher, LAUNCHER_MAX_VISIBLE);
 			launcher_render(launcher);
 			return 1;
-		case XK_Home:
+		case XKB_KEY_Home:
 			launcher->selected      = 0;
 			launcher->scroll_offset = 0;
 			launcher_render(launcher);
 			return 1;
-		case XK_End:
+		case XKB_KEY_End:
 			launcher->selected = launcher->visible_count - 1;
 			launcher->scroll_offset =
 			    launcher->visible_count - LAUNCHER_MAX_VISIBLE;
@@ -1372,25 +1372,25 @@ launcher_handle_event(Launcher *launcher, xcb_generic_event_t *ev)
 				launcher->scroll_offset = 0;
 			launcher_render(launcher);
 			return 1;
-		case XK_BackSpace:
+		case XKB_KEY_BackSpace:
 			if (launcher->cursor_pos > 0) {
 				launcher_delete_char(launcher);
 			}
 			return 1;
-		case XK_Delete:
+		case XKB_KEY_Delete:
 			if (launcher->cursor_pos < launcher->input_len) {
 				launcher_delete_char_forward(launcher);
 			}
 			return 1;
-		case XK_Left:
+		case XKB_KEY_Left:
 			launcher_move_cursor(launcher, -1);
 			launcher_render(launcher);
 			return 1;
-		case XK_Right:
+		case XKB_KEY_Right:
 			launcher_move_cursor(launcher, +1);
 			launcher_render(launcher);
 			return 1;
-		case XK_Tab:
+		case XKB_KEY_Tab:
 			if (e->state & XCB_MOD_MASK_SHIFT) {
 				if (launcher->selected > 0) {
 					launcher->selected--;
@@ -1413,7 +1413,7 @@ launcher_handle_event(Launcher *launcher, xcb_generic_event_t *ev)
 
 		if (e->state & XCB_MOD_MASK_CONTROL) {
 			switch (key) {
-			case XK_u:
+			case XKB_KEY_u:
 				launcher->input[0]   = '\0';
 				launcher->input_len  = 0;
 				launcher->cursor_pos = 0;
@@ -1421,21 +1421,21 @@ launcher_handle_event(Launcher *launcher, xcb_generic_event_t *ev)
 				launcher_calculate_size(launcher);
 				launcher_render(launcher);
 				return 1;
-			case XK_k:
+			case XKB_KEY_k:
 				launcher->input[launcher->cursor_pos] = '\0';
 				launcher->input_len                   = launcher->cursor_pos;
 				launcher_filter_items(launcher);
 				launcher_calculate_size(launcher);
 				launcher_render(launcher);
 				return 1;
-			case XK_w:
+			case XKB_KEY_w:
 				launcher_delete_word(launcher);
 				return 1;
-			case XK_a:
+			case XKB_KEY_a:
 				launcher->cursor_pos = 0;
 				launcher_render(launcher);
 				return 1;
-			case XK_e:
+			case XKB_KEY_e:
 				launcher->cursor_pos = launcher->input_len;
 				launcher_render(launcher);
 				return 1;

@@ -466,15 +466,15 @@ tile(Monitor *m)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i);
 				if (n == 1)
-					resize(c, m->wx - c->bw, m->wy, m->ww, m->wh, False);
+					resize(c, m->wx - c->bw, m->wy, m->ww, m->wh, 0);
 				else
 					resize(c, m->wx - c->bw, m->wy + my, mw - c->bw, h - c->bw,
-					    False);
+					    0);
 				my += HEIGHT(c) - c->bw;
 			} else {
 				h = (m->wh - ty) / (n - i);
 				resize(c, m->wx + mw - c->bw, m->wy + ty, m->ww - mw,
-				    h - c->bw, False);
+				    h - c->bw, 0);
 				ty += HEIGHT(c) - c->bw;
 			}
 	}
@@ -526,7 +526,7 @@ updatebars(void)
 			uint32_t vals[3] = {
 				(uint32_t) scheme[SchemeNorm][ColBg].pixel, /* back_pixel */
 				1,                              /* override_redirect */
-				ButtonPressMask | ExposureMask, /* event_mask */
+				XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE, /* event_mask */
 			};
 			m->barwin = xcb_generate_id(xc);
 			xcb_create_window(xc, (uint8_t) depth, m->barwin, root,
@@ -542,7 +542,7 @@ updatebars(void)
 				XCB_BACK_PIXMAP_PARENT_RELATIVE, /* back_pixmap =
 				                                    ParentRelative */
 				1,                               /* override_redirect */
-				ButtonPressMask | ExposureMask,  /* event_mask */
+				XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE,  /* event_mask */
 			};
 			m->barwin = xcb_generate_id(xc);
 			xcb_create_window(xc, (uint8_t) depth, m->barwin, root,

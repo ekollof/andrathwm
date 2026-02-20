@@ -2,9 +2,9 @@
  *
  * dynamic window manager is designed like any other X client as well. It is
  * driven through handling X events. In contrast to other X clients, a window
- * manager selects for SubstructureRedirectMask on the root window, to receive
- * events about window (dis-)appearance. Only one X connection at a time is
- * allowed to select for this event mask.
+ * manager selects for XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT on the root window,
+ * to receive events about window (dis-)appearance. Only one X connection at a
+ * time is allowed to select for this event mask.
  *
  * The event handlers of awm are organized in an array which is accessed
  * whenever a new event has been fetched. This allows event dispatching
@@ -22,7 +22,6 @@
  */
 #include <stdint.h>
 
-#include <X11/cursorfont.h>
 #include <glib-unix.h>
 
 #include "awm.h"
@@ -412,7 +411,8 @@ scan(void)
 		    xcb_icccm_get_wm_transient_for_reply(
 		        xc, xcb_icccm_get_wm_transient_for(xc, wins[i]), &trans, NULL))
 			continue;
-		if (map_state == IsViewable || getstate(wins[i]) == IconicState) {
+		if (map_state == XCB_MAP_STATE_VIEWABLE ||
+		    getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC) {
 			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
 			xcb_get_geometry_reply_t *gr =
 			    xcb_get_geometry_reply(xc, gck, NULL);
@@ -435,7 +435,8 @@ scan(void)
 		xcb_window_t trans = XCB_WINDOW_NONE;
 		if (xcb_icccm_get_wm_transient_for_reply(xc,
 		        xcb_icccm_get_wm_transient_for(xc, wins[i]), &trans, NULL) &&
-		    (map_state == IsViewable || getstate(wins[i]) == IconicState)) {
+		    (map_state == XCB_MAP_STATE_VIEWABLE ||
+		        getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC)) {
 			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
 			xcb_get_geometry_reply_t *gr =
 			    xcb_get_geometry_reply(xc, gck, NULL);
@@ -588,9 +589,9 @@ setup(void)
 	/* init key symbols table */
 	keysyms = xcb_key_symbols_alloc(xc);
 	/* init cursors */
-	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
-	cursor[CurResize] = drw_cur_create(drw, XC_sizing);
-	cursor[CurMove]   = drw_cur_create(drw, XC_fleur);
+	cursor[CurNormal] = drw_cur_create(drw, 68);  /* XC_left_ptr */
+	cursor[CurResize] = drw_cur_create(drw, 120); /* XC_sizing */
+	cursor[CurMove]   = drw_cur_create(drw, 52);  /* XC_fleur */
 	/* init appearance */
 	scheme = ecalloc(LENGTH(colors), sizeof(Clr *));
 	for (i = 0; i < LENGTH(colors); i++)
@@ -644,9 +645,11 @@ setup(void)
 	/* select events */
 	{
 
-		uint32_t evmask = SubstructureRedirectMask | SubstructureNotifyMask |
-		    ButtonPressMask | PointerMotionMask | EnterWindowMask |
-		    LeaveWindowMask | StructureNotifyMask | PropertyChangeMask;
+		uint32_t evmask = XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT |
+		    XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS |
+		    XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_ENTER_WINDOW |
+		    XCB_EVENT_MASK_LEAVE_WINDOW | XCB_EVENT_MASK_STRUCTURE_NOTIFY |
+		    XCB_EVENT_MASK_PROPERTY_CHANGE;
 		xcb_change_window_attributes(xc, root, XCB_CW_EVENT_MASK, &evmask);
 		uint32_t cur = (uint32_t) cursor[CurNormal]->cursor;
 		xcb_change_window_attributes(xc, root, XCB_CW_CURSOR, &cur);

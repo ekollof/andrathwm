@@ -3,7 +3,7 @@
 
 #include "events.h"
 #include "awm.h"
-#include <X11/XKBlib.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 #include "client.h"
 #include "compositor.h"
 #include "ewmh.h"
@@ -176,15 +176,15 @@ clientmessage(xcb_generic_event_t *e)
 			}
 			c->x = c->oldx = c->y = c->oldy = 0;
 			c->bw                           = 0;
-			c->isfloating                   = True;
+			c->isfloating                   = 1;
 			/* reuse tags field as mapped status */
 			c->tags = 1;
 			updatesizehints(c);
 			updatesystrayicongeom(c, c->w, c->h);
 			xcb_change_save_set(xc, XCB_SET_MODE_INSERT, c->win);
 			{
-				uint32_t mask = StructureNotifyMask | PropertyChangeMask |
-				    ResizeRedirectMask;
+				uint32_t mask = XCB_EVENT_MASK_STRUCTURE_NOTIFY |
+				    XCB_EVENT_MASK_PROPERTY_CHANGE | ResizeRedirectMask;
 				xcb_change_window_attributes(
 				    xc, c->win, XCB_CW_EVENT_MASK, &mask);
 			}
@@ -197,13 +197,13 @@ clientmessage(xcb_generic_event_t *e)
 			}
 			/* Send XEMBED_EMBEDDED_NOTIFY to complete embedding per spec.
 			 * data1 = embedder window, data2 = protocol version */
-			sendevent(c->win, netatom[Xembed], StructureNotifyMask,
+			sendevent(c->win, netatom[Xembed], XCB_EVENT_MASK_STRUCTURE_NOTIFY,
 			    XCB_CURRENT_TIME, XEMBED_EMBEDDED_NOTIFY, 0, systray->win,
 			    XEMBED_VERSION);
 			xflush();
 			resizebarwin(selmon);
 			updatesystray();
-			setclientstate(c, NormalState);
+			setclientstate(c, XCB_ICCCM_WM_STATE_NORMAL);
 		}
 		return;
 	}
@@ -229,7 +229,7 @@ clientmessage(xcb_generic_event_t *e)
 		}
 	} else if (cme->type == netatom[NetCloseWindow]) {
 		/* _NET_CLOSE_WINDOW client message */
-		if (!sendevent(c->win, wmatom[WMDelete], NoEventMask, wmatom[WMDelete],
+		if (!sendevent(c->win, wmatom[WMDelete], 0, wmatom[WMDelete],
 		        XCB_CURRENT_TIME, 0, 0, 0)) {
 
 			xcb_grab_server(xc);
@@ -509,7 +509,7 @@ fake_signal(void)
 	size_t len_fsignal, len_indicator = strlen(indicator);
 
 	// Get root name property
-	if (gettextprop(root, XA_WM_NAME, fsignal, sizeof(fsignal))) {
+	if (gettextprop(root, XCB_ATOM_WM_NAME, fsignal, sizeof(fsignal))) {
 		len_fsignal = strlen(fsignal);
 
 		// Check if this is indeed a fake signal
@@ -614,7 +614,7 @@ propertynotify(xcb_generic_event_t *e)
 	xcb_property_notify_event_t *ev = (xcb_property_notify_event_t *) e;
 
 	if ((c = wintosystrayicon(ev->window))) {
-		if (ev->atom == XA_WM_NORMAL_HINTS) {
+		if (ev->atom == XCB_ATOM_WM_NORMAL_HINTS) {
 			updatesizehints(c);
 			updatesystrayicongeom(c, c->w, c->h);
 		} else
@@ -623,7 +623,7 @@ propertynotify(xcb_generic_event_t *e)
 		updatesystray();
 	}
 
-	if ((ev->window == root) && (ev->atom == XA_WM_NAME)) {
+	if ((ev->window == root) && (ev->atom == XCB_ATOM_WM_NAME)) {
 		(void) fake_signal();
 		return;
 	} else if (ev->state == XCB_PROPERTY_DELETE)
@@ -632,7 +632,7 @@ propertynotify(xcb_generic_event_t *e)
 		switch (ev->atom) {
 		default:
 			break;
-		case XA_WM_TRANSIENT_FOR:
+		case XCB_ATOM_WM_TRANSIENT_FOR:
 			if (!c->isfloating &&
 			    xcb_icccm_get_wm_transient_for_reply(xc,
 			        xcb_icccm_get_wm_transient_for(xc, c->win), &trans,
@@ -640,15 +640,15 @@ propertynotify(xcb_generic_event_t *e)
 			    (c->isfloating = (wintoclient(trans)) != NULL))
 				arrange(c->mon);
 			break;
-		case XA_WM_NORMAL_HINTS:
+		case XCB_ATOM_WM_NORMAL_HINTS:
 			c->hintsvalid = 0;
 			break;
-		case XA_WM_HINTS:
+		case XCB_ATOM_WM_HINTS:
 			updatewmhints(c);
 			barsdirty = 1; /* defer redraw */
 			break;
 		}
-		if (ev->atom == XA_WM_NAME || ev->atom == netatom[NetWMName]) {
+		if (ev->atom == XCB_ATOM_WM_NAME || ev->atom == netatom[NetWMName]) {
 			updatetitle(c);
 			if (c == c->mon->sel)
 				barsdirty = 1; /* defer redraw */
@@ -686,7 +686,7 @@ unmapnotify(xcb_generic_event_t *e)
 
 	if ((c = wintoclient(ev->window))) {
 		if (e->response_type & 0x80)
-			setclientstate(c, WithdrawnState);
+			setclientstate(c, XCB_ICCCM_WM_STATE_WITHDRAWN);
 		else
 			unmanage(c, 0);
 	} else if ((c = wintosystrayicon(ev->window))) {
@@ -715,7 +715,7 @@ updatenumlockmask(void)
 	mr          = xcb_get_modifier_mapping_reply(xc, ck, NULL);
 	if (!mr)
 		return;
-	nlcodes  = xcb_key_symbols_get_keycode(keysyms, XK_Num_Lock);
+	nlcodes  = xcb_key_symbols_get_keycode(keysyms, XKB_KEY_Num_Lock);
 	modcodes = xcb_get_modifier_mapping_keycodes(mr);
 	if (nlcodes) {
 		for (i = 0; i < 8; i++)

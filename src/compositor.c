@@ -891,7 +891,7 @@ compositor_init(GMainContext *ctx)
 		/* Select SelectionClear on the owner window so we are notified
 		 * if another program takes the selection from us. */
 		{
-			uint32_t evmask = StructureNotifyMask;
+			uint32_t evmask = XCB_EVENT_MASK_STRUCTURE_NOTIFY;
 			xcb_change_window_attributes(
 			    xc, comp.cm_owner_win, XCB_CW_EVENT_MASK, &evmask);
 		}
@@ -1153,11 +1153,11 @@ comp_free_win(CompWin *cw)
 	}
 	if (cw->picture) {
 		xcb_render_free_picture(xc, cw->picture);
-		cw->picture = None;
+		cw->picture = 0;
 	}
 	if (cw->pixmap) {
 		xcb_free_pixmap(xc, cw->pixmap);
-		cw->pixmap = None;
+		cw->pixmap = 0;
 	}
 }
 
@@ -1171,11 +1171,11 @@ comp_refresh_pixmap(CompWin *cw)
 
 	if (cw->picture) {
 		xcb_render_free_picture(xc, cw->picture);
-		cw->picture = None;
+		cw->picture = 0;
 	}
 	if (cw->pixmap) {
 		xcb_free_pixmap(xc, cw->pixmap);
-		cw->pixmap = None;
+		cw->pixmap = 0;
 	}
 
 	/* New pixmap — require a full dirty on its first damage notification. */
@@ -1206,7 +1206,7 @@ comp_refresh_pixmap(CompWin *cw)
 			awm_warn("compositor: pixmap geometry query failed — releasing "
 			         "stale pixmap");
 			xcb_free_pixmap(xc, cw->pixmap);
-			cw->pixmap = None;
+			cw->pixmap = 0;
 			return;
 		}
 		free(gr);
@@ -1303,8 +1303,8 @@ comp_update_wallpaper(void)
 	/* Release previous wallpaper resources */
 	if (comp.wallpaper_pict) {
 		xcb_render_free_picture(xc, comp.wallpaper_pict);
-		comp.wallpaper_pict   = None;
-		comp.wallpaper_pixmap = None;
+		comp.wallpaper_pict   = 0;
+		comp.wallpaper_pixmap = 0;
 	}
 	/* Release cached GL wallpaper resources if any */
 	if (comp.use_gl) {
@@ -1321,17 +1321,17 @@ comp_update_wallpaper(void)
 	atoms[0] = comp.atom_rootpmap;
 	atoms[1] = comp.atom_esetroot;
 
-	for (i = 0; i < 2 && pmap == None; i++) {
+	for (i = 0; i < 2 && pmap == 0; i++) {
 		ck = xcb_get_property(xc, 0, (xcb_window_t) root,
 		    (xcb_atom_t) atoms[i], XCB_ATOM_PIXMAP, 0, 1);
 		r  = xcb_get_property_reply(xc, ck, NULL);
 		if (r &&
 		    xcb_get_property_value_length(r) >= (int) sizeof(xcb_pixmap_t))
-			pmap = (Pixmap) * (xcb_pixmap_t *) xcb_get_property_value(r);
+			pmap = (xcb_pixmap_t) * (xcb_pixmap_t *) xcb_get_property_value(r);
 		free(r);
 	}
 
-	if (pmap == None)
+	if (pmap == 0)
 		return;
 
 	/* Always build the XRender picture — used by the XRender fallback path
@@ -1412,7 +1412,7 @@ comp_restack_above(CompWin *cw, xcb_window_t above_xid)
 		prev = cur;
 	}
 
-	if (above_xid == None) {
+	if (above_xid == 0) {
 		/* Place at the bottom (head of the list) */
 		cw->next     = comp.windows;
 		comp.windows = cw;
@@ -1828,11 +1828,11 @@ compositor_notify_screen_resize(void)
 
 		if (comp.back) {
 			xcb_render_free_picture(xc, comp.back);
-			comp.back = None;
+			comp.back = 0;
 		}
 		if (comp.back_pixmap) {
 			xcb_free_pixmap(xc, comp.back_pixmap);
-			comp.back_pixmap = None;
+			comp.back_pixmap = 0;
 		}
 		comp.back_pixmap = xcb_generate_id(xc);
 		xcb_create_pixmap(xc, xcb_screen_root_depth(xc, screen),
@@ -2701,7 +2701,7 @@ comp_do_repaint_xrender(void)
 		int                  alpha_idx;
 		xcb_render_picture_t mask;
 
-		if (!cw->redirected || cw->picture == None || cw->hidden)
+		if (!cw->redirected || cw->picture == 0 || cw->hidden)
 			continue;
 
 		alpha_idx = (int) (cw->opacity * 255.0 + 0.5);

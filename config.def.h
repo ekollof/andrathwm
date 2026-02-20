@@ -99,13 +99,14 @@ static const Layout layouts[] = {
 };
 
 /* key definitions */
-#define MODKEY Mod4Mask
-#define ALTKEY Mod1Mask
-#define TAGKEYS(KEY, TAG)                                              \
-	{ MODKEY, KEY, view, { .ui = 1 << TAG } },                         \
-	    { MODKEY | ControlMask, KEY, toggleview, { .ui = 1 << TAG } }, \
-	    { MODKEY | ShiftMask, KEY, tag, { .ui = 1 << TAG } },          \
-	    { MODKEY | ControlMask | ShiftMask, KEY, toggletag,            \
+#define MODKEY XCB_MOD_MASK_4
+#define ALTKEY XCB_MOD_MASK_1
+#define TAGKEYS(KEY, TAG)                                                     \
+	{ MODKEY, KEY, view, { .ui = 1 << TAG } },                                \
+	    { MODKEY | XCB_MOD_MASK_CONTROL, KEY, toggleview,                     \
+		    { .ui = 1 << TAG } },                                             \
+	    { MODKEY | XCB_MOD_MASK_SHIFT, KEY, tag, { .ui = 1 << TAG } },        \
+	    { MODKEY | XCB_MOD_MASK_CONTROL | XCB_MOD_MASK_SHIFT, KEY, toggletag, \
 		    { .ui = 1 << TAG } },
 
 /* helper for spawning shell commands in the pre dwm-5.0 fashion */
@@ -160,59 +161,59 @@ static const char *musiccmd[]  = { "m", "st", "-t", musicname, "-g", "120x34",
 
 static const Key keys[] = {
 	/* modifier                     key        function        argument */
-	{ MODKEY, XK_p, spawn, { .v = dmenucmd } },
-	{ MODKEY, XK_Return, spawn, { .v = termcmd } },
-	{ MODKEY | ShiftMask, XK_p, spawn, { .v = passmenu } },
-	{ MODKEY | ShiftMask, XK_l, spawn, { .v = lpassmenu } },
-	{ MODKEY | ShiftMask, XK_o, spawn, { .v = otpmenu } },
-	{ MODKEY | ShiftMask, XK_c, spawn, { .v = clipmenu } },
-	{ MODKEY, XK_w, spawn, { .v = startbrowser } },
-	{ Mod1Mask | ControlMask, XK_l, spawn, { .v = screensaver } },
-	{ Mod1Mask | ControlMask, XK_w, spawn, { .v = wallpaper } },
-	{ MODKEY | ControlMask, XK_w, spawn, { .v = pickwall } },
-	{ MODKEY | ShiftMask, XK_l, spawn, { .v = layoutswitch } },
-	{ MODKEY, XK_n, spawn, { .v = networkmanager } },
-	{ MODKEY | ShiftMask, XK_w, spawn, { .v = windowswitch } },
-	{ MODKEY, XK_grave, togglescratch, { .v = notepadcmd } },
-	{ MODKEY, XK_dead_grave, togglescratch, { .v = notepadcmd } },
-	{ MODKEY | ShiftMask, XK_m, togglescratch, { .v = musiccmd } },
-	{ MODKEY, XK_b, togglebar, { 0 } },
-	{ MODKEY, XK_j, focusstack, { .i = +1 } },
-	{ MODKEY, XK_k, focusstack, { .i = -1 } },
-	{ MODKEY | ShiftMask, XK_j, focusstackhidden, { .i = +1 } },
-	{ MODKEY | ShiftMask, XK_k, focusstackhidden, { .i = -1 } },
-	{ MODKEY, XK_i, incnmaster, { .i = +1 } },
-	{ MODKEY, XK_d, incnmaster, { .i = -1 } },
-	{ MODKEY | ControlMask, XK_h, setmfact, { .f = -0.05 } },
-	{ MODKEY | ControlMask, XK_l, setmfact, { .f = +0.05 } },
-	{ MODKEY | ControlMask, XK_j, movestack, { .i = +1 } },
-	{ MODKEY | ControlMask, XK_k, movestack, { .i = -1 } },
-	{ MODKEY | ShiftMask, XK_Return, zoom, { 0 } },
-	{ MODKEY, XK_Tab, view, { 0 } },
-	{ MODKEY, XK_x, killclient, { 0 } },
-	{ MODKEY, XK_t, setlayout, { .v = &layouts[0] } },
-	{ MODKEY, XK_f, setlayout, { .v = &layouts[1] } },
-	{ MODKEY, XK_m, setlayout, { .v = &layouts[2] } },
-	{ MODKEY, XK_space, setlayout, { 0 } },
-	{ MODKEY | ShiftMask, XK_space, togglefloating, { 0 } },
-	{ MODKEY, XK_0, view, { .ui = ~0 } },
-	{ MODKEY | ShiftMask, XK_0, tag, { .ui = ~0 } },
-	{ MODKEY, XK_comma, focusmon, { .i = -1 } },
-	{ MODKEY, XK_period, focusmon, { .i = +1 } },
-	{ MODKEY | ShiftMask, XK_comma, tagmon, { .i = -1 } },
-	{ MODKEY | ShiftMask, XK_period, tagmon, { .i = +1 } },
-	{ MODKEY, XK_minus, setgaps, { .i = -5 } },
-	{ MODKEY, XK_equal, setgaps, { .i = +5 } },
-	{ MODKEY | ShiftMask, XK_minus, setgaps, { .i = GAP_RESET } },
-	{ MODKEY | ShiftMask, XK_equal, setgaps, { .i = GAP_TOGGLE } },
-	{ MODKEY, XK_F5, xrdb, { .v = NULL } },
-	{ MODKEY, XK_h, hidewin, { 0 } },
-	{ MODKEY, XK_s, restorewin, { 0 } },
-	{ MODKEY | ShiftMask, XK_s, showall, { 0 } },
-	TAGKEYS(XK_1, 0) TAGKEYS(XK_2, 1) TAGKEYS(XK_3, 2) TAGKEYS(XK_4, 3)
-	    TAGKEYS(XK_5, 4) TAGKEYS(XK_6, 5) TAGKEYS(XK_7, 6) TAGKEYS(XK_8, 7)
-	        TAGKEYS(XK_9, 8) { MODKEY | ShiftMask, XK_q, quit, { 0 } },
-	{ MODKEY | ShiftMask, XK_r, quit, { 1 } },
+	{ MODKEY, XKB_KEY_p, spawn, { .v = dmenucmd } },
+	{ MODKEY, XKB_KEY_Return, spawn, { .v = termcmd } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_p, spawn, { .v = passmenu } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_l, spawn, { .v = lpassmenu } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_o, spawn, { .v = otpmenu } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_c, spawn, { .v = clipmenu } },
+	{ MODKEY, XKB_KEY_w, spawn, { .v = startbrowser } },
+	{ XCB_MOD_MASK_1 | XCB_MOD_MASK_CONTROL, XKB_KEY_l, spawn, { .v = screensaver } },
+	{ XCB_MOD_MASK_1 | XCB_MOD_MASK_CONTROL, XKB_KEY_w, spawn, { .v = wallpaper } },
+	{ MODKEY | XCB_MOD_MASK_CONTROL, XKB_KEY_w, spawn, { .v = pickwall } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_l, spawn, { .v = layoutswitch } },
+	{ MODKEY, XKB_KEY_n, spawn, { .v = networkmanager } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_w, spawn, { .v = windowswitch } },
+	{ MODKEY, XKB_KEY_grave, togglescratch, { .v = notepadcmd } },
+	{ MODKEY, XKB_KEY_dead_grave, togglescratch, { .v = notepadcmd } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_m, togglescratch, { .v = musiccmd } },
+	{ MODKEY, XKB_KEY_b, togglebar, { 0 } },
+	{ MODKEY, XKB_KEY_j, focusstack, { .i = +1 } },
+	{ MODKEY, XKB_KEY_k, focusstack, { .i = -1 } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_j, focusstackhidden, { .i = +1 } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_k, focusstackhidden, { .i = -1 } },
+	{ MODKEY, XKB_KEY_i, incnmaster, { .i = +1 } },
+	{ MODKEY, XKB_KEY_d, incnmaster, { .i = -1 } },
+	{ MODKEY | XCB_MOD_MASK_CONTROL, XKB_KEY_h, setmfact, { .f = -0.05 } },
+	{ MODKEY | XCB_MOD_MASK_CONTROL, XKB_KEY_l, setmfact, { .f = +0.05 } },
+	{ MODKEY | XCB_MOD_MASK_CONTROL, XKB_KEY_j, movestack, { .i = +1 } },
+	{ MODKEY | XCB_MOD_MASK_CONTROL, XKB_KEY_k, movestack, { .i = -1 } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_Return, zoom, { 0 } },
+	{ MODKEY, XKB_KEY_Tab, view, { 0 } },
+	{ MODKEY, XKB_KEY_x, killclient, { 0 } },
+	{ MODKEY, XKB_KEY_t, setlayout, { .v = &layouts[0] } },
+	{ MODKEY, XKB_KEY_f, setlayout, { .v = &layouts[1] } },
+	{ MODKEY, XKB_KEY_m, setlayout, { .v = &layouts[2] } },
+	{ MODKEY, XKB_KEY_space, setlayout, { 0 } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_space, togglefloating, { 0 } },
+	{ MODKEY, XKB_KEY_0, view, { .ui = ~0 } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_0, tag, { .ui = ~0 } },
+	{ MODKEY, XKB_KEY_comma, focusmon, { .i = -1 } },
+	{ MODKEY, XKB_KEY_period, focusmon, { .i = +1 } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_comma, tagmon, { .i = -1 } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_period, tagmon, { .i = +1 } },
+	{ MODKEY, XKB_KEY_minus, setgaps, { .i = -5 } },
+	{ MODKEY, XKB_KEY_equal, setgaps, { .i = +5 } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_minus, setgaps, { .i = GAP_RESET } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_equal, setgaps, { .i = GAP_TOGGLE } },
+	{ MODKEY, XKB_KEY_F5, xrdb, { .v = NULL } },
+	{ MODKEY, XKB_KEY_h, hidewin, { 0 } },
+	{ MODKEY, XKB_KEY_s, restorewin, { 0 } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_s, showall, { 0 } },
+	TAGKEYS(XKB_KEY_1, 0) TAGKEYS(XKB_KEY_2, 1) TAGKEYS(XKB_KEY_3, 2) TAGKEYS(XKB_KEY_4, 3)
+	    TAGKEYS(XKB_KEY_5, 4) TAGKEYS(XKB_KEY_6, 5) TAGKEYS(XKB_KEY_7, 6) TAGKEYS(XKB_KEY_8, 7)
+	        TAGKEYS(XKB_KEY_9, 8) { MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_q, quit, { 0 } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_r, quit, { 1 } },
 };
 
 /* button definitions */

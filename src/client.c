@@ -172,7 +172,7 @@ attachclients(Monitor *m)
 	Monitor     *tm;
 	Client      *c;
 	unsigned int utags = 0;
-	Bool         rmons = False;
+	int          rmons = 0;
 	if (!m)
 		return;
 
@@ -184,9 +184,9 @@ attachclients(Monitor *m)
 		if (ISVISIBLE(c, m)) {
 			if (c->tags & utags) {
 				c->tags = c->tags & m->tagset[m->seltags];
-				rmons   = True;
+				rmons   = 1;
 			}
-			unfocus(c, True);
+			unfocus(c, 1);
 			c->mon = m;
 		}
 
@@ -630,12 +630,12 @@ hide(Client *c)
 		free(cr);
 
 		uint32_t mask;
-		mask = root_em & ~(uint32_t) SubstructureNotifyMask;
+		mask = root_em & ~(uint32_t) XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
 		xcb_change_window_attributes(xc, root, XCB_CW_EVENT_MASK, &mask);
-		mask = win_em & ~(uint32_t) StructureNotifyMask;
+		mask = win_em & ~(uint32_t) XCB_EVENT_MASK_STRUCTURE_NOTIFY;
 		xcb_change_window_attributes(xc, w, XCB_CW_EVENT_MASK, &mask);
 		xcb_unmap_window(xc, w);
-		setclientstate(c, IconicState);
+		setclientstate(c, XCB_ICCCM_WM_STATE_ICONIC);
 		mask = root_em;
 		xcb_change_window_attributes(xc, root, XCB_CW_EVENT_MASK, &mask);
 		mask = win_em;
@@ -667,7 +667,7 @@ show(Client *c)
 		return;
 
 	xcb_map_window(xc, c->win);
-	setclientstate(c, NormalState);
+	setclientstate(c, XCB_ICCCM_WM_STATE_NORMAL);
 	c->ishidden = 0;
 	focus(c);
 	arrange(c->mon);
@@ -710,8 +710,8 @@ killclient(const Arg *arg)
 	if (!selmon->sel)
 		return;
 
-	if (!sendevent(selmon->sel->win, wmatom[WMDelete], NoEventMask,
-	        wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
+	if (!sendevent(selmon->sel->win, wmatom[WMDelete], 0, wmatom[WMDelete],
+	        XCB_CURRENT_TIME, 0, 0, 0)) {
 
 		xcb_grab_server(xc);
 		xcb_set_close_down_mode(xc, XCB_CLOSE_DOWN_DESTROY_ALL);
@@ -783,8 +783,8 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 		c->y = c->mon->my + (c->mon->mh - HEIGHT(c)) / 2;
 	}
 	{
-		uint32_t mask = EnterWindowMask | FocusChangeMask |
-		    PropertyChangeMask | StructureNotifyMask;
+		uint32_t mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_FOCUS_CHANGE |
+		    XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_STRUCTURE_NOTIFY;
 		xcb_change_window_attributes(xc, w, XCB_CW_EVENT_MASK, &mask);
 	}
 	grabbuttons(c, 0);
@@ -820,7 +820,7 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
 		    vals);
 	}
-	setclientstate(c, NormalState);
+	setclientstate(c, XCB_ICCCM_WM_STATE_NORMAL);
 	if (c->mon == selmon)
 		unfocus(selmon->sel, 0);
 	/* Don't make a hidden scratchpad the selected client */
@@ -1538,7 +1538,7 @@ unmanage(Client *c, int destroyed)
 			    xc, c->win, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
 		}
 		xcb_ungrab_button(xc, XCB_BUTTON_INDEX_ANY, c->win, XCB_MOD_MASK_ANY);
-		setclientstate(c, WithdrawnState);
+		setclientstate(c, XCB_ICCCM_WM_STATE_WITHDRAWN);
 		xcb_ungrab_server(xc);
 		xflush();
 	}
@@ -1600,7 +1600,7 @@ void
 updatetitle(Client *c)
 {
 	if (!gettextprop(c->win, netatom[NetWMName], c->name, sizeof c->name))
-		gettextprop(c->win, XA_WM_NAME, c->name, sizeof c->name);
+		gettextprop(c->win, XCB_ATOM_WM_NAME, c->name, sizeof c->name);
 	if (c->name[0] == '\0')
 		strcpy(c->name, broken);
 }
