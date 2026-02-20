@@ -27,7 +27,7 @@ typedef struct LauncherItem {
 
 typedef struct {
 	xcb_connection_t *xc;
-	Window            win;
+	xcb_window_t      win;
 	Drw              *drw;
 	Clr             **scheme;
 
@@ -51,8 +51,8 @@ typedef struct {
 	const char  *terminal; /* Terminal emulator binary for Terminal=true */
 } Launcher;
 
-Launcher *launcher_create(xcb_connection_t *xc, Window root, Clr **scheme,
-    const char **fonts, size_t fontcount, const char *term);
+Launcher *launcher_create(xcb_connection_t *xc, xcb_window_t root,
+    Clr **scheme, const char **fonts, size_t fontcount, const char *term);
 void      launcher_free(Launcher *launcher);
 void      launcher_show(Launcher *launcher, int x, int y);
 void      launcher_hide(Launcher *launcher);

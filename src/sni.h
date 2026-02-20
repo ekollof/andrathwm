@@ -50,20 +50,20 @@ typedef struct SNIItem {
 	int item_is_menu;       /* ItemIsMenu=true: icon is a pure menu trigger */
 
 	/* Internal state */
-	Window win;                /* X11 window for this item */
-	int    w, h;               /* Window size */
-	int    mapped;             /* Window mapped state */
-	int    properties_fetched; /* Set when GetAll reply arrives */
+	xcb_window_t win;                /* X11 window for this item */
+	int          w, h;               /* Window size */
+	int          mapped;             /* Window mapped state */
+	int          properties_fetched; /* Set when GetAll reply arrives */
 	int properties_fetching; /* In-flight guard: prevents re-sending GetAll */
 	uint32_t
 	    generation; /* Incremented when item is freed (use-after-free guard) */
 
 	/* Pending click: queued when click arrives before properties are ready */
-	int  pending_click;  /* 1 if a click is waiting */
-	int  pending_button; /* button number */
-	int  pending_x;      /* root x coordinate */
-	int  pending_y;      /* root y coordinate */
-	Time pending_time;   /* ButtonPress timestamp for grab steal */
+	int             pending_click;  /* 1 if a click is waiting */
+	int             pending_button; /* button number */
+	int             pending_x;      /* root x coordinate */
+	int             pending_y;      /* root y coordinate */
+	xcb_timestamp_t pending_time;   /* ButtonPress timestamp for grab steal */
 
 	struct SNIItem *next;
 } SNIItem;
@@ -81,7 +81,7 @@ typedef struct {
 
 /* Initialization and cleanup */
 int  sni_init(xcb_connection_t *xc, xcb_connection_t *cairo_xcb,
-     xcb_visualtype_t *xcb_visual, Window rootwin, Drw *drw, Clr **scheme,
+     xcb_visualtype_t *xcb_visual, xcb_window_t rootwin, Drw *drw, Clr **scheme,
      unsigned int icon_size);
 void sni_cleanup(void);
 int  sni_reconnect(void); /* cleanup + re-init preserving awm globals */
@@ -100,14 +100,15 @@ void     sni_update_item(SNIItem *item);
 void sni_render_item(SNIItem *item);
 
 /* Event handling */
-void sni_handle_click(Window win, int button, int x, int y, Time event_time);
-SNIItem *sni_find_item_by_window(Window win);
+void sni_handle_click(
+    xcb_window_t win, int button, int x, int y, xcb_timestamp_t event_time);
+SNIItem *sni_find_item_by_window(xcb_window_t win);
 
 /* Event handling */
 void sni_scroll(SNIItem *item, int delta, const char *orientation);
 
 /* Menu support */
-void sni_show_menu(SNIItem *item, int x, int y, Time event_time);
+void sni_show_menu(SNIItem *item, int x, int y, xcb_timestamp_t event_time);
 void sni_free_menu(SNIMenuItem *menu);
 int  sni_handle_menu_event(xcb_generic_event_t *ev);
 

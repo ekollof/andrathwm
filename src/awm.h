@@ -7,10 +7,8 @@
 #include <X11/X.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
-#include <X11/Xlib-xcb.h>
 #include <X11/Xproto.h>
 #include <X11/Xutil.h>
-#include <X11/cursorfont.h>
 #include <X11/keysym.h>
 #include <xcb/randr.h>
 #include <xcb/xcb_icccm.h>
@@ -39,10 +37,8 @@
 #include <X11/extensions/scrnsaver.h>
 #endif /* XSS */
 #ifdef COMPOSITOR
-#include <X11/extensions/Xcomposite.h>
-#include <X11/extensions/Xdamage.h>
-#include <X11/extensions/Xfixes.h>
-#include <X11/extensions/Xrender.h>
+/* XComposite/XDamage/XFixes/XRender Xlib headers removed — compositor.c
+ * uses pure XCB (xcb/composite.h, xcb/damage.h, xcb/xfixes.h, xcb/render.h) */
 #endif /* COMPOSITOR */
 #ifdef STATUSNOTIFIER
 #include "sni.h"

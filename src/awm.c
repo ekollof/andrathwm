@@ -22,6 +22,7 @@
  */
 #include <stdint.h>
 
+#include <X11/cursorfont.h>
 #include <glib-unix.h>
 
 #include "awm.h"

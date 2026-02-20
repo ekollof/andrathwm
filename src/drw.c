@@ -1,12 +1,11 @@
 /* See LICENSE file for copyright and license details. */
-#include <X11/extensions/Xrender.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <xcb/xcb.h>
 #include <xcb/xproto.h>
-
-#include <X11/Xlib-xcb.h>
+#include <xcb/render.h>
+#include <xcb/xcb_renderutil.h>
+#include <xcb/xcb_cursor.h>
 #include <pango/pangocairo.h>
 
 #include "drw.h"
@@ -35,37 +34,47 @@ xcb_find_visualtype(xcb_connection_t *conn, int screen_num, xcb_visualid_t vid)
 	return NULL;
 }
 
+/* Return the root depth for screen number scr_num. */
+static uint8_t
+drw_root_depth(xcb_connection_t *conn, int scr_num)
+{
+	xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(conn));
+	for (int i = 0; i < scr_num; i++)
+		xcb_screen_next(&it);
+	return it.data->root_depth;
+}
+
 Drw *
-drw_create(xcb_connection_t *xc, int screen, Window root, unsigned int w,
+drw_create(xcb_connection_t *xc, int screen, xcb_window_t root, unsigned int w,
     unsigned int h)
 {
-	Drw     *drw = ecalloc(1, sizeof(Drw));
-	Display *dpy;
+	Drw *drw = ecalloc(1, sizeof(Drw));
 
-	(void) xc; /* xcb_connection_t parameter reserved for Phase 3c */
+	drw->xc     = xc;
+	drw->screen = screen;
+	drw->root   = root;
+	drw->w      = w;
+	drw->h      = h;
 
-	/* Open a private Xlib Display for the drawing operations below.
-	 * This is temporary scaffolding: Phase 3c will replace all XCreatePixmap,
-	 * XCreateGC, XFillRectangle etc. with pure XCB calls at which point the
-	 * Display* will be removed entirely. */
-	dpy = XOpenDisplay(NULL);
-	if (!dpy)
-		die("drw_create: cannot open X display");
+	/* Create the backing pixmap */
+	drw->drawable = xcb_generate_id(xc);
+	xcb_create_pixmap(xc, drw_root_depth(xc, screen), drw->drawable, root,
+	    (uint16_t) w, (uint16_t) h);
 
-	drw->dpy      = dpy;
-	drw->screen   = screen;
-	drw->root     = root;
-	drw->w        = w;
-	drw->h        = h;
-	drw->drawable = XCreatePixmap(dpy, root, w, h, DefaultDepth(dpy, screen));
-	drw->gc       = XCreateGC(dpy, root, 0, NULL);
-	XSetLineAttributes(dpy, drw->gc, 1, LineSolid, CapButt, JoinMiter);
+	/* Create a GC on the pixmap */
+	drw->gc = xcb_generate_id(xc);
+	{
+		uint32_t mask = XCB_GC_LINE_WIDTH | XCB_GC_LINE_STYLE |
+		    XCB_GC_CAP_STYLE | XCB_GC_JOIN_STYLE;
+		uint32_t vals[4] = { 1, XCB_LINE_STYLE_SOLID, XCB_CAP_STYLE_BUTT,
+			XCB_JOIN_STYLE_MITER };
+		xcb_create_gc(xc, drw->gc, drw->drawable, mask, vals);
+	}
 
-	/* Open a dedicated XCB connection for Cairo.  Cairo's xlib backend
+	/* Open a dedicated XCB connection for Cairo.  Cairo's xcb backend
 	 * sends raw xcb_render_* requests on whatever xcb_connection_t it gets.
-	 * Using a separate connection that is never read from via Xlib prevents
-	 * the _XSetLastRequestRead "sequence lost" warning that fires whenever
-	 * the wire sequence counter wraps past 0xffff on a shared Display*. */
+	 * Using a separate connection that is never read from by the main loop
+	 * prevents sequence-counter ordering hazards. */
 	drw->cairo_xcb = xcb_connect(NULL, NULL);
 	if (xcb_connection_has_error(drw->cairo_xcb)) {
 		xcb_disconnect(drw->cairo_xcb);
@@ -73,8 +82,7 @@ drw_create(xcb_connection_t *xc, int screen, Window root, unsigned int w,
 	}
 
 	if (drw->cairo_xcb) {
-		/* Walk XCB screen list to get root_visual for screen N,
-		 * replacing XVisualIDFromVisual(DefaultVisual(dpy, screen)). */
+		/* Walk XCB screen list to get root_visual for screen N */
 		xcb_screen_iterator_t sit =
 		    xcb_setup_roots_iterator(xcb_get_setup(drw->cairo_xcb));
 		for (int i = 0; i < screen; i++)
@@ -100,10 +108,22 @@ drw_resize(Drw *drw, unsigned int w, unsigned int h)
 
 	drw->w = w;
 	drw->h = h;
-	if (drw->drawable)
-		XFreePixmap(drw->dpy, drw->drawable);
-	drw->drawable = XCreatePixmap(
-	    drw->dpy, drw->root, w, h, DefaultDepth(drw->dpy, drw->screen));
+	if (drw->drawable) {
+		xcb_free_pixmap(drw->xc, drw->drawable);
+		drw->drawable = xcb_generate_id(drw->xc);
+		xcb_create_pixmap(drw->xc, drw_root_depth(drw->xc, drw->screen),
+		    drw->drawable, drw->root, (uint16_t) w, (uint16_t) h);
+		/* Reattach GC to new drawable */
+		xcb_free_gc(drw->xc, drw->gc);
+		drw->gc = xcb_generate_id(drw->xc);
+		{
+			uint32_t mask = XCB_GC_LINE_WIDTH | XCB_GC_LINE_STYLE |
+			    XCB_GC_CAP_STYLE | XCB_GC_JOIN_STYLE;
+			uint32_t vals[4] = { 1, XCB_LINE_STYLE_SOLID, XCB_CAP_STYLE_BUTT,
+				XCB_JOIN_STYLE_MITER };
+			xcb_create_gc(drw->xc, drw->gc, drw->drawable, mask, vals);
+		}
+	}
 
 	/* Recreate Cairo surface for new drawable */
 	if (drw->cairo_surface)
@@ -122,10 +142,9 @@ drw_free(Drw *drw)
 		cairo_surface_destroy(drw->cairo_surface);
 	if (drw->cairo_xcb)
 		xcb_disconnect(drw->cairo_xcb);
-	XFreePixmap(drw->dpy, drw->drawable);
-	XFreeGC(drw->dpy, drw->gc);
+	xcb_free_pixmap(drw->xc, drw->drawable);
+	xcb_free_gc(drw->xc, drw->gc);
 	drw_fontset_free(drw->fonts);
-	XCloseDisplay(drw->dpy);
 	free(drw);
 }
 
@@ -209,7 +228,6 @@ drw_fontset_free(Fnt *font)
 void
 drw_clr_create(Drw *drw, Clr *dest, const char *clrname)
 {
-	xcb_connection_t        *xc;
 	xcb_screen_iterator_t    si;
 	xcb_screen_t            *xs;
 	xcb_alloc_color_cookie_t ck;
@@ -231,13 +249,13 @@ drw_clr_create(Drw *drw, Clr *dest, const char *clrname)
 	dest->a = 0xffff;
 
 	/* Allocate pixel value in the server's colormap via XCB. */
-	xc = XGetXCBConnection(drw->dpy);
-	si = xcb_setup_roots_iterator(xcb_get_setup(xc));
+	si = xcb_setup_roots_iterator(xcb_get_setup(drw->xc));
 	for (int i = 0; i < drw->screen; i++)
 		xcb_screen_next(&si);
-	xs  = si.data;
-	ck  = xcb_alloc_color(xc, xs->default_colormap, dest->r, dest->g, dest->b);
-	rep = xcb_alloc_color_reply(xc, ck, NULL);
+	xs = si.data;
+	ck = xcb_alloc_color(
+	    drw->xc, xs->default_colormap, dest->r, dest->g, dest->b);
+	rep = xcb_alloc_color_reply(drw->xc, ck, NULL);
 	if (!rep)
 		die("error, cannot allocate color '%s'", clrname);
 	dest->pixel = rep->pixel;
@@ -280,17 +298,27 @@ void
 drw_rect(Drw *drw, int x, int y, unsigned int w, unsigned int h, int filled,
     int invert)
 {
+	uint32_t col;
+
 	if (!drw || !drw->scheme)
 		return;
-	XSetForeground(drw->dpy, drw->gc,
-	    invert ? drw->scheme[ColBg].pixel : drw->scheme[ColFg].pixel);
-	if (filled)
-		XFillRectangle(drw->dpy, drw->drawable, drw->gc, x, y, w, h);
-	else
-		XDrawRectangle(drw->dpy, drw->drawable, drw->gc, x, y, w - 1, h - 1);
+
+	col = (uint32_t) (invert ? drw->scheme[ColBg].pixel
+	                         : drw->scheme[ColFg].pixel);
+	xcb_change_gc(drw->xc, drw->gc, XCB_GC_FOREGROUND, &col);
+	if (filled) {
+		xcb_rectangle_t r = { (int16_t) x, (int16_t) y, (uint16_t) w,
+			(uint16_t) h };
+		xcb_poly_fill_rectangle(drw->xc, drw->drawable, drw->gc, 1, &r);
+	} else {
+		xcb_rectangle_t r = { (int16_t) x, (int16_t) y, (uint16_t) (w - 1),
+			(uint16_t) (h - 1) };
+		xcb_poly_rectangle(drw->xc, drw->drawable, drw->gc, 1, &r);
+	}
 	/* Notify Cairo that X11 has modified the drawable */
 	if (drw->cairo_surface)
-		cairo_surface_mark_dirty_rectangle(drw->cairo_surface, x, y, w, h);
+		cairo_surface_mark_dirty_rectangle(
+		    drw->cairo_surface, x, y, (int) w, (int) h);
 }
 
 int
@@ -301,6 +329,7 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 	PangoLayout *layout;
 	cairo_t     *cr;
 	int          tw, th;
+	uint32_t     col;
 
 	if (!drw || (render && (!drw->scheme || !w)) || !text || !drw->fonts)
 		return 0;
@@ -319,10 +348,14 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 		return tw;
 	}
 
-	/* Fill background */
-	XSetForeground(
-	    drw->dpy, drw->gc, drw->scheme[invert ? ColFg : ColBg].pixel);
-	XFillRectangle(drw->dpy, drw->drawable, drw->gc, x, y, w, h);
+	/* Fill background via XCB */
+	col = (uint32_t) drw->scheme[invert ? ColFg : ColBg].pixel;
+	xcb_change_gc(drw->xc, drw->gc, XCB_GC_FOREGROUND, &col);
+	{
+		xcb_rectangle_t r = { (int16_t) x, (int16_t) y, (uint16_t) w,
+			(uint16_t) h };
+		xcb_poly_fill_rectangle(drw->xc, drw->drawable, drw->gc, 1, &r);
+	}
 	if (drw->cairo_surface)
 		cairo_surface_mark_dirty_rectangle(
 		    drw->cairo_surface, x, y, (int) w, (int) h);
@@ -360,7 +393,8 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 }
 
 void
-drw_map(Drw *drw, Window win, int x, int y, unsigned int w, unsigned int h)
+drw_map(
+    Drw *drw, xcb_window_t win, int x, int y, unsigned int w, unsigned int h)
 {
 	if (!drw)
 		return;
@@ -369,8 +403,10 @@ drw_map(Drw *drw, Window win, int x, int y, unsigned int w, unsigned int h)
 	if (drw->cairo_surface)
 		cairo_surface_flush(drw->cairo_surface);
 
-	XCopyArea(drw->dpy, drw->drawable, win, drw->gc, x, y, w, h, x, y);
-	xcb_flush(XGetXCBConnection(drw->dpy));
+	xcb_copy_area(drw->xc, drw->drawable, (xcb_drawable_t) win, drw->gc,
+	    (int16_t) x, (int16_t) y, (int16_t) x, (int16_t) y, (uint16_t) w,
+	    (uint16_t) h);
+	xcb_flush(drw->xc);
 }
 
 unsigned int
@@ -393,12 +429,38 @@ drw_fontset_getwidth_clamp(Drw *drw, const char *text, unsigned int n)
 Cur *
 drw_cur_create(Drw *drw, int shape)
 {
-	Cur *cur;
+	Cur                  *cur;
+	xcb_cursor_context_t *ctx;
 
 	if (!drw || !(cur = ecalloc(1, sizeof(Cur))))
 		return NULL;
 
-	cur->cursor = XCreateFontCursor(drw->dpy, shape);
+	/* Use xcb-cursor to load a cursor from the cursor font by glyph index */
+	if (xcb_cursor_context_new(drw->xc,
+	        xcb_setup_roots_iterator(xcb_get_setup(drw->xc)).data, &ctx) < 0) {
+		/* Fallback: create glyph cursor directly from cursor font */
+		xcb_font_t font = xcb_generate_id(drw->xc);
+		xcb_open_font(drw->xc, font, strlen("cursor"), "cursor");
+		cur->cursor = xcb_generate_id(drw->xc);
+		xcb_create_glyph_cursor(drw->xc, cur->cursor, font, font,
+		    (uint16_t) shape, (uint16_t) (shape + 1), 0, 0, 0, 65535, 65535,
+		    65535);
+		xcb_close_font(drw->xc, font);
+		return cur;
+	}
+
+	xcb_cursor_context_free(ctx);
+
+	/* Create glyph cursor directly — reliable and matches Xlib behaviour */
+	{
+		xcb_font_t font = xcb_generate_id(drw->xc);
+		xcb_open_font(drw->xc, font, strlen("cursor"), "cursor");
+		cur->cursor = xcb_generate_id(drw->xc);
+		xcb_create_glyph_cursor(drw->xc, cur->cursor, font, font,
+		    (uint16_t) shape, (uint16_t) (shape + 1), 0, 0, 0, 65535, 65535,
+		    65535);
+		xcb_close_font(drw->xc, font);
+	}
 
 	return cur;
 }
@@ -409,7 +471,7 @@ drw_cur_free(Drw *drw, Cur *cursor)
 	if (!cursor)
 		return;
 
-	XFreeCursor(drw->dpy, cursor->cursor);
+	xcb_free_cursor(drw->xc, cursor->cursor);
 	free(cursor);
 }
 
@@ -417,16 +479,12 @@ void
 drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
     cairo_surface_t *surface)
 {
-	int                src_w, src_h, stride;
-	unsigned char     *data;
-	Pixmap             tmp_pm;
-	XImage            *img;
-	Picture            src_pic, dst_pic;
-	XRenderPictFormat *argb_fmt, *dst_fmt;
-	Visual            *argb_vis = NULL;
-	XVisualInfo        vi_tmpl;
-	XVisualInfo       *vi_list;
-	int                vi_count, i;
+	int                     src_w, src_h, stride;
+	unsigned char          *data;
+	xcb_pixmap_t            tmp_pm;
+	xcb_render_picture_t    src_pic, dst_pic;
+	xcb_render_pictformat_t argb_fmt, dst_fmt;
+	xcb_visualid_t          argb_vis = XCB_NONE;
 
 	if (!drw || !surface)
 		return;
@@ -448,80 +506,110 @@ drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 	if (!data || src_w <= 0 || src_h <= 0)
 		return;
 
-	/*
-	 * Upload ARGB32 icon pixels into a temporary 32-bit depth pixmap and
-	 * alpha-composite it into drw->drawable using XRenderComposite.
-	 * Everything goes through the Xlib connection (dpy) — no separate XCB
-	 * connection, no cross-connection ordering hazard.
-	 */
-	argb_fmt = XRenderFindStandardFormat(drw->dpy, PictStandardARGB32);
-	if (!argb_fmt) {
-		awm_warn("drw_pic: XRender ARGB32 format not available");
-		return;
+	/* Look up the ARGB32 picture format */
+	{
+		xcb_render_query_pict_formats_cookie_t ck =
+		    xcb_render_query_pict_formats(drw->xc);
+		xcb_render_query_pict_formats_reply_t *reply =
+		    xcb_render_query_pict_formats_reply(drw->xc, ck, NULL);
+		if (!reply) {
+			awm_warn("drw_pic: xcb_render_query_pict_formats failed");
+			return;
+		}
+		xcb_render_pictforminfo_t argb_want = { 0 };
+		argb_want.type                      = XCB_RENDER_PICT_TYPE_DIRECT;
+		argb_want.depth                     = 32;
+		argb_want.direct.red_shift          = 16;
+		argb_want.direct.red_mask           = 0xff;
+		argb_want.direct.green_shift        = 8;
+		argb_want.direct.green_mask         = 0xff;
+		argb_want.direct.blue_shift         = 0;
+		argb_want.direct.blue_mask          = 0xff;
+		argb_want.direct.alpha_shift        = 24;
+		argb_want.direct.alpha_mask         = 0xff;
+		xcb_render_pictforminfo_t *argb_fi = xcb_render_util_find_format(reply,
+		    XCB_PICT_FORMAT_TYPE | XCB_PICT_FORMAT_DEPTH |
+		        XCB_PICT_FORMAT_RED | XCB_PICT_FORMAT_RED_MASK |
+		        XCB_PICT_FORMAT_GREEN | XCB_PICT_FORMAT_GREEN_MASK |
+		        XCB_PICT_FORMAT_BLUE | XCB_PICT_FORMAT_BLUE_MASK |
+		        XCB_PICT_FORMAT_ALPHA | XCB_PICT_FORMAT_ALPHA_MASK,
+		    &argb_want, 0);
+		if (!argb_fi) {
+			awm_warn("drw_pic: ARGB32 picture format not found");
+			free(reply);
+			return;
+		}
+		argb_fmt = argb_fi->id;
+
+		/* Find a 32-bit TrueColor visual for the temp pixmap */
+		xcb_depth_iterator_t  di;
+		xcb_screen_iterator_t si =
+		    xcb_setup_roots_iterator(xcb_get_setup(drw->xc));
+		for (int i = 0; i < drw->screen; i++)
+			xcb_screen_next(&si);
+		di = xcb_screen_allowed_depths_iterator(si.data);
+		for (; di.rem && argb_vis == XCB_NONE; xcb_depth_next(&di)) {
+			if (di.data->depth != 32)
+				continue;
+			xcb_visualtype_iterator_t vi = xcb_depth_visuals_iterator(di.data);
+			if (vi.rem)
+				argb_vis = vi.data->visual_id;
+		}
+
+		/* Find the dst format matching the screen root visual */
+		xcb_render_pictvisual_t *dst_pv =
+		    xcb_render_util_find_visual_format(reply, si.data->root_visual);
+		dst_fmt = dst_pv ? dst_pv->format : argb_fmt;
+
+		free(reply);
 	}
 
-	/* Find a 32-bit TrueColor visual for the temp pixmap */
-	vi_tmpl.screen = drw->screen;
-	vi_tmpl.depth  = 32;
-	vi_tmpl.class  = TrueColor; /* c89-safe: 'class' is the field name */
-	vi_list        = XGetVisualInfo(drw->dpy,
-	           VisualScreenMask | VisualDepthMask | VisualClassMask, &vi_tmpl,
-	           &vi_count);
-	if (vi_list) {
-		for (i = 0; i < vi_count; i++) {
-			if (vi_list[i].depth == 32) {
-				argb_vis = vi_list[i].visual;
-				break;
-			}
-		}
-		XFree(vi_list);
-	}
-	if (!argb_vis) {
+	if (argb_vis == XCB_NONE) {
 		awm_warn("drw_pic: no 32-bit TrueColor visual, icon skipped");
 		return;
 	}
 
-	tmp_pm = XCreatePixmap(
-	    drw->dpy, drw->root, (unsigned) src_w, (unsigned) src_h, 32);
+	/* Create a temporary 32-bit pixmap and upload the ARGB pixel data */
+	tmp_pm = xcb_generate_id(drw->xc);
+	xcb_create_pixmap(
+	    drw->xc, 32, tmp_pm, drw->root, (uint16_t) src_w, (uint16_t) src_h);
 
-	img = XCreateImage(drw->dpy, argb_vis, 32, ZPixmap, 0, NULL,
-	    (unsigned) src_w, (unsigned) src_h, 32, stride);
-	if (!img) {
-		XFreePixmap(drw->dpy, tmp_pm);
-		return;
-	}
-	img->data = (char *) data; /* point at Cairo's buffer; we own it */
-
-	/* Create a matching GC for the 32-bit pixmap */
+	/* Need a GC matched to tmp_pm's depth (32-bit) — drw->gc is root-depth */
 	{
-		GC gc32 = XCreateGC(drw->dpy, tmp_pm, 0, NULL);
-		XPutImage(drw->dpy, tmp_pm, gc32, img, 0, 0, 0, 0, (unsigned) src_w,
-		    (unsigned) src_h);
-		XFreeGC(drw->dpy, gc32);
+		xcb_gcontext_t gc32 = xcb_generate_id(drw->xc);
+		xcb_create_gc(drw->xc, gc32, tmp_pm, 0, NULL);
+		xcb_put_image(drw->xc, XCB_IMAGE_FORMAT_Z_PIXMAP, tmp_pm, gc32,
+		    (uint16_t) src_w, (uint16_t) src_h, 0, 0, 0, 32,
+		    (uint32_t) (stride * src_h), data);
+		xcb_free_gc(drw->xc, gc32);
 	}
 
-	/* Detach data pointer so XDestroyImage won't free Cairo's buffer */
-	img->data = NULL;
-	XDestroyImage(img);
+	/* Create XRender pictures */
+	src_pic = xcb_generate_id(drw->xc);
+	xcb_render_create_picture(drw->xc, src_pic, tmp_pm, argb_fmt, 0, NULL);
 
-	src_pic = XRenderCreatePicture(drw->dpy, tmp_pm, argb_fmt, 0, NULL);
+	dst_pic = xcb_generate_id(drw->xc);
+	xcb_render_create_picture(
+	    drw->xc, dst_pic, drw->drawable, dst_fmt, 0, NULL);
 
-	dst_fmt = XRenderFindVisualFormat(
-	    drw->dpy, DefaultVisual(drw->dpy, drw->screen));
-	dst_pic = XRenderCreatePicture(drw->dpy, drw->drawable, dst_fmt, 0, NULL);
-
+	/* Scale if needed */
 	if ((unsigned) src_w != w || (unsigned) src_h != h) {
-		XTransform xform = { { { XDoubleToFixed((double) src_w / w), 0, 0 },
-			{ 0, XDoubleToFixed((double) src_h / h), 0 },
-			{ 0, 0, XDoubleToFixed(1.0) } } };
-		XRenderSetPictureTransform(drw->dpy, src_pic, &xform);
-		XRenderSetPictureFilter(drw->dpy, src_pic, FilterBilinear, NULL, 0);
+		xcb_render_fixed_t sx =
+		    (xcb_render_fixed_t) ((double) src_w / w * 65536.0 + 0.5);
+		xcb_render_fixed_t sy =
+		    (xcb_render_fixed_t) ((double) src_h / h * 65536.0 + 0.5);
+		xcb_render_fixed_t     one   = (xcb_render_fixed_t) 65536;
+		xcb_render_transform_t xform = { sx, 0, 0, 0, sy, 0, 0, 0, one };
+		xcb_render_set_picture_transform(drw->xc, src_pic, xform);
+		xcb_render_set_picture_filter(
+		    drw->xc, src_pic, strlen("bilinear"), "bilinear", 0, NULL);
 	}
 
-	XRenderComposite(
-	    drw->dpy, PictOpOver, src_pic, None, dst_pic, 0, 0, 0, 0, x, y, w, h);
+	xcb_render_composite(drw->xc, XCB_RENDER_PICT_OP_OVER, src_pic, XCB_NONE,
+	    dst_pic, 0, 0, 0, 0, (int16_t) x, (int16_t) y, (uint16_t) w,
+	    (uint16_t) h);
 
-	XRenderFreePicture(drw->dpy, src_pic);
-	XRenderFreePicture(drw->dpy, dst_pic);
-	XFreePixmap(drw->dpy, tmp_pm);
+	xcb_render_free_picture(drw->xc, src_pic);
+	xcb_render_free_picture(drw->xc, dst_pic);
+	xcb_free_pixmap(drw->xc, tmp_pm);
 }

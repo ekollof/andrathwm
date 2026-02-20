@@ -328,19 +328,19 @@ updatesystray(void)
 }
 
 Client *
-wintosystrayicon(Window w)
+wintosystrayicon(xcb_window_t w)
 {
 	Client *i = NULL;
 
 	if (!showsystray || !w)
 		return i;
-	for (i = systray->icons; i && i->win != w; i = i->next)
+	for (i = systray->icons; i && (xcb_window_t) i->win != w; i = i->next)
 		;
 	return i;
 }
 
 void
-addsniiconsystray(Window w, int width, int height)
+addsniiconsystray(xcb_window_t w, int width, int height)
 {
 	Client *i;
 
@@ -355,7 +355,7 @@ addsniiconsystray(Window w, int width, int height)
 	if (!(i = (Client *) calloc(1, sizeof(Client))))
 		die("fatal: could not malloc() %u bytes\n", sizeof(Client));
 
-	i->win         = w;
+	i->win         = (Window) w;
 	i->mon         = selmon;
 	i->next        = systray->icons;
 	systray->icons = i;
@@ -378,7 +378,7 @@ addsniiconsystray(Window w, int width, int height)
 }
 
 void
-removesniiconsystray(Window w)
+removesniiconsystray(xcb_window_t w)
 {
 	Client *i;
 

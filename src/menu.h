@@ -35,7 +35,7 @@ typedef void (*MenuCallback)(int item_id, void *data);
 /* Menu structure */
 typedef struct Menu {
 	xcb_connection_t *xc;
-	Window            win;
+	xcb_window_t      win;
 	Drw              *drw;
 	Clr             **scheme;
 
@@ -58,13 +58,14 @@ typedef struct Menu {
 } Menu;
 
 /* Menu API */
-Menu *menu_create(xcb_connection_t *xc, Window root, Drw *drw, Clr **scheme);
-void  menu_free(Menu *menu);
-void  menu_set_items(Menu *menu, MenuItem *items);
-void  menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
-     Time event_time);
-void  menu_hide(Menu *menu);
-int   menu_handle_event(Menu *menu, xcb_generic_event_t *ev);
+Menu *menu_create(
+    xcb_connection_t *xc, xcb_window_t root, Drw *drw, Clr **scheme);
+void menu_free(Menu *menu);
+void menu_set_items(Menu *menu, MenuItem *items);
+void menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
+    xcb_timestamp_t event_time);
+void menu_hide(Menu *menu);
+int  menu_handle_event(Menu *menu, xcb_generic_event_t *ev);
 
 /* Menu item helpers */
 MenuItem *menu_item_create(int id, const char *label, int enabled);

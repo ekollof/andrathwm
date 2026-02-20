@@ -192,7 +192,7 @@ menu_render(Menu *menu)
 
 /* Create menu */
 Menu *
-menu_create(xcb_connection_t *xc, Window root, Drw *drw, Clr **scheme)
+menu_create(xcb_connection_t *xc, xcb_window_t root, Drw *drw, Clr **scheme)
 {
 	Menu          *menu;
 	uint32_t       mask;
@@ -410,7 +410,7 @@ menu_get_monitor_geometry(xcb_connection_t *xc, int x, int y, int *mon_x,
 /* Show menu at coordinates */
 void
 menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
-    Time event_time)
+    xcb_timestamp_t event_time)
 {
 	int mon_x, mon_y, mon_w, mon_h;
 

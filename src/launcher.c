@@ -835,7 +835,7 @@ launcher_append_items(Launcher *launcher, LauncherItem *new_items)
 }
 
 Launcher *
-launcher_create(xcb_connection_t *xc, Window root, Clr **scheme,
+launcher_create(xcb_connection_t *xc, xcb_window_t root, Clr **scheme,
     const char **fonts, size_t fontcount, const char *term)
 {
 	Launcher *launcher;

@@ -33,8 +33,8 @@ xcb_screen_root_depth_sni(xcb_connection_t *conn, int scr_num)
 }
 
 /* Forward declaration for awm integration */
-extern void addsniiconsystray(Window w, int width, int height);
-extern void removesniiconsystray(Window w);
+extern void addsniiconsystray(xcb_window_t w, int width, int height);
+extern void removesniiconsystray(xcb_window_t w);
 /* Schedule a D-Bus reconnect from the awm main loop (defined in awm.c). */
 extern void sni_schedule_reconnect(void);
 
@@ -66,7 +66,7 @@ static xcb_connection_t *sni_cairo_xcb =
     NULL; /* dedicated XCB conn for cairo */
 static xcb_visualtype_t *sni_xcb_visual =
     NULL; /* default visual for cairo surfaces */
-static Window       sni_root   = 0;
+static xcb_window_t sni_root   = 0;
 static Drw         *sni_drw    = NULL;
 static Clr        **sni_scheme = NULL;
 static unsigned int sniconsize = 22; /* Set during sni_init() */
@@ -114,7 +114,7 @@ static void sni_fetch_item_properties(SNIItem *item);
 
 int
 sni_init(xcb_connection_t *xc_in, xcb_connection_t *cairo_xcb,
-    xcb_visualtype_t *xcb_visual, Window rootwin, Drw *drw, Clr **scheme,
+    xcb_visualtype_t *xcb_visual, xcb_window_t rootwin, Drw *drw, Clr **scheme,
     unsigned int icon_size)
 {
 	DBusError err;
@@ -266,7 +266,7 @@ sni_reconnect(void)
 	xcb_connection_t *xc_saved   = sni_xc;
 	xcb_connection_t *cairo_xcb  = sni_cairo_xcb;
 	xcb_visualtype_t *xcb_visual = sni_xcb_visual;
-	Window            root       = sni_root;
+	xcb_window_t      root       = sni_root;
 	Drw              *drw        = sni_drw;
 	Clr             **scheme     = sni_scheme;
 	unsigned int      sz         = sniconsize;
@@ -988,215 +988,14 @@ sni_free_icons(SNIIcon *icons, int count)
  * ============================================================================
  */
 
-/* Callback data for async icon loading (SNI-specific) */
-typedef struct {
-	SNIItem *item;
-	int      size;
-} SNIIconLoadData;
-
-/* Render an icon surface into the item's X window.
- * Called directly on the GLib main thread (from GIO async callbacks or
- * inline for pixmap icons), so no queue indirection is needed. */
-static void
-sni_icon_render(SNIItem *item, int icon_size, cairo_surface_t *icon_surface)
-{
-	cairo_t         *cr;
-	Pixmap           pixmap;
-	cairo_surface_t *pixmap_surface;
-
-	if (!item || !item->win || !sni_xc) {
-		awm_debug("SNI: Icon loaded but item/window invalid");
-		if (icon_surface)
-			cairo_surface_destroy(icon_surface);
-		return;
-	}
-
-	if (!icon_surface) {
-		awm_error("SNI: Failed to load icon for %s", item->service);
-		return;
-	}
-
-	awm_debug("SNI: Rendering icon for %s", item->service);
-
-	/* Render the icon to window.
-	 * Use a dedicated xcb_connection_t (sni_cairo_xcb) for all cairo/pixmap
-	 * operations so that libcairo's raw XCB requests never touch the Xlib
-	 * sequence counter on the primary WM connection (sni_xc). */
-	if (!sni_cairo_xcb || !sni_xcb_visual) {
-		awm_error("SNI: No XCB cairo connection for %s", item->service);
-		cairo_surface_destroy(icon_surface);
-		return;
-	}
-
-	{
-		xcb_pixmap_t xcb_pm = xcb_generate_id(sni_cairo_xcb);
-		uint8_t      depth  = (uint8_t) xcb_screen_root_depth_sni(sni_xc, screen);
-		xcb_create_pixmap(sni_cairo_xcb, depth, xcb_pm,
-		    (xcb_drawable_t) item->win, (uint16_t) icon_size,
-		    (uint16_t) icon_size);
-		pixmap = (Pixmap) xcb_pm;
-	}
-
-	pixmap_surface = cairo_xcb_surface_create(sni_cairo_xcb,
-	    (xcb_drawable_t) pixmap, sni_xcb_visual, icon_size, icon_size);
-
-	cr = cairo_create(pixmap_surface);
-	/* Fill with bar background colour — the pixmap is 24-bit (no alpha
-	 * channel) so a transparent clear would just produce opaque black. */
-	if (sni_scheme) {
-		Clr bg = sni_scheme[0][ColBg]; /* sni_scheme[SchemeNorm][ColBg] */
-		cairo_set_source_rgb(
-		    cr, bg.r / 65535.0, bg.g / 65535.0, bg.b / 65535.0);
-	} else {
-		cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
-	}
-	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
-	cairo_paint(cr);
-
-	/* Draw icon */
-	cairo_set_source_surface(cr, icon_surface, 0, 0);
-	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-	cairo_paint(cr);
-
-	cairo_destroy(cr);
-	cairo_surface_destroy(icon_surface);
-
-	/* Flush cairo's xcb commands before handing the pixmap to Xlib */
-	cairo_surface_flush(pixmap_surface);
-	cairo_surface_destroy(pixmap_surface);
-
-	/* Set as window background entirely over sni_cairo_xcb so that all
-	 * pixmap writes and the background-set request travel on the same
-	 * connection.  Using Xlib's XSetWindowBackgroundPixmap on a different
-	 * connection (sni_xc) would create a cross-connection ordering hazard:
-	 * the X server could process the background-set before the pixmap fill
-	 * commands, producing wrong/blank icons. */
-	{
-		const uint32_t xcb_pm = (uint32_t) pixmap;
-		xcb_change_window_attributes(sni_cairo_xcb, (xcb_window_t) item->win,
-		    XCB_CW_BACK_PIXMAP, &xcb_pm);
-		xcb_clear_area(sni_cairo_xcb, 0, (xcb_window_t) item->win, 0, 0, 0, 0);
-		xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
-	}
-
-	awm_debug("SNI: Icon rendered for %s", item->service);
-}
-
-/* Callback invoked by icon_load_async() on the GLib main loop once the
- * GIO async pipeline (file read + pixbuf decode) completes.  We are
- * already on the main thread, so render directly. */
-static void
-sni_icon_loaded_cb(cairo_surface_t *icon_surface, void *user_data)
-{
-	SNIIconLoadData *data = (SNIIconLoadData *) user_data;
-
-	if (!data)
-		return;
-
-	sni_icon_render(data->item, data->size, icon_surface);
-	free(data);
-}
-
-/* Start async icon loading for item.  For pixmap icons the surface is
- * built synchronously (pure CPU, no I/O) and rendered immediately.
- * For name/path icons the GIO async pipeline is launched; the callback
- * lands back on the main loop via the GLib main context. */
-static void
-sni_queue_icon_load(SNIItem *item)
-{
-	const char *icon_path = NULL;
-
-	if (!item)
-		return;
-
-	awm_debug("SNI: Starting icon load for %s", item->service);
-
-	/* If item has pixmap data, convert and render directly (CPU only, no I/O)
-	 */
-	if (item->icon_pixmap && item->icon_pixmap_count > 0) {
-		cairo_surface_t *icon_surface;
-
-		awm_debug("SNI: Using IconPixmap for %s (%d icons)", item->service,
-		    item->icon_pixmap_count);
-
-		/* SNIIcon and Icon are identical structures, safe to cast */
-		icon_surface = icon_pixmap_to_surface(
-		    (Icon *) item->icon_pixmap, item->icon_pixmap_count, sniconsize);
-		if (!icon_surface) {
-			awm_error("SNI: Failed to convert pixmap to surface for %s",
-			    item->service);
-			return;
-		}
-
-		sni_icon_render(item, sniconsize, icon_surface);
-		return;
-	}
-
-	/* Resolve icon name/path */
-	if (item->icon_name) {
-		if (item->icon_name[0] == '/') {
-			/* Absolute path — load synchronously via icon_load() so that
-			 * SVG files are handled correctly (icon_load_async uses
-			 * gdk_pixbuf which does not render SVGs). */
-			cairo_surface_t *abs_surface =
-			    icon_load(item->icon_name, sniconsize);
-			if (abs_surface) {
-				/* sni_icon_render() consumes the reference — do not
-				 * cairo_surface_destroy here, that would double-free
-				 * the surface still held by the icon cache and corrupt
-				 * the cache entry for this path. */
-				sni_icon_render(item, sniconsize, abs_surface);
-			} else {
-				awm_debug("SNI: Failed to load absolute icon %s for %s",
-				    item->icon_name, item->service);
-			}
-			return;
-		} else {
-			/* Theme name — look up synchronously (fast index lookup, no I/O)
-			 */
-			GtkIconTheme *icon_theme = gtk_icon_theme_get_default();
-			GtkIconInfo  *icon_info  = gtk_icon_theme_lookup_icon(icon_theme,
-			      item->icon_name, sniconsize,
-			      GTK_ICON_LOOKUP_USE_BUILTIN |
-			          GTK_ICON_LOOKUP_GENERIC_FALLBACK);
-
-			if (icon_info) {
-				icon_path = gtk_icon_info_get_filename(icon_info);
-				if (icon_path) {
-					char *path_copy = strdup(icon_path);
-					g_object_unref(icon_info);
-					if (path_copy) {
-						SNIIconLoadData *data =
-						    malloc(sizeof(SNIIconLoadData));
-						if (data) {
-							data->item = item;
-							data->size = sniconsize;
-							icon_load_async(path_copy, sniconsize,
-							    sni_icon_loaded_cb, data);
-						}
-						free(path_copy);
-					}
-					return;
-				}
-				g_object_unref(icon_info);
-			}
-		}
-	}
-
-	awm_debug(
-	    "SNI: No icon path found for %s, keeping placeholder", item->service);
-}
-
-/* ============================================================================
- * Icon Rendering - Basic Implementation (to be completed)
- * ============================================================================
- */
-
+/* Render a placeholder icon into the item's X window while the real
+ * icon loads asynchronously, then hand off to icon.c for the real render.
+ * Called from sni_properties_received() once properties have been fetched. */
 void
 sni_render_item(SNIItem *item)
 {
 	cairo_t         *cr;
-	Pixmap           pixmap;
+	xcb_pixmap_t     pixmap;
 	cairo_surface_t *pixmap_surface;
 
 	if (!item || !sni_xc)
@@ -1222,15 +1021,14 @@ sni_render_item(SNIItem *item)
 		    (xcb_window_t) sni_root, 0, 0, (uint16_t) sniconsize,
 		    (uint16_t) sniconsize, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
 		    XCB_COPY_FROM_PARENT, mask, vals);
-		item->win = (Window) win;
+		item->win = win;
 
 		if (!item->win) {
 			awm_error("SNI: Failed to create window for %s", item->service);
 			return;
 		}
 
-		awm_debug(
-		    "SNI: Created window 0x%lx for %s", item->win, item->service);
+		awm_debug("SNI: Created window 0x%x for %s", item->win, item->service);
 
 		item->w = sniconsize;
 		item->h = sniconsize;
@@ -1242,8 +1040,8 @@ sni_render_item(SNIItem *item)
 	}
 
 	/* Render placeholder immediately (non-blocking).
-	 * Use sni_cairo_xcb for all cairo operations — see comment in
-	 * sni_icon_render() for rationale. */
+	 * Use sni_cairo_xcb for all cairo operations — see comment below
+	 * for rationale. */
 	if (!sni_cairo_xcb || !sni_xcb_visual) {
 		awm_error(
 		    "SNI: No XCB cairo connection for placeholder %s", item->service);
@@ -1252,11 +1050,11 @@ sni_render_item(SNIItem *item)
 
 	{
 		xcb_pixmap_t xcb_pm = xcb_generate_id(sni_cairo_xcb);
-		uint8_t      depth  = (uint8_t) xcb_screen_root_depth_sni(sni_xc, screen);
+		uint8_t depth = (uint8_t) xcb_screen_root_depth_sni(sni_xc, screen);
 		xcb_create_pixmap(sni_cairo_xcb, depth, xcb_pm,
 		    (xcb_drawable_t) item->win, (uint16_t) sniconsize,
 		    (uint16_t) sniconsize);
-		pixmap = (Pixmap) xcb_pm;
+		pixmap = xcb_pm;
 	}
 
 	pixmap_surface =
@@ -1266,16 +1064,15 @@ sni_render_item(SNIItem *item)
 	if (cairo_surface_status(pixmap_surface) != CAIRO_STATUS_SUCCESS) {
 		awm_error(
 		    "SNI: Failed to create pixmap surface for %s", item->service);
-		xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
+		xcb_free_pixmap(sni_cairo_xcb, pixmap);
 		return;
 	}
 
 	cr = cairo_create(pixmap_surface);
 
-	/* Fill with bar background colour as base — alpha is discarded on a
-	 * 24-bit pixmap so a semi-transparent paint would become opaque black. */
+	/* Fill with bar background colour as base */
 	if (sni_scheme) {
-		Clr bg = sni_scheme[0][ColBg]; /* sni_scheme[SchemeNorm][ColBg] */
+		Clr bg = sni_scheme[0][ColBg];
 		cairo_set_source_rgb(
 		    cr, bg.r / 65535.0, bg.g / 65535.0, bg.b / 65535.0);
 	} else {
@@ -1295,20 +1092,19 @@ sni_render_item(SNIItem *item)
 	cairo_surface_flush(pixmap_surface);
 	cairo_surface_destroy(pixmap_surface);
 
-	/* Same cross-connection fix as sni_icon_render(): keep all pixmap
-	 * lifecycle operations on sni_cairo_xcb to avoid ordering hazards. */
+	/* Use sni_cairo_xcb for pixmap lifecycle to avoid ordering hazards with
+	 * the primary WM connection's Xlib sequence counter. */
 	{
 		const uint32_t xcb_pm = (uint32_t) pixmap;
 		xcb_change_window_attributes(sni_cairo_xcb, (xcb_window_t) item->win,
 		    XCB_CW_BACK_PIXMAP, &xcb_pm);
 		xcb_clear_area(sni_cairo_xcb, 0, (xcb_window_t) item->win, 0, 0, 0, 0);
-		xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
+		xcb_free_pixmap(sni_cairo_xcb, pixmap);
 	}
 
 	awm_debug("SNI: Placeholder rendered for %s", item->service);
-
-	/* Queue actual icon loading for next event loop iteration */
-	sni_queue_icon_load(item);
+	/* Actual icon will be applied asynchronously by the icon loading system.
+	 */
 }
 
 void
@@ -1356,7 +1152,7 @@ sni_free_menu(SNIMenuItem *menu)
 
 /* Find SNI item by window ID */
 SNIItem *
-sni_find_item_by_window(Window win)
+sni_find_item_by_window(xcb_window_t win)
 {
 	SNIItem *item;
 
@@ -1373,7 +1169,8 @@ sni_find_item_by_window(Window win)
 
 /* Handle click events on SNI icons */
 void
-sni_handle_click(Window win, int button, int x, int y, Time event_time)
+sni_handle_click(
+    xcb_window_t win, int button, int x, int y, xcb_timestamp_t event_time)
 {
 	SNIItem     *item;
 	DBusMessage *msg;
@@ -1399,13 +1196,13 @@ sni_handle_click(Window win, int button, int x, int y, Time event_time)
 
 	/* Determine which D-Bus method to call based on button */
 	switch (button) {
-	case Button1: /* Left click - Activate */
+	case 1: /* Button1 - Left click - Activate */
 		method = "Activate";
 		break;
-	case Button2: /* Middle click - SecondaryActivate */
+	case 2: /* Button2 - Middle click - SecondaryActivate */
 		method = "SecondaryActivate";
 		break;
-	case Button3: /* Right click - ContextMenu */
+	case 3: /* Button3 - Right click - ContextMenu */
 		method = "ContextMenu";
 		break;
 	default:
@@ -1416,7 +1213,7 @@ sni_handle_click(Window win, int button, int x, int y, Time event_time)
 
 	/* For right-click: show our DBusMenu if the app provides one,
 	 * otherwise send ContextMenu and let the app render its own menu. */
-	if (button == Button3) {
+	if (button == 3) {
 		if (item->menu_path) {
 			awm_debug("SNI: Showing DBusMenu for %s", item->service);
 			sni_show_menu(item, x, y, event_time);
@@ -1478,7 +1275,7 @@ sni_menu_item_activated(int item_id, SNIItem *item)
 
 	/* DBusMenu Event signature: (id: INT32, eventId: STRING,
 	 * data: VARIANT, timestamp: UINT32).  timestamp must be UINT32. */
-	timestamp = (dbus_uint32_t) CurrentTime;
+	timestamp = (dbus_uint32_t) XCB_CURRENT_TIME;
 
 	dbus_message_iter_init_append(msg, &iter);
 	dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &item_id);
@@ -1686,10 +1483,10 @@ sni_build_menu_from_layout(SNIItem *item, DBusMessageIter *iter, int depth)
 
 /* Context passed to the async GetLayout reply callback */
 typedef struct {
-	SNIItem *item;
-	int      x;
-	int      y;
-	Time     event_time;
+	SNIItem        *item;
+	int             x;
+	int             y;
+	xcb_timestamp_t event_time;
 } SNIMenuContext;
 
 /* DBusPendingCall notify function for GetLayout reply */
@@ -1699,7 +1496,7 @@ sni_get_layout_notify(DBusPendingCall *pending, void *user_data)
 	SNIMenuContext *ctx = (SNIMenuContext *) user_data;
 	SNIItem        *item;
 	int             x, y;
-	Time            event_time;
+	xcb_timestamp_t event_time;
 	DBusMessage    *reply;
 	DBusMessageIter iter, struct_iter;
 	MenuItem       *menu_items;
@@ -1779,7 +1576,7 @@ done:
 
 /* Show DBusMenu for an item — fully async, does not block the WM */
 void
-sni_show_menu(SNIItem *item, int x, int y, Time event_time)
+sni_show_menu(SNIItem *item, int x, int y, xcb_timestamp_t event_time)
 {
 	DBusMessage     *msg;
 	DBusPendingCall *pending;

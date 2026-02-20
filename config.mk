@@ -28,8 +28,8 @@ SNILIBS = $(shell pkg-config --libs dbus-1 cairo gtk+-3.0 librsvg-2.0)
 SNIFLAGS = -DSTATUSNOTIFIER
 
 # XCB utility libraries
-XCBLIBS  = $(shell pkg-config --libs xcb-icccm xcb-randr xcb-keysyms xcb-xinerama) -lxkbcommon
-XCBINC   = $(shell pkg-config --cflags xcb-icccm xcb-randr xcb-keysyms xcb-xinerama)
+XCBLIBS  = $(shell pkg-config --libs xcb-icccm xcb-randr xcb-keysyms xcb-xinerama xcb-cursor xcb-renderutil) -lxkbcommon
+XCBINC   = $(shell pkg-config --cflags xcb-icccm xcb-randr xcb-keysyms xcb-xinerama xcb-cursor xcb-renderutil)
 
 # Built-in XRender compositor, comment if you don't want it
 COMPOSITORLIBS  = -lXcomposite -lXdamage -lXrender -lXfixes -lXext -lGL -lEGL -l:libX11-xcb.so.1 -lxcb -lxcb-render -lxcb-present -lxcb-composite -lxcb-damage -lxcb-xfixes -lxcb-shape -lxcb-render-util
