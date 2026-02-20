@@ -639,7 +639,10 @@ propertynotify(XEvent *e)
 			break;
 		case XA_WM_TRANSIENT_FOR:
 			if (!c->isfloating &&
-			    (XGetTransientForHint(dpy, c->win, &trans)) &&
+			    xcb_icccm_get_wm_transient_for_reply(XGetXCBConnection(dpy),
+			        xcb_icccm_get_wm_transient_for(
+			            XGetXCBConnection(dpy), c->win),
+			        (xcb_window_t *) (void *) &trans, NULL) &&
 			    (c->isfloating = (wintoclient(trans)) != NULL))
 				arrange(c->mon);
 			break;

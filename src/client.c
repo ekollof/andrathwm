@@ -754,7 +754,10 @@ manage(Window w, XWindowAttributes *wa)
 
 	updatetitle(c);
 	c->icon = getwmicon(w, 16);
-	if (XGetTransientForHint(dpy, w, &trans) && (t = wintoclient(trans))) {
+	if (xcb_icccm_get_wm_transient_for_reply(XGetXCBConnection(dpy),
+	        xcb_icccm_get_wm_transient_for(XGetXCBConnection(dpy), w),
+	        (xcb_window_t *) (void *) &trans, NULL) &&
+	    (t = wintoclient(trans))) {
 		c->mon  = t->mon;
 		c->tags = t->tags;
 	} else {

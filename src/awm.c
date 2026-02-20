@@ -417,7 +417,10 @@ scan(void)
 		int map_state = wr->map_state;
 		free(wr);
 		Window trans = None;
-		if (override || XGetTransientForHint(dpy, wins[i], &trans))
+		if (override ||
+		    xcb_icccm_get_wm_transient_for_reply(xc,
+		        xcb_icccm_get_wm_transient_for(xc, wins[i]),
+		        (xcb_window_t *) (void *) &trans, NULL))
 			continue;
 		if (map_state == IsViewable || getstate(wins[i]) == IconicState) {
 			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
@@ -446,7 +449,9 @@ scan(void)
 		int map_state = wr->map_state;
 		free(wr);
 		Window trans = None;
-		if (XGetTransientForHint(dpy, wins[i], &trans) &&
+		if (xcb_icccm_get_wm_transient_for_reply(xc,
+		        xcb_icccm_get_wm_transient_for(xc, wins[i]),
+		        (xcb_window_t *) (void *) &trans, NULL) &&
 		    (map_state == IsViewable || getstate(wins[i]) == IconicState)) {
 			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
 			xcb_get_geometry_reply_t *gr =
