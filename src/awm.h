@@ -31,6 +31,7 @@
 #include <unistd.h>
 #ifdef XINERAMA
 #include <X11/extensions/Xinerama.h>
+#include <xcb/xinerama.h>
 #endif /* XINERAMA */
 #ifdef XRANDR
 #include <X11/extensions/Xrandr.h>

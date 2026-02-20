@@ -12,7 +12,8 @@
 
 #ifdef XINERAMA
 static int
-isuniquegeom(XineramaScreenInfo *unique, size_t n, XineramaScreenInfo *info)
+isuniquegeom(xcb_xinerama_screen_info_t *unique, size_t n,
+    xcb_xinerama_screen_info_t *info)
 {
 	while (n--)
 		if (unique[n].x_org == info->x_org && unique[n].y_org == info->y_org &&
@@ -103,8 +104,8 @@ createmon(void)
 	/* find the first tag that isn't in use */
 	for (i = 0; i < LENGTH(tags); i++) {
 		for (tm = mons; tm && !(tm->tagset[tm->seltags] & (1 << i));
-		    tm  = tm->next)
-            ;
+		     tm = tm->next)
+			;
 		if (!tm)
 			break;
 	}
@@ -313,8 +314,8 @@ monocle(Monitor *m)
 	if (n > 0) /* override layout symbol */
 		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
 	for (c = m->cl->stack; c && (!ISVISIBLE(c, m) || c->isfloating);
-	    c  = c->snext)
-        ;
+	     c = c->snext)
+		;
 	if (c && !c->isfloating) {
 		/* Use resizeclient() directly, bypassing applysizehints().
 		 * resize() skips the XConfigureWindow call when the stored
@@ -418,7 +419,7 @@ tile(Monitor *m)
 	Client      *c;
 
 	for (n = 0, c = nexttiled(m->cl->clients, m); c;
-	    c = nexttiled(c->next, m), n++)
+	     c = nexttiled(c->next, m), n++)
 		;
 
 	if (n == 0)
@@ -430,8 +431,8 @@ tile(Monitor *m)
 		else
 			mw = m->ww - m->pertag->gappx[m->pertag->curtag];
 		for (i = 0, my = ty = m->pertag->gappx[m->pertag->curtag],
-		    c    = nexttiled(m->cl->clients, m);
-		    c; c = nexttiled(c->next, m), i++)
+		    c     = nexttiled(m->cl->clients, m);
+		     c; c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i) -
 				    m->pertag->gappx[m->pertag->curtag];
@@ -460,7 +461,7 @@ tile(Monitor *m)
 		else
 			mw = m->ww;
 		for (i = my = ty = 0, c = nexttiled(m->cl->clients, m); c;
-		    c = nexttiled(c->next, m), i++)
+		     c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i);
 				if (n == 1)
@@ -697,24 +698,37 @@ updategeom(void)
 xinerama_fallback:
 #endif /* XRANDR */
 #ifdef XINERAMA
-	if (XineramaIsActive(dpy)) {
-		int                 i, j, n, nn;
-		Client             *c;
-		Monitor            *m;
-		XineramaScreenInfo *info   = XineramaQueryScreens(dpy, &nn);
-		XineramaScreenInfo *unique = NULL;
+{
+	xcb_connection_t               *xc = XGetXCBConnection(dpy);
+	xcb_xinerama_is_active_reply_t *ia =
+	    xcb_xinerama_is_active_reply(xc, xcb_xinerama_is_active(xc), NULL);
+	int xin_active = ia && ia->state;
+	free(ia);
+	if (xin_active) {
+		int                                 i, j, n, nn;
+		Client                             *c;
+		Monitor                            *m;
+		xcb_xinerama_query_screens_reply_t *qi =
+		    xcb_xinerama_query_screens_reply(
+		        xc, xcb_xinerama_query_screens(xc), NULL);
+		xcb_xinerama_screen_info_t *info =
+		    xcb_xinerama_query_screens_screen_info(qi);
+		nn = xcb_xinerama_query_screens_screen_info_length(qi);
+		xcb_xinerama_screen_info_t *unique = NULL;
 
-		if (!info)
+		if (!qi || !info) {
+			free(qi);
 			goto default_monitor;
-
+		}
 		for (n = 0, m = mons; m; m = m->next, n++)
 			;
 		/* only consider unique geometries as separate screens */
-		unique = ecalloc(nn, sizeof(XineramaScreenInfo));
+		unique = ecalloc((size_t) nn, sizeof(xcb_xinerama_screen_info_t));
 		for (i = 0, j = 0; i < nn; i++)
 			if (isuniquegeom(unique, j, &info[i]))
-				memcpy(&unique[j++], &info[i], sizeof(XineramaScreenInfo));
-		XFree(info);
+				memcpy(&unique[j++], &info[i],
+				    sizeof(xcb_xinerama_screen_info_t));
+		free(qi); /* frees info array too */
 		nn = j;
 
 		/* new monitors if nn > n */
@@ -745,29 +759,32 @@ xinerama_fallback:
 			if (m == selmon)
 				selmon = mons;
 			for (c = m->cl->clients; c; c = c->next) {
-				dirty = True;
+				dirty = 1;
 				if (c->mon == m)
 					c->mon = selmon;
 			}
 			cleanupmon(m);
 		}
 		free(unique);
-	} else
-	default_monitor:
-#endif /* XINERAMA */
-	{  /* default monitor setup */
-		if (!mons)
-			mons = createmon();
-		if (mons->mw != sw || mons->mh != sh) {
-			dirty    = 1;
-			mons->mw = mons->ww = sw;
-			mons->mh = mons->wh = sh;
-			updatebarpos(mons);
-		}
+		goto geom_done;
 	}
-	geom_done:
-		if (dirty)
-			selmon = wintomon(root);
+default_monitor:;
+}
+#else
+default_monitor:
+#endif /* XINERAMA */
+	/* default monitor setup */
+	if (!mons)
+		mons = createmon();
+	if (mons->mw != sw || mons->mh != sh) {
+		dirty    = 1;
+		mons->mw = mons->ww = sw;
+		mons->mh = mons->wh = sh;
+		updatebarpos(mons);
+	}
+geom_done:
+	if (dirty)
+		selmon = wintomon(root);
 	return dirty;
 }
 
@@ -802,6 +819,7 @@ systraytomon(Monitor *m)
 {
 	Monitor *t;
 	int      i, n;
+
 	if (!systraypinning) {
 		if (!m)
 			return selmon;
