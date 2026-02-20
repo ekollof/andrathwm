@@ -22,10 +22,29 @@ setcurrentdesktop(void)
 void
 setdesktopnames(void)
 {
-	XTextProperty text;
-	Xutf8TextListToTextProperty(
-	    dpy, (char **) tags, TAGSLENGTH, XUTF8StringStyle, &text);
-	XSetTextProperty(dpy, root, &text, netatom[NetDesktopNames]);
+	xcb_connection_t        *xc = XGetXCBConnection(dpy);
+	char                     buf[1024];
+	size_t                   off = 0;
+	int                      i;
+	xcb_intern_atom_cookie_t ck;
+	xcb_intern_atom_reply_t *r;
+	xcb_atom_t               utf8str;
+
+	/* Build NUL-separated blob of tag names for _NET_DESKTOP_NAMES */
+	for (i = 0; i < (int) TAGSLENGTH; i++) {
+		size_t len = strlen(tags[i]);
+		if (off + len + 1 > sizeof(buf))
+			break;
+		memcpy(buf + off, tags[i], len);
+		off += len;
+		buf[off++] = '\0';
+	}
+	ck      = xcb_intern_atom(xc, 0, 11, "UTF8_STRING");
+	r       = xcb_intern_atom_reply(xc, ck, NULL);
+	utf8str = r ? r->atom : XCB_ATOM_STRING;
+	free(r);
+	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
+	    netatom[NetDesktopNames], utf8str, 8, (uint32_t) off, buf);
 }
 
 int
