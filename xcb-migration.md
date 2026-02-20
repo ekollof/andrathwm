@@ -55,6 +55,7 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `5611caa` | `ewmh.c` `setdesktopnames()`: `Xutf8TextListToTextProperty`/`XSetTextProperty` → `xcb_change_property` with NUL-separated UTF-8 blob |
 | `a8ce948` | `client.c` `gettextprop()`: `XGetTextProperty`/`XmbTextPropertyToTextList`/`XFree` → `xcb_icccm_get_text_property` |
 | `032ee8a` | `compositor.c`: `XInternAtom` (4×) → `xcb_intern_atom`; `XSetSelectionOwner`/`XGetSelectionOwner` → xcb; `XQueryTree` → `xcb_query_tree`; `XGetGeometry` → `xcb_get_geometry`; `XQueryExtension` → `xcb_get_extension_data` |
+| `f349de2` | `compositor.c`: complete XCB migration — all XComposite/XDamage/XFixes/XRender/XShape calls replaced; `damage_ring[]` / `dirty_get_bbox` types changed to `xcb_rectangle_t`; `config.mk` COMPOSITORLIBS updated |
 
 ---
 
@@ -68,6 +69,12 @@ XCBINC  = $(shell pkg-config --cflags xcb-icccm xcb-randr xcb-keysyms)
 Both are added to `INCS` and `LIBS` respectively.  The linker flags in the build output
 confirm these are being picked up:
 `-lxcb-icccm -lxcb-randr -lxcb-keysyms`
+
+Compositor extension libs (added directly to `COMPOSITORLIBS` in `config.mk`):
+```
+-lxcb-composite -lxcb-damage -lxcb-xfixes -lxcb-shape -lxcb-render-util
+-lxcb-render -lxcb-present -l:libX11-xcb.so.1 -lxcb
+```
 
 New global in `src/awm.c` / declared `extern` in `src/awm.h`:
 ```c
@@ -145,8 +152,22 @@ These are permanently Xlib and should not be touched:
 
 ## Remaining migration candidates
 
-All migration candidates are complete.  The only remaining Xlib in core WM files is
-the permanent-keep list above.  Two items are explicitly documented below for clarity:
+All non-compositor migration candidates are complete.  `compositor.c` is also fully
+migrated as of `f349de2` — the only remaining Xlib there is the permanent-keep list.
+The only remaining Xlib in core WM files is the permanent-keep list above.
+
+### Compositor permanent Xlib keeps (`compositor.c`)
+
+| Site | Why kept |
+|------|----------|
+| `XESetWireToEvent` | Mesa DRI3 hook — must stay Xlib |
+| `XGetEventData` / `XFreeEventData` | Event loop not yet migrated |
+| `XCheckTypedEvent` in `comp_repaint_idle` | Event loop not yet migrated |
+| `XSetErrorHandler` / `XSync` in `xerror_push_ignore` / `xerror_pop` | Tied to Xlib error handler — permanent keep |
+| `XOpenDisplay` / `XCloseDisplay` for `comp.gl_dpy` | EGL display — permanent keep |
+| `XVisualIDFromVisual` | Bridge call to look up XCB visual format |
+
+Two items from the general keep list are also documented below for clarity:
 
 ### 1. `events.c:127` — `XSelectInput` at WM-already-running probe
 
