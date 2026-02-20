@@ -833,18 +833,18 @@ launcher_append_items(Launcher *launcher, LauncherItem *new_items)
 }
 
 Launcher *
-launcher_create(
-    Display *dpy, Window root, Drw *drw, Clr **scheme, const char *term)
+launcher_create(Display *dpy, Window root, Clr **scheme, const char **fonts,
+    size_t fontcount, const char *term)
 {
 	Launcher            *launcher;
 	XSetWindowAttributes wa;
 	char                *home;
 	char                 path[512];
 	int                  i;
+	int                  scr = DefaultScreen(dpy);
 
 	launcher            = ecalloc(1, sizeof(Launcher));
 	launcher->dpy       = dpy;
-	launcher->drw       = drw;
 	launcher->scheme    = scheme;
 	launcher->selected  = -1;
 	launcher->w         = LAUNCHER_MIN_WIDTH;
@@ -852,6 +852,17 @@ launcher_create(
 	launcher->input[0]  = '\0';
 	launcher->input_len = 0;
 	launcher->terminal  = (term && *term) ? term : "st";
+
+	/* Create the launcher's own drawing context.  This gives the launcher
+	 * its own pixmap and Cairo surface so drw_resize() never touches the
+	 * bar's drawable or Cairo surface. */
+	launcher->drw =
+	    drw_create(dpy, scr, root, (unsigned int) DisplayWidth(dpy, scr),
+	        (unsigned int) DisplayHeight(dpy, scr));
+	if (!launcher->drw)
+		die("launcher: drw_create failed");
+	if (!drw_fontset_create(launcher->drw, fonts, fontcount))
+		die("launcher: no fonts could be loaded");
 
 	/* Resolve history file path */
 	launcher_history_path(
@@ -934,6 +945,9 @@ launcher_free(Launcher *launcher)
 
 	if (launcher->win)
 		XDestroyWindow(launcher->dpy, launcher->win);
+
+	if (launcher->drw)
+		drw_free(launcher->drw);
 
 	if (launcher->filtered)
 		free(launcher->filtered);

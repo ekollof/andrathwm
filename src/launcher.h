@@ -10,6 +10,7 @@
 #include "drw.h"
 #include <X11/Xlib.h>
 #include <cairo/cairo.h>
+#include <stddef.h>
 
 #define LAUNCHER_ICON_SIZE 20
 
@@ -50,12 +51,12 @@ typedef struct {
 	const char  *terminal; /* Terminal emulator binary for Terminal=true */
 } Launcher;
 
-Launcher *launcher_create(
-    Display *dpy, Window root, Drw *drw, Clr **scheme, const char *term);
-void launcher_free(Launcher *launcher);
-void launcher_show(Launcher *launcher, int x, int y);
-void launcher_hide(Launcher *launcher);
-int  launcher_handle_event(Launcher *launcher, XEvent *ev);
-void launcher_launch_selected(Launcher *launcher);
+Launcher *launcher_create(Display *dpy, Window root, Clr **scheme,
+    const char **fonts, size_t fontcount, const char *term);
+void      launcher_free(Launcher *launcher);
+void      launcher_show(Launcher *launcher, int x, int y);
+void      launcher_hide(Launcher *launcher);
+int       launcher_handle_event(Launcher *launcher, XEvent *ev);
+void      launcher_launch_selected(Launcher *launcher);
 
 #endif /* LAUNCHER_H */

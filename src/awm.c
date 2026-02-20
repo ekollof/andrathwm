@@ -566,7 +566,8 @@ setup(void)
 		awm_warn("Failed to initialize StatusNotifier support");
 #endif
 	/* Initialize launcher */
-	launcher = launcher_create(dpy, root, drw, scheme, termcmd[0]);
+	launcher =
+	    launcher_create(dpy, root, scheme, fonts, LENGTH(fonts), termcmd[0]);
 #ifdef COMPOSITOR
 	if (compositor_init(g_main_context_default()) < 0)
 		awm_warn("compositor: init failed, running without compositing");
