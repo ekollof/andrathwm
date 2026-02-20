@@ -19,8 +19,8 @@ void updatecurrentdesktop(void);
 void updateworkarea(Monitor *m);
 
 /* ICCCM helpers */
-int sendevent(Window w, Atom proto, int mask, long d0, long d1, long d2,
-    long d3, long d4);
+int sendevent(xcb_window_t w, xcb_atom_t proto, int mask, long d0, long d1,
+    long d2, long d3, long d4);
 unsigned long getembedinfo(Client *c);
 
 #endif /* EWMH_H */

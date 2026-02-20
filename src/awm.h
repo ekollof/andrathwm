@@ -170,16 +170,16 @@ struct Client {
 	unsigned int tags;
 	int isfixed, iscentered, isfloating, isurgent, neverfocus, oldstate,
 	    isfullscreen;
-	int      ishidden;
-	int      issteam;
-	int      issni;
-	char     scratchkey;
-	double   opacity;           /* compositing opacity 0.0–1.0 */
-	int      bypass_compositor; /* _NET_WM_BYPASS_COMPOSITOR hint */
-	Client  *next;
-	Client  *snext;
-	Monitor *mon;
-	Window   win;
+	int          ishidden;
+	int          issteam;
+	int          issni;
+	char         scratchkey;
+	double       opacity;           /* compositing opacity 0.0–1.0 */
+	int          bypass_compositor; /* _NET_WM_BYPASS_COMPOSITOR hint */
+	Client      *next;
+	Client      *snext;
+	Monitor     *mon;
+	xcb_window_t win;
 };
 
 #ifdef COMPOSITOR
@@ -233,7 +233,7 @@ struct Monitor {
 	Client       *sel;
 	Client       *stack;
 	Monitor      *next;
-	Window        barwin;
+	xcb_window_t  barwin;
 	const Layout *lt[2];
 	Pertag       *pertag;
 };
@@ -257,7 +257,7 @@ struct Clientlist {
 
 typedef struct Systray Systray;
 struct Systray {
-	Window         win;
+	xcb_window_t   win;
 	Client        *icons;
 	xcb_visualid_t visual_id; /* 32-bit ARGB visual XID (0 = default) */
 	xcb_colormap_t colormap;  /* colormap matching visual_id */
@@ -265,7 +265,7 @@ struct Systray {
 
 /* extern globals — defined in awm.c */
 extern xcb_connection_t *xc;
-extern Window            root, wmcheckwin;
+extern xcb_window_t      root, wmcheckwin;
 extern int               screen;
 extern int               sw, sh;
 extern int               bh;
@@ -276,13 +276,14 @@ extern Cur              *cursor[CurLast];
 extern Monitor          *mons, *selmon;
 extern Clientlist       *cl;
 extern Systray          *systray;
-extern Atom              wmatom[WMLast], netatom[NetLast], xatom[XLast];
+extern xcb_atom_t        wmatom[WMLast], netatom[NetLast], xatom[XLast];
 extern char              stext[STATUS_TEXT_LEN];
 extern int               restart;
 extern int               barsdirty;
 extern unsigned int      numlockmask;
 extern int (*xerrorxlib)(Display *, XErrorEvent *);
-extern Time last_event_time; /* timestamp of the most recent user event */
+extern xcb_timestamp_t
+    last_event_time; /* timestamp of the most recent user event */
 extern xcb_key_symbols_t *keysyms;
 /* config-derived globals referenced by dbus.c / icon.c */
 extern const unsigned int sniconsize;

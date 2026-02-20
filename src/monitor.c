@@ -795,7 +795,7 @@ updatestatus(void)
 }
 
 Monitor *
-wintomon(Window w)
+wintomon(xcb_window_t w)
 {
 	int      x, y;
 	Client  *c;

@@ -95,8 +95,7 @@ buttonpress(xcb_generic_event_t *e)
 	} else if ((c = wintoclient(ev->event))) {
 		focus(c);
 		restack(selmon);
-		xcb_allow_events(xc, XCB_ALLOW_REPLAY_POINTER,
-		    XCB_CURRENT_TIME);
+		xcb_allow_events(xc, XCB_ALLOW_REPLAY_POINTER, XCB_CURRENT_TIME);
 		click = ClkClientWin;
 	}
 #ifdef STATUSNOTIFIER
@@ -161,8 +160,7 @@ clientmessage(xcb_generic_event_t *e)
 			c->next        = systray->icons;
 			systray->icons = c;
 			{
-				xcb_get_geometry_cookie_t ck =
-				    xcb_get_geometry(xc, c->win);
+				xcb_get_geometry_cookie_t ck = xcb_get_geometry(xc, c->win);
 				xcb_get_geometry_reply_t *gr =
 				    xcb_get_geometry_reply(xc, ck, NULL);
 				if (gr) {
@@ -183,16 +181,14 @@ clientmessage(xcb_generic_event_t *e)
 			c->tags = 1;
 			updatesizehints(c);
 			updatesystrayicongeom(c, c->w, c->h);
-			xcb_change_save_set(
-			    xc, XCB_SET_MODE_INSERT, c->win);
+			xcb_change_save_set(xc, XCB_SET_MODE_INSERT, c->win);
 			{
 				uint32_t mask = StructureNotifyMask | PropertyChangeMask |
 				    ResizeRedirectMask;
 				xcb_change_window_attributes(
 				    xc, c->win, XCB_CW_EVENT_MASK, &mask);
 			}
-			xcb_reparent_window(
-			    xc, c->win, systray->win, 0, 0);
+			xcb_reparent_window(xc, c->win, systray->win, 0, 0);
 			/* use bar background so icon blends with the bar */
 			{
 				uint32_t bg = clr_to_argb(&scheme[SchemeNorm][ColBg]);
@@ -202,7 +198,7 @@ clientmessage(xcb_generic_event_t *e)
 			/* Send XEMBED_EMBEDDED_NOTIFY to complete embedding per spec.
 			 * data1 = embedder window, data2 = protocol version */
 			sendevent(c->win, netatom[Xembed], StructureNotifyMask,
-			    CurrentTime, XEMBED_EMBEDDED_NOTIFY, 0, systray->win,
+			    XCB_CURRENT_TIME, XEMBED_EMBEDDED_NOTIFY, 0, systray->win,
 			    XEMBED_VERSION);
 			xflush();
 			resizebarwin(selmon);
@@ -234,8 +230,8 @@ clientmessage(xcb_generic_event_t *e)
 	} else if (cme->type == netatom[NetCloseWindow]) {
 		/* _NET_CLOSE_WINDOW client message */
 		if (!sendevent(c->win, wmatom[WMDelete], NoEventMask, wmatom[WMDelete],
-		        CurrentTime, 0, 0, 0)) {
-			
+		        XCB_CURRENT_TIME, 0, 0, 0)) {
+
 			xcb_grab_server(xc);
 			xcb_set_close_down_mode(xc, XCB_CLOSE_DOWN_DESTROY_ALL);
 			xcb_kill_client(xc, c->win);
@@ -359,8 +355,7 @@ configurerequest(xcb_generic_event_t *e)
 		if (ev->value_mask & XCB_CONFIG_WINDOW_STACK_MODE)
 			vals[n++] = (uint32_t) ev->stack_mode;
 		if (n > 0)
-			xcb_configure_window(
-			    xc, ev->window, ev->value_mask, vals);
+			xcb_configure_window(xc, ev->window, ev->value_mask, vals);
 	}
 	xflush();
 }
@@ -419,9 +414,8 @@ expose(xcb_generic_event_t *e)
  * the browser's internal widget hierarchy (typically 2–5 hops), so this is
  * cheap in practice. */
 static int
-iswindowdescendant(Window w, Window ancestor)
+iswindowdescendant(xcb_window_t w, xcb_window_t ancestor)
 {
-	
 
 	while (w && w != ancestor && w != root) {
 		xcb_query_tree_reply_t *r =
@@ -586,19 +580,11 @@ maprequest(xcb_generic_event_t *e)
 			return;
 	}
 	if (!wintoclient(ev->window)) {
-		xcb_get_geometry_cookie_t gck =
-		    xcb_get_geometry(xc, ev->window);
-		xcb_get_geometry_reply_t *gr =
-		    xcb_get_geometry_reply(xc, gck, NULL);
+		xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, ev->window);
+		xcb_get_geometry_reply_t *gr  = xcb_get_geometry_reply(xc, gck, NULL);
 		if (gr) {
-			XWindowAttributes wa;
-			wa.x            = gr->x;
-			wa.y            = gr->y;
-			wa.width        = gr->width;
-			wa.height       = gr->height;
-			wa.border_width = gr->border_width;
+			manage(ev->window, gr);
 			free(gr);
-			manage(ev->window, &wa);
 		}
 	}
 }
@@ -624,7 +610,7 @@ void
 propertynotify(xcb_generic_event_t *e)
 {
 	Client                      *c;
-	Window                       trans;
+	xcb_window_t                 trans;
 	xcb_property_notify_event_t *ev = (xcb_property_notify_event_t *) e;
 
 	if ((c = wintosystrayicon(ev->window))) {
@@ -649,9 +635,8 @@ propertynotify(xcb_generic_event_t *e)
 		case XA_WM_TRANSIENT_FOR:
 			if (!c->isfloating &&
 			    xcb_icccm_get_wm_transient_for_reply(xc,
-			        xcb_icccm_get_wm_transient_for(
-			            xc, c->win),
-			        (xcb_window_t *) (void *) &trans, NULL) &&
+			        xcb_icccm_get_wm_transient_for(xc, c->win), &trans,
+			        NULL) &&
 			    (c->isfloating = (wintoclient(trans)) != NULL))
 				arrange(c->mon);
 			break;
@@ -708,7 +693,7 @@ unmapnotify(xcb_generic_event_t *e)
 		/* KLUDGE! sometimes icons occasionally unmap their windows, but do
 		 * _not_ destroy them. We map those windows back */
 		{
-			uint32_t          above = XCB_STACK_MODE_ABOVE;
+			uint32_t above = XCB_STACK_MODE_ABOVE;
 			xcb_map_window(xc, c->win);
 			xcb_configure_window(
 			    xc, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);

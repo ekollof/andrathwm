@@ -28,7 +28,7 @@ void resizebarwin(Monitor *m);
 /* monitor queries */
 Monitor *dirtomon(int dir);
 Monitor *recttomon(int x, int y, int w, int h);
-Monitor *wintomon(Window w);
+Monitor *wintomon(xcb_window_t w);
 Monitor *systraytomon(Monitor *m);
 
 /* focus */

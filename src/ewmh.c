@@ -47,25 +47,24 @@ setdesktopnames(void)
 }
 
 int
-sendevent(Window w, Atom proto, int mask, long d0, long d1, long d2, long d3,
-    long d4)
+sendevent(xcb_window_t w, xcb_atom_t proto, int mask, long d0, long d1,
+    long d2, long d3, long d4)
 {
-	Atom mt;
-	int  exists = 0;
+	xcb_atom_t mt;
+	int        exists = 0;
 
 	if (proto == wmatom[WMTakeFocus] || proto == wmatom[WMDelete]) {
 		mt = wmatom[WMProtocols];
 		{
-			xcb_get_property_cookie_t ck =
-			    xcb_get_property(xc, 0, (xcb_window_t) w,
-			        (xcb_atom_t) wmatom[WMProtocols], XCB_ATOM_ATOM, 0, 1024);
+			xcb_get_property_cookie_t ck = xcb_get_property(
+			    xc, 0, w, wmatom[WMProtocols], XCB_ATOM_ATOM, 0, 1024);
 			xcb_get_property_reply_t *r = xcb_get_property_reply(xc, ck, NULL);
 			if (r) {
 				int np = xcb_get_property_value_length(r) /
 				    (int) sizeof(xcb_atom_t);
 				xcb_atom_t *pa = xcb_get_property_value(r);
 				while (!exists && np--)
-					exists = (Atom) pa[np] == proto;
+					exists = pa[np] == proto;
 				free(r);
 			}
 		}
@@ -79,15 +78,14 @@ sendevent(Window w, Atom proto, int mask, long d0, long d1, long d2, long d3,
 		ev.response_type  = XCB_CLIENT_MESSAGE;
 		ev.format         = 32;
 		ev.sequence       = 0;
-		ev.window         = (xcb_window_t) w;
-		ev.type           = (xcb_atom_t) mt;
+		ev.window         = w;
+		ev.type           = mt;
 		ev.data.data32[0] = (uint32_t) d0;
 		ev.data.data32[1] = (uint32_t) d1;
 		ev.data.data32[2] = (uint32_t) d2;
 		ev.data.data32[3] = (uint32_t) d3;
 		ev.data.data32[4] = (uint32_t) d4;
-		xcb_send_event(xc, 0, (xcb_window_t) w,
-		    (uint32_t) mask, (const char *) &ev);
+		xcb_send_event(xc, 0, w, (uint32_t) mask, (const char *) &ev);
 	}
 	return exists;
 }
@@ -104,15 +102,14 @@ void
 setfocus(Client *c)
 {
 	if (!c->neverfocus) {
-		xcb_set_input_focus(xc,
-		    XCB_INPUT_FOCUS_POINTER_ROOT, (xcb_window_t) c->win,
-		    XCB_CURRENT_TIME);
+		xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT,
+		    (xcb_window_t) c->win, XCB_CURRENT_TIME);
 		uint32_t win32 = (uint32_t) c->win;
-		xcb_change_property(xc, XCB_PROP_MODE_REPLACE,
-		    root, netatom[NetActiveWindow], XCB_ATOM_WINDOW, 32, 1, &win32);
+		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
+		    netatom[NetActiveWindow], XCB_ATOM_WINDOW, 32, 1, &win32);
 	}
 	sendevent(c->win, wmatom[WMTakeFocus], NoEventMask, wmatom[WMTakeFocus],
-	    CurrentTime, 0, 0, 0);
+	    XCB_CURRENT_TIME, 0, 0, 0);
 }
 
 void
@@ -126,8 +123,8 @@ setviewport(void)
 void
 updateclientlist(void)
 {
-	Client           *c;
-	Monitor          *m;
+	Client  *c;
+	Monitor *m;
 
 	xcb_delete_property(xc, root, netatom[NetClientList]);
 	for (m = mons; m; m = m->next)
@@ -174,8 +171,8 @@ setwmstate(Client *c)
 	if (c->ishidden)
 		state[n++] = netatom[NetWMStateHidden];
 
-	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, c->win,
-	    netatom[NetWMState], XCB_ATOM_ATOM, 32, n, state);
+	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, c->win, netatom[NetWMState],
+	    XCB_ATOM_ATOM, 32, n, state);
 }
 
 void
@@ -206,8 +203,8 @@ updateworkarea(Monitor *m)
 	data[2] = (uint32_t) m->ww;
 	data[3] = (uint32_t) m->wh;
 
-	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
-	    netatom[NetWorkarea], XCB_ATOM_CARDINAL, 32, 4, data);
+	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root, netatom[NetWorkarea],
+	    XCB_ATOM_CARDINAL, 32, 4, data);
 }
 
 unsigned long

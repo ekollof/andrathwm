@@ -404,19 +404,18 @@ freeicon(Client *c)
 	}
 }
 
-Atom
-getatomprop(Client *c, Atom prop)
+xcb_atom_t
+getatomprop(Client *c, xcb_atom_t prop)
 {
-	xcb_atom_t                req = (prop == (Atom) xatom[XembedInfo])
-	                   ? (xcb_atom_t) xatom[XembedInfo]
-	                   : XCB_ATOM_ATOM;
-	xcb_get_property_cookie_t ck  = xcb_get_property(
-        xc, 0, (xcb_window_t) c->win, (xcb_atom_t) prop, req, 0, 1);
+	xcb_atom_t req =
+	    (prop == xatom[XembedInfo]) ? xatom[XembedInfo] : XCB_ATOM_ATOM;
+	xcb_get_property_cookie_t ck =
+	    xcb_get_property(xc, 0, c->win, prop, req, 0, 1);
 	xcb_get_property_reply_t *r    = xcb_get_property_reply(xc, ck, NULL);
-	Atom                      atom = None;
+	xcb_atom_t                atom = XCB_ATOM_NONE;
 
 	if (r && xcb_get_property_value_length(r) >= (int) sizeof(xcb_atom_t)) {
-		atom = (Atom) * (xcb_atom_t *) xcb_get_property_value(r);
+		atom = *(xcb_atom_t *) xcb_get_property_value(r);
 	}
 	free(r);
 	return atom;
@@ -436,11 +435,11 @@ getrootptr(int *x, int *y)
 }
 
 long
-getstate(Window w)
+getstate(xcb_window_t w)
 {
-	xcb_get_property_cookie_t ck = xcb_get_property(xc, 0, (xcb_window_t) w,
-	    (xcb_atom_t) wmatom[WMState], (xcb_atom_t) wmatom[WMState], 0, 2);
-	xcb_get_property_reply_t *r  = xcb_get_property_reply(xc, ck, NULL);
+	xcb_get_property_cookie_t ck =
+	    xcb_get_property(xc, 0, w, wmatom[WMState], wmatom[WMState], 0, 2);
+	xcb_get_property_reply_t *r      = xcb_get_property_reply(xc, ck, NULL);
 	long                      result = -1;
 
 	if (r && xcb_get_property_value_length(r) > 0) {
@@ -451,7 +450,7 @@ getstate(Window w)
 }
 
 int
-gettextprop(Window w, Atom atom, char *text, unsigned int size)
+gettextprop(xcb_window_t w, xcb_atom_t atom, char *text, unsigned int size)
 {
 	xcb_get_property_cookie_t           ck;
 	xcb_icccm_get_text_property_reply_t prop;
@@ -460,7 +459,7 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size)
 	if (!text || size == 0)
 		return 0;
 	text[0] = '\0';
-	ck = xcb_icccm_get_text_property(xc, (xcb_window_t) w, (xcb_atom_t) atom);
+	ck      = xcb_icccm_get_text_property(xc, w, atom);
 	if (!xcb_icccm_get_text_property_reply(xc, ck, &prop, NULL))
 		return 0;
 	if (prop.name_len > 0 && prop.name) {
@@ -473,11 +472,11 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size)
 }
 
 cairo_surface_t *
-getwmicon(Window w, int size)
+getwmicon(xcb_window_t w, int size)
 {
-	xcb_get_property_cookie_t ck = xcb_get_property(xc, 0, (xcb_window_t) w,
-	    (xcb_atom_t) netatom[NetWMIcon], XCB_ATOM_ANY, 0, UINT32_MAX / 4);
-	xcb_get_property_reply_t *r  = xcb_get_property_reply(xc, ck, NULL);
+	xcb_get_property_cookie_t ck = xcb_get_property(
+	    xc, 0, w, netatom[NetWMIcon], XCB_ATOM_ANY, 0, UINT32_MAX / 4);
+	xcb_get_property_reply_t *r       = xcb_get_property_reply(xc, ck, NULL);
 	cairo_surface_t          *surface = NULL;
 
 	if (!r || xcb_get_property_value_length(r) == 0) {
@@ -612,7 +611,7 @@ hide(Client *c)
 	if (!c || c->ishidden)
 		return;
 
-	Window w = c->win;
+	xcb_window_t w = c->win;
 
 	xcb_grab_server(xc);
 	{
@@ -712,7 +711,7 @@ killclient(const Arg *arg)
 		return;
 
 	if (!sendevent(selmon->sel->win, wmatom[WMDelete], NoEventMask,
-	        wmatom[WMDelete], CurrentTime, 0, 0, 0)) {
+	        wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
 
 		xcb_grab_server(xc);
 		xcb_set_close_down_mode(xc, XCB_CLOSE_DOWN_DESTROY_ALL);
@@ -723,26 +722,25 @@ killclient(const Arg *arg)
 }
 
 void
-manage(Window w, XWindowAttributes *wa)
+manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 {
-	Client *c, *t = NULL;
-	Window  trans = None;
+	Client      *c, *t = NULL;
+	xcb_window_t trans = XCB_WINDOW_NONE;
 
 	c      = ecalloc(1, sizeof(Client));
 	c->win = w;
-	c->x = c->oldx = wa->x;
-	c->y = c->oldy = wa->y;
-	c->w = c->oldw = wa->width;
-	c->h = c->oldh       = wa->height;
-	c->oldbw             = wa->border_width;
+	c->x = c->oldx = gr->x;
+	c->y = c->oldy = gr->y;
+	c->w = c->oldw = gr->width;
+	c->h = c->oldh       = gr->height;
+	c->oldbw             = gr->border_width;
 	c->opacity           = 1.0;
 	c->bypass_compositor = 0;
 
 	updatetitle(c);
 	c->icon = getwmicon(w, 16);
-	if (xcb_icccm_get_wm_transient_for_reply(xc,
-	        xcb_icccm_get_wm_transient_for(xc, w),
-	        (xcb_window_t *) (void *) &trans, NULL) &&
+	if (xcb_icccm_get_wm_transient_for_reply(
+	        xc, xcb_icccm_get_wm_transient_for(xc, w), &trans, NULL) &&
 	    (t = wintoclient(trans))) {
 		c->mon  = t->mon;
 		c->tags = t->tags;
@@ -799,7 +797,7 @@ manage(Window w, XWindowAttributes *wa)
 	attach(c);
 	attachstack(c);
 	{
-		xcb_atom_t winxid = (xcb_atom_t) c->win;
+		uint32_t winxid = (uint32_t) c->win;
 		xcb_change_property(xc, XCB_PROP_MODE_APPEND, root,
 		    netatom[NetClientList], XCB_ATOM_WINDOW, 32, 1, &winxid);
 	}
@@ -853,7 +851,7 @@ movemouse(const Arg *arg)
 	Client              *c;
 	Monitor             *m;
 	xcb_generic_event_t *xe;
-	Time                 lasttime = 0;
+	xcb_timestamp_t      lasttime = 0;
 
 	if (!(c = selmon->sel))
 		return;
@@ -1610,8 +1608,8 @@ updatetitle(Client *c)
 void
 updatewindowtype(Client *c)
 {
-	Atom state = getatomprop(c, netatom[NetWMState]);
-	Atom wtype = getatomprop(c, netatom[NetWMWindowType]);
+	xcb_atom_t state = getatomprop(c, netatom[NetWMState]);
+	xcb_atom_t wtype = getatomprop(c, netatom[NetWMWindowType]);
 
 	if (state == netatom[NetWMFullscreen])
 		setfullscreen(c, 1);
@@ -1795,7 +1793,7 @@ warp(const Client *c)
 }
 
 Client *
-wintoclient(Window w)
+wintoclient(xcb_window_t w)
 {
 	Client  *c;
 	Monitor *m;

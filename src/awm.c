@@ -75,18 +75,18 @@ void (*handler[LASTEvent])(xcb_generic_event_t *) = {
 	[ResizeRequest]    = resizerequest,
 	[UnmapNotify]      = unmapnotify,
 };
-Atom               wmatom[WMLast], netatom[NetLast], xatom[XLast];
-static Atom        utf8string_atom; /* UTF8_STRING — used in setup() */
+xcb_atom_t         wmatom[WMLast], netatom[NetLast], xatom[XLast];
+static xcb_atom_t  utf8string_atom; /* UTF8_STRING — used in setup() */
 int                restart         = 0;
 int                barsdirty       = 0;
-Time               last_event_time = CurrentTime;
+xcb_timestamp_t    last_event_time = XCB_CURRENT_TIME;
 static GMainLoop  *main_loop       = NULL;
 Cur               *cursor[CurLast];
 Clr              **scheme;
 xcb_connection_t  *xc;
 Drw               *drw;
 Monitor           *mons, *selmon;
-Window             root, wmcheckwin;
+xcb_window_t       root, wmcheckwin;
 Clientlist        *cl;
 xcb_key_symbols_t *keysyms;
 
@@ -96,12 +96,6 @@ _Static_assert(LENGTH(tags) <= 31,
 _Static_assert(LENGTH(tags) < sizeof(unsigned int) * 8,
     "LENGTH(tags) must be < bit-width of unsigned int to avoid UB in TAGMASK "
     "shift");
-_Static_assert(sizeof(Atom) == sizeof(long),
-    "Atom must equal long in size: Xlib format-32 property buffers use "
-    "long[]");
-_Static_assert(sizeof(Window) == sizeof(long),
-    "Window (XID) must equal long in size: Xlib format-32 property buffers "
-    "use long[]");
 _Static_assert(sizeof(long) >= 4,
     "long must be at least 32 bits for all Xlib format-32 EWMH/ICCCM property "
     "writes");
@@ -413,25 +407,18 @@ scan(void)
 		int override  = wr->override_redirect;
 		int map_state = wr->map_state;
 		free(wr);
-		Window trans = None;
+		xcb_window_t trans = XCB_WINDOW_NONE;
 		if (override ||
-		    xcb_icccm_get_wm_transient_for_reply(xc,
-		        xcb_icccm_get_wm_transient_for(xc, wins[i]),
-		        (xcb_window_t *) (void *) &trans, NULL))
+		    xcb_icccm_get_wm_transient_for_reply(
+		        xc, xcb_icccm_get_wm_transient_for(xc, wins[i]), &trans, NULL))
 			continue;
 		if (map_state == IsViewable || getstate(wins[i]) == IconicState) {
 			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
 			xcb_get_geometry_reply_t *gr =
 			    xcb_get_geometry_reply(xc, gck, NULL);
 			if (gr) {
-				XWindowAttributes wa;
-				wa.x            = gr->x;
-				wa.y            = gr->y;
-				wa.width        = gr->width;
-				wa.height       = gr->height;
-				wa.border_width = gr->border_width;
+				manage(wins[i], gr);
 				free(gr);
-				manage(wins[i], &wa);
 			}
 		}
 	}
@@ -445,23 +432,16 @@ scan(void)
 			continue;
 		int map_state = wr->map_state;
 		free(wr);
-		Window trans = None;
+		xcb_window_t trans = XCB_WINDOW_NONE;
 		if (xcb_icccm_get_wm_transient_for_reply(xc,
-		        xcb_icccm_get_wm_transient_for(xc, wins[i]),
-		        (xcb_window_t *) (void *) &trans, NULL) &&
+		        xcb_icccm_get_wm_transient_for(xc, wins[i]), &trans, NULL) &&
 		    (map_state == IsViewable || getstate(wins[i]) == IconicState)) {
 			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
 			xcb_get_geometry_reply_t *gr =
 			    xcb_get_geometry_reply(xc, gck, NULL);
 			if (gr) {
-				XWindowAttributes wa;
-				wa.x            = gr->x;
-				wa.y            = gr->y;
-				wa.width        = gr->width;
-				wa.height       = gr->height;
-				wa.border_width = gr->border_width;
+				manage(wins[i], gr);
 				free(gr);
-				manage(wins[i], &wa);
 			}
 		}
 	}
@@ -479,7 +459,7 @@ intern_atoms(void)
 {
 	/* Each entry maps one atom name to the Atom* that should receive it. */
 	static const struct {
-		Atom       *dest;
+		xcb_atom_t *dest;
 		const char *name;
 	} tbl[] = {
 		{ &utf8string_atom, "UTF8_STRING" },
@@ -578,7 +558,7 @@ setup(void)
 			xcb_screen_next(&sit);
 		sw   = (int) sit.data->width_in_pixels;
 		sh   = (int) sit.data->height_in_pixels;
-		root = (Window) sit.data->root;
+		root = sit.data->root;
 	}
 	if (!(cl = (Clientlist *) calloc(1, sizeof(Clientlist))))
 		die("fatal: could not malloc() %u bytes\n", sizeof(Clientlist));

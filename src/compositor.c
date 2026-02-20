@@ -69,7 +69,7 @@
  * ---------------------------------------------------------------------- */
 
 typedef struct CompWin {
-	Window       win;
+	xcb_window_t win;
 	Client      *client; /* NULL for override_redirect windows        */
 	xcb_pixmap_t pixmap; /* XCompositeNameWindowPixmap result          */
 	/* XRender path (fallback) */
@@ -94,8 +94,8 @@ typedef struct CompWin {
  * ---------------------------------------------------------------------- */
 
 static struct {
-	int    active;
-	Window overlay;
+	int          active;
+	xcb_window_t overlay;
 
 	/* ---- GL path (primary) ---- */
 	int use_gl; /* 1 if EGL_KHR_image_pixmap available and ctx ok */
@@ -146,8 +146,8 @@ static struct {
 	CompWin            *windows;
 	GMainContext       *ctx;
 	/* Wallpaper support */
-	Atom                 atom_rootpmap;
-	Atom                 atom_esetroot;
+	xcb_atom_t           atom_rootpmap;
+	xcb_atom_t           atom_esetroot;
 	xcb_pixmap_t         wallpaper_pixmap;
 	xcb_render_picture_t wallpaper_pict; /* XRender picture (fallback path) */
 	EGLImageKHR wallpaper_egl_image; /* EGL image for wallpaper (GL)         */
@@ -164,10 +164,11 @@ static struct {
 	uint8_t present_opcode; /* major opcode for GenericEvent filter */
 	xcb_present_event_t present_eid_next; /* monotonically incrementing EID */
 	/* _NET_WM_CM_Sn selection ownership */
-	Window cm_owner_win; /* utility window used to hold the CM selection */
-	Atom   atom_cm_sn;   /* _NET_WM_CM_S<screen> atom                    */
+	xcb_window_t
+	           cm_owner_win; /* utility window used to hold the CM selection */
+	xcb_atom_t atom_cm_sn;   /* _NET_WM_CM_S<screen> atom                    */
 	/* Per-window opacity atom */
-	Atom atom_net_wm_opacity; /* _NET_WM_WINDOW_OPACITY                 */
+	xcb_atom_t atom_net_wm_opacity; /* _NET_WM_WINDOW_OPACITY */
 	/* XRender picture format cache (queried once in compositor_init) */
 	const xcb_render_query_pict_formats_reply_t *render_formats;
 } comp;
@@ -185,8 +186,8 @@ _Static_assert(sizeof(xcb_pixmap_t) == sizeof(uint32_t),
  * Forward declarations
  * ---------------------------------------------------------------------- */
 
-static void                 comp_add_by_xid(Window w);
-static CompWin             *comp_find_by_xid(Window w);
+static void                 comp_add_by_xid(xcb_window_t w);
+static CompWin             *comp_find_by_xid(xcb_window_t w);
 static CompWin             *comp_find_by_client(Client *c);
 static void                 comp_free_win(CompWin *cw);
 static void                 comp_refresh_pixmap(CompWin *cw);
@@ -768,7 +769,7 @@ compositor_init(GMainContext *ctx)
 		xcb_composite_get_overlay_window_reply_t *owr;
 		owck = xcb_composite_get_overlay_window(xc, (xcb_window_t) root);
 		owr  = xcb_composite_get_overlay_window_reply(xc, owck, NULL);
-		comp.overlay = owr ? (Window) owr->overlay_win : 0;
+		comp.overlay = owr ? owr->overlay_win : 0;
 		free(owr);
 	}
 	if (!comp.overlay) {
@@ -856,7 +857,7 @@ compositor_init(GMainContext *ctx)
 		snprintf(sel_name, sizeof(sel_name), "_NET_WM_CM_S%d", screen);
 		ck = xcb_intern_atom(xc, 0, (uint16_t) strlen(sel_name), sel_name);
 		r  = xcb_intern_atom_reply(xc, ck, NULL);
-		comp.atom_cm_sn = r ? (Atom) r->atom : None;
+		comp.atom_cm_sn = r ? r->atom : XCB_ATOM_NONE;
 		free(r);
 
 		/* Create a small, invisible utility window to hold the selection. */
@@ -930,9 +931,9 @@ compositor_init(GMainContext *ctx)
 		xcb_intern_atom_reply_t *r0 = xcb_intern_atom_reply(xc, ck0, NULL);
 		xcb_intern_atom_reply_t *r1 = xcb_intern_atom_reply(xc, ck1, NULL);
 		xcb_intern_atom_reply_t *r2 = xcb_intern_atom_reply(xc, ck2, NULL);
-		comp.atom_rootpmap          = r0 ? (Atom) r0->atom : None;
-		comp.atom_esetroot          = r1 ? (Atom) r1->atom : None;
-		comp.atom_net_wm_opacity    = r2 ? (Atom) r2->atom : None;
+		comp.atom_rootpmap          = r0 ? r0->atom : XCB_ATOM_NONE;
+		comp.atom_esetroot          = r1 ? r1->atom : XCB_ATOM_NONE;
+		comp.atom_net_wm_opacity    = r2 ? r2->atom : XCB_ATOM_NONE;
 		free(r0);
 		free(r1);
 		free(r2);
@@ -943,7 +944,7 @@ compositor_init(GMainContext *ctx)
 
 	/* Raise overlay so it sits above all windows */
 	{
-		uint32_t          stack = XCB_STACK_MODE_ABOVE;
+		uint32_t stack = XCB_STACK_MODE_ABOVE;
 		xcb_configure_window(
 		    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 		xcb_map_window(xc, comp.overlay);
@@ -1060,7 +1061,7 @@ compositor_cleanup(void)
  * ---------------------------------------------------------------------- */
 
 static CompWin *
-comp_find_by_xid(Window w)
+comp_find_by_xid(xcb_window_t w)
 {
 	CompWin *cw;
 	for (cw = comp.windows; cw; cw = cw->next)
@@ -1293,7 +1294,7 @@ comp_apply_shape(CompWin *cw)
 static void
 comp_update_wallpaper(void)
 {
-	Pixmap                    pmap = None;
+	xcb_pixmap_t              pmap = 0;
 	xcb_atom_t                atoms[2];
 	int                       i;
 	xcb_get_property_cookie_t ck;
@@ -1390,9 +1391,9 @@ comp_update_wallpaper(void)
 
 /* Move cw to just above the window with XID `above_xid` in the stacking
  * order maintained in comp.windows (bottom-to-top linked list).
- * `above_xid == None` means place cw at the bottom of the stack. */
+ * `above_xid == 0` means place cw at the bottom of the stack. */
 static void
-comp_restack_above(CompWin *cw, Window above_xid)
+comp_restack_above(CompWin *cw, xcb_window_t above_xid)
 {
 	CompWin *prev = NULL, *cur;
 	CompWin *above_cw;
@@ -1441,7 +1442,7 @@ comp_restack_above(CompWin *cw, Window above_xid)
 
 /* Add window by X ID */
 static void
-comp_add_by_xid(Window w)
+comp_add_by_xid(xcb_window_t w)
 {
 	CompWin *cw;
 
@@ -2328,7 +2329,7 @@ compositor_handle_event(xcb_generic_event_t *ev)
 				    (xcb_present_complete_notify_event_t *) ev;
 				/* Only react to pixmap presents (kind==0), not MSC queries */
 				if (pev->kind == XCB_PRESENT_COMPLETE_KIND_PIXMAP) {
-					CompWin *cw = comp_find_by_xid((Window) pev->window);
+					CompWin *cw = comp_find_by_xid(pev->window);
 					/* Skip while paused (fullscreen bypass): the window
 					 * draws directly to the display and the compositor is
 					 * not painting.  Calling comp_refresh_pixmap here at

@@ -247,7 +247,8 @@ updatesystray(void)
 			free(sor);
 			if (owns) {
 				sendevent(root, xatom[Manager], StructureNotifyMask,
-				    CurrentTime, netatom[NetSystemTray], systray->win, 0, 0);
+				    XCB_CURRENT_TIME, netatom[NetSystemTray], systray->win, 0,
+				    0);
 				xflush();
 			} else {
 				awm_error("Unable to obtain system tray window");
@@ -355,7 +356,7 @@ addsniiconsystray(xcb_window_t w, int width, int height)
 	if (!(i = (Client *) calloc(1, sizeof(Client))))
 		die("fatal: could not malloc() %u bytes\n", sizeof(Client));
 
-	i->win         = (Window) w;
+	i->win         = w;
 	i->mon         = selmon;
 	i->next        = systray->icons;
 	systray->icons = i;
