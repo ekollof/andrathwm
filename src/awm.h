@@ -296,7 +296,7 @@ extern const unsigned int dbustimeout;
 #ifdef XRANDR
 extern int randrbase, rrerrbase;
 #endif
-extern void (*handler[LASTEvent])(XEvent *);
+extern void (*handler[LASTEvent])(xcb_generic_event_t *);
 
 /* Return the root_visual of screen number scr_num from an XCB connection.
  * Replaces XVisualIDFromVisual(DefaultVisual(dpy, screen)) everywhere. */

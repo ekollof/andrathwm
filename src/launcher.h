@@ -9,6 +9,7 @@
 
 #include "drw.h"
 #include <X11/Xlib.h>
+#include <xcb/xcb.h>
 #include <cairo/cairo.h>
 #include <stddef.h>
 
@@ -56,7 +57,7 @@ Launcher *launcher_create(Display *dpy, Window root, Clr **scheme,
 void      launcher_free(Launcher *launcher);
 void      launcher_show(Launcher *launcher, int x, int y);
 void      launcher_hide(Launcher *launcher);
-int       launcher_handle_event(Launcher *launcher, XEvent *ev);
+int       launcher_handle_event(Launcher *launcher, xcb_generic_event_t *ev);
 void      launcher_launch_selected(Launcher *launcher);
 
 #endif /* LAUNCHER_H */

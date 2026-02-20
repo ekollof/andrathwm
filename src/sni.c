@@ -1857,7 +1857,7 @@ sni_show_menu(SNIItem *item, int x, int y, Time event_time)
 
 /* Public API for handling menu events from awm */
 int
-sni_handle_menu_event(XEvent *ev)
+sni_handle_menu_event(xcb_generic_event_t *ev)
 {
 	if (!sni_menu)
 		return 0;

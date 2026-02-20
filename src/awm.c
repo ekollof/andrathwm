@@ -57,21 +57,23 @@ static guint dbus_retry_id = 0; /* GLib source ID for the reconnect timer */
 #ifdef XRANDR
 int randrbase, rrerrbase;
 #endif
-void (*handler[LASTEvent])(XEvent *) = { [ButtonPress] = buttonpress,
-	[ClientMessage]                                    = clientmessage,
-	[ConfigureRequest]                                 = configurerequest,
-	[ConfigureNotify]                                  = configurenotify,
-	[DestroyNotify]                                    = destroynotify,
-	[EnterNotify]                                      = enternotify,
-	[Expose]                                           = expose,
-	[FocusIn]                                          = focusin,
-	[KeyPress]                                         = keypress,
-	[MappingNotify]                                    = mappingnotify,
-	[MapRequest]                                       = maprequest,
-	[MotionNotify]                                     = motionnotify,
-	[PropertyNotify]                                   = propertynotify,
-	[ResizeRequest]                                    = resizerequest,
-	[UnmapNotify]                                      = unmapnotify };
+void (*handler[LASTEvent])(xcb_generic_event_t *) = {
+	[ButtonPress]      = buttonpress,
+	[ClientMessage]    = clientmessage,
+	[ConfigureRequest] = configurerequest,
+	[ConfigureNotify]  = configurenotify,
+	[DestroyNotify]    = destroynotify,
+	[EnterNotify]      = enternotify,
+	[Expose]           = expose,
+	[FocusIn]          = focusin,
+	[KeyPress]         = keypress,
+	[MappingNotify]    = mappingnotify,
+	[MapRequest]       = maprequest,
+	[MotionNotify]     = motionnotify,
+	[PropertyNotify]   = propertynotify,
+	[ResizeRequest]    = resizerequest,
+	[UnmapNotify]      = unmapnotify,
+};
 Atom               wmatom[WMLast], netatom[NetLast], xatom[XLast];
 static Atom        utf8string_atom; /* UTF8_STRING — used in setup() */
 int                restart         = 0;
@@ -211,19 +213,20 @@ launchermenu(const Arg *arg)
 static gboolean
 x_dispatch_cb(gpointer user_data)
 {
-	XEvent ev;
+	xcb_connection_t    *xc = XGetXCBConnection(dpy);
+	xcb_generic_event_t *ev;
 	(void) user_data;
 
-	while (XPending(dpy)) {
-		XNextEvent(dpy, &ev);
+	while ((ev = xcb_poll_for_event(xc))) {
+		uint8_t type = ev->response_type & ~0x80;
 #ifdef COMPOSITOR
 		/* Apply the XESetWireToEvent workaround for every event before
 		 * any handler sees it.  This prevents GL/DRI2 wire-to-event
 		 * hooks from corrupting Xlib's sequence tracking. */
-		compositor_fix_wire_to_event(&ev);
+		compositor_fix_wire_to_event((XEvent *) (void *) ev);
 #endif
 #ifdef XRANDR
-		if (ev.type == randrbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY) {
+		if (type == (uint8_t) (randrbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY)) {
 			/* XCB randr handles screen change — no XRRUpdateConfiguration
 			 * needed since we don't use libXrandr data structures. */
 			updategeom();
@@ -241,26 +244,27 @@ x_dispatch_cb(gpointer user_data)
 #endif
 #ifdef STATUSNOTIFIER
 			/* Handle menu events BEFORE normal handlers if menu is visible */
-			if (!sni_handle_menu_event(&ev)) {
+			if (!sni_handle_menu_event(ev)) {
 #endif
 				/* Handle launcher events if visible */
 				if (launcher && launcher->visible) {
 #ifdef COMPOSITOR
-					compositor_handle_event(&ev);
+					compositor_handle_event(ev);
 #endif
-					if (!launcher_handle_event(launcher, &ev) &&
-					    ev.type < LASTEvent && handler[ev.type])
-						handler[ev.type](&ev);
+					if (!launcher_handle_event(launcher, ev) &&
+					    type < LASTEvent && handler[type])
+						handler[type](ev);
 				} else {
 #ifdef COMPOSITOR
-					compositor_handle_event(&ev);
+					compositor_handle_event(ev);
 #endif
-					if (ev.type < LASTEvent && handler[ev.type])
-						handler[ev.type](&ev);
+					if (type < LASTEvent && handler[type])
+						handler[type](ev);
 				}
 #ifdef STATUSNOTIFIER
 			}
 #endif
+		free(ev);
 	}
 
 	if (barsdirty) {

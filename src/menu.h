@@ -9,6 +9,7 @@
 
 #include "drw.h"
 #include <X11/Xlib.h>
+#include <xcb/xcb.h>
 
 /* Toggle types for DBusMenu checkbox/radio items */
 typedef enum {
@@ -64,7 +65,7 @@ void  menu_set_items(Menu *menu, MenuItem *items);
 void  menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
      Time event_time);
 void  menu_hide(Menu *menu);
-int   menu_handle_event(Menu *menu, XEvent *ev);
+int   menu_handle_event(Menu *menu, xcb_generic_event_t *ev);
 
 /* Menu item helpers */
 MenuItem *menu_item_create(int id, const char *label, int enabled);

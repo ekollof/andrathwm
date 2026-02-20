@@ -56,7 +56,7 @@ void compositor_set_opacity(Client *c, unsigned long raw);
  * event before the normal handler[] dispatch so DamageNotify, MapNotify and
  * ConfigureNotify can be intercepted.
  */
-void compositor_handle_event(XEvent *ev);
+void compositor_handle_event(xcb_generic_event_t *ev);
 
 /* Force a full-screen repaint — used after xrdb hot-reload. */
 void compositor_damage_all(void);

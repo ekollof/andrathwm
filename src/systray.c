@@ -70,7 +70,7 @@ updatesystrayicongeom(Client *i, int w, int h)
 }
 
 void
-updatesystrayiconstate(Client *i, XPropertyEvent *ev)
+updatesystrayiconstate(Client *i, xcb_property_notify_event_t *ev)
 {
 	long flags;
 

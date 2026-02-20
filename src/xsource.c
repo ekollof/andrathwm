@@ -24,36 +24,29 @@ struct XSource {
  * GSource vtable
  * -------------------------------------------------------------------------
  * prepare:  check whether the source is immediately ready.
- *           Returns TRUE (and sets *timeout to 0) if X events are already
- *           buffered in the Xlib queue so we don't block in poll().
+ *           Returns FALSE — we rely on poll() to wake us when the X fd
+ *           becomes readable.  x_dispatch_cb drains all pending events
+ *           in one go, so there is no need to fast-path XPending here.
  */
 static gboolean
 xsource_prepare(GSource *src, gint *timeout)
 {
-	XSource *xs = (XSource *) src;
-
-	*timeout = -1; /* block indefinitely unless we have pending events */
-
-	if (XPending(xs->dpy)) {
-		*timeout = 0;
-		return TRUE;
-	}
+	(void) src;
+	*timeout = -1; /* block indefinitely */
 	return FALSE;
 }
 
 /*
  * check:  called after poll() returns; decide whether to dispatch.
- *         We dispatch if either the socket became readable, Xlib has
- *         already buffered events, or the connection has been lost
- *         (HUP/ERR), so we can handle X server death promptly.
+ *         We dispatch if the socket became readable or the connection
+ *         has been lost (HUP/ERR), so we can handle X server death promptly.
  */
 static gboolean
 xsource_check(GSource *src)
 {
 	XSource *xs = (XSource *) src;
 
-	return (xs->pollfd.revents & (G_IO_IN | G_IO_HUP | G_IO_ERR)) ||
-	    XPending(xs->dpy);
+	return (xs->pollfd.revents & (G_IO_IN | G_IO_HUP | G_IO_ERR)) != 0;
 }
 
 /*

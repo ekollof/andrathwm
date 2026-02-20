@@ -12,9 +12,9 @@ void          removesystrayicon(Client *i);
 void          updatesystray(void);
 void          updatesystrayiconcolors(void);
 void          updatesystrayicongeom(Client *i, int w, int h);
-void          updatesystrayiconstate(Client *i, XPropertyEvent *ev);
-Client       *wintosystrayicon(Window w);
-void          addsniiconsystray(Window w, int width, int height);
-void          removesniiconsystray(Window w);
+void    updatesystrayiconstate(Client *i, xcb_property_notify_event_t *ev);
+Client *wintosystrayicon(Window w);
+void    addsniiconsystray(Window w, int width, int height);
+void    removesniiconsystray(Window w);
 
 #endif /* SYSTRAY_H */

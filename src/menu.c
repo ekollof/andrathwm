@@ -610,26 +610,57 @@ menu_hide(Menu *menu)
 	menu->selected = -1;
 }
 
+/* Extract the primary window field from a generic XCB event by type.
+ * Returns XCB_WINDOW_NONE for event types without a window field. */
+static xcb_window_t
+event_get_window(xcb_generic_event_t *e)
+{
+	uint8_t type = e->response_type & ~0x80;
+	switch (type) {
+	case XCB_EXPOSE:
+		return ((xcb_expose_event_t *) e)->window;
+	case XCB_MOTION_NOTIFY:
+		return ((xcb_motion_notify_event_t *) e)->event;
+	case XCB_BUTTON_PRESS:
+	case XCB_BUTTON_RELEASE:
+		return ((xcb_button_press_event_t *) e)->event;
+	case XCB_KEY_PRESS:
+	case XCB_KEY_RELEASE:
+		return ((xcb_key_press_event_t *) e)->event;
+	case XCB_FOCUS_IN:
+	case XCB_FOCUS_OUT:
+		return ((xcb_focus_in_event_t *) e)->event;
+	case XCB_ENTER_NOTIFY:
+	case XCB_LEAVE_NOTIFY:
+		return ((xcb_enter_notify_event_t *) e)->event;
+	default:
+		return XCB_WINDOW_NONE;
+	}
+}
+
 /* Handle X event - returns 1 if event was handled */
 int
-menu_handle_event(Menu *menu, XEvent *ev)
+menu_handle_event(Menu *menu, xcb_generic_event_t *ev)
 {
 	MenuItem *item;
 	int       idx, y;
+	uint8_t   type;
 
 	if (!menu || !menu->visible)
 		return 0;
+
+	type = ev->response_type & ~0x80;
 
 	/* Check submenu first */
 	if (menu->active_submenu && menu_handle_event(menu->active_submenu, ev))
 		return 1;
 
 	/* Check if event is for our window */
-	if (ev->xany.window != menu->win) {
+	if (event_get_window(ev) != menu->win) {
 		/* Ignore ALL button events until after the initial release */
 		if (menu->ignore_next_release) {
-			if (ev->type == ButtonPress || ev->type == ButtonRelease) {
-				if (ev->type == ButtonRelease) {
+			if (type == XCB_BUTTON_PRESS || type == XCB_BUTTON_RELEASE) {
+				if (type == XCB_BUTTON_RELEASE) {
 					menu->ignore_next_release = 0;
 				}
 				return 1;
@@ -637,7 +668,7 @@ menu_handle_event(Menu *menu, XEvent *ev)
 		} else {
 			/* After initial release, any button event outside menu means close
 			 * it */
-			if (ev->type == ButtonPress || ev->type == ButtonRelease) {
+			if (type == XCB_BUTTON_PRESS || type == XCB_BUTTON_RELEASE) {
 				menu_hide(menu);
 				return 1;
 			}
@@ -645,17 +676,18 @@ menu_handle_event(Menu *menu, XEvent *ev)
 		return 0;
 	}
 
-	switch (ev->type) {
-	case Expose:
-		if (ev->xexpose.count == 0)
+	switch (type) {
+	case XCB_EXPOSE:
+		if (((xcb_expose_event_t *) ev)->count == 0)
 			menu_render(menu);
 		return 1;
 
-	case MotionNotify:
+	case XCB_MOTION_NOTIFY: {
+		xcb_motion_notify_event_t *e = (xcb_motion_notify_event_t *) ev;
 		/* Update selection based on mouse position */
 		/* Only process if mouse is within menu bounds */
-		if (ev->xmotion.x < 0 || ev->xmotion.x >= (int) menu->w ||
-		    ev->xmotion.y < 0 || ev->xmotion.y >= (int) menu->h) {
+		if (e->event_x < 0 || e->event_x >= (int) menu->w || e->event_y < 0 ||
+		    e->event_y >= (int) menu->h) {
 			/* Mouse outside menu - clear selection */
 			if (menu->selected != -1) {
 				menu->selected = -1;
@@ -670,8 +702,7 @@ menu_handle_event(Menu *menu, XEvent *ev)
 			if (item->is_separator) {
 				y += SEPARATOR_HEIGHT;
 			} else if (item->label) {
-				if (ev->xmotion.y >= y &&
-				    ev->xmotion.y < y + MENU_ITEM_HEIGHT) {
+				if (e->event_y >= y && e->event_y < y + MENU_ITEM_HEIGHT) {
 					if (menu->selected != idx) {
 						menu->selected = idx;
 						menu_render(menu);
@@ -705,8 +736,9 @@ menu_handle_event(Menu *menu, XEvent *ev)
 			menu_render(menu);
 		}
 		return 1;
+	}
 
-	case ButtonRelease:
+	case XCB_BUTTON_RELEASE:
 		/* Ignore first release after showing menu */
 		if (menu->ignore_next_release) {
 			menu->ignore_next_release = 0;
@@ -714,12 +746,11 @@ menu_handle_event(Menu *menu, XEvent *ev)
 		}
 		return 1;
 
-	case ButtonPress:
+	case XCB_BUTTON_PRESS: {
+		xcb_button_press_event_t *e = (xcb_button_press_event_t *) ev;
 		/* Check if click is outside menu bounds using root coordinates */
-		if (ev->xbutton.x_root < menu->x ||
-		    ev->xbutton.x_root >= menu->x + (int) menu->w ||
-		    ev->xbutton.y_root < menu->y ||
-		    ev->xbutton.y_root >= menu->y + (int) menu->h) {
+		if (e->root_x < menu->x || e->root_x >= menu->x + (int) menu->w ||
+		    e->root_y < menu->y || e->root_y >= menu->y + (int) menu->h) {
 			menu_hide(menu);
 			return 1;
 		}
@@ -746,10 +777,12 @@ menu_handle_event(Menu *menu, XEvent *ev)
 			}
 		}
 		return 1;
+	}
 
-	case KeyPress: {
-		xcb_keysym_t key = xcb_key_symbols_get_keysym(
-		    keysyms, (xcb_keycode_t) ev->xkey.keycode, 0);
+	case XCB_KEY_PRESS: {
+		xcb_key_press_event_t *e = (xcb_key_press_event_t *) ev;
+		xcb_keysym_t           key =
+		    xcb_key_symbols_get_keysym(keysyms, (xcb_keycode_t) e->detail, 0);
 		switch (key) {
 		case XK_Escape:
 			menu_hide(menu);
@@ -792,7 +825,7 @@ menu_handle_event(Menu *menu, XEvent *ev)
 	}
 		return 1;
 
-	case LeaveNotify:
+	case XCB_LEAVE_NOTIFY:
 		/* Clear selection when mouse leaves */
 		if (menu->selected != -1) {
 			menu->selected = -1;
@@ -800,7 +833,8 @@ menu_handle_event(Menu *menu, XEvent *ev)
 		}
 		return 1;
 
-	case FocusOut:
+	case XCB_FOCUS_OUT: {
+		xcb_focus_out_event_t *e = (xcb_focus_out_event_t *) ev;
 		/*
 		 * Dismiss menu when keyboard focus leaves — this is the fallback
 		 * dismiss path when XGrabPointer/XGrabKeyboard failed (e.g. because
@@ -808,11 +842,13 @@ menu_handle_event(Menu *menu, XEvent *ev)
 		 * focus events (NotifyGrab / NotifyUngrab / NotifyWhileGrabbed) and
 		 * focus moving to an inferior window (submenu).
 		 */
-		if (ev->xfocus.detail != NotifyInferior &&
-		    ev->xfocus.mode != NotifyGrab && ev->xfocus.mode != NotifyUngrab) {
+		if (e->detail != XCB_NOTIFY_DETAIL_INFERIOR &&
+		    e->mode != XCB_NOTIFY_MODE_GRAB &&
+		    e->mode != XCB_NOTIFY_MODE_UNGRAB) {
 			menu_hide(menu);
 		}
 		return 1;
+	}
 	}
 
 	return 0;

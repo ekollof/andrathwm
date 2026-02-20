@@ -7,22 +7,22 @@
 #include "awm.h"
 
 /* X event handlers */
-void buttonpress(XEvent *e);
+void buttonpress(xcb_generic_event_t *e);
 void checkotherwm(void);
-void clientmessage(XEvent *e);
-void configurenotify(XEvent *e);
-void configurerequest(XEvent *e);
-void destroynotify(XEvent *e);
-void enternotify(XEvent *e);
-void expose(XEvent *e);
-void focusin(XEvent *e);
-void keypress(XEvent *e);
-void mappingnotify(XEvent *e);
-void maprequest(XEvent *e);
-void motionnotify(XEvent *e);
-void propertynotify(XEvent *e);
-void resizerequest(XEvent *e);
-void unmapnotify(XEvent *e);
+void clientmessage(xcb_generic_event_t *e);
+void configurenotify(xcb_generic_event_t *e);
+void configurerequest(xcb_generic_event_t *e);
+void destroynotify(xcb_generic_event_t *e);
+void enternotify(xcb_generic_event_t *e);
+void expose(xcb_generic_event_t *e);
+void focusin(xcb_generic_event_t *e);
+void keypress(xcb_generic_event_t *e);
+void mappingnotify(xcb_generic_event_t *e);
+void maprequest(xcb_generic_event_t *e);
+void motionnotify(xcb_generic_event_t *e);
+void propertynotify(xcb_generic_event_t *e);
+void resizerequest(xcb_generic_event_t *e);
+void unmapnotify(xcb_generic_event_t *e);
 
 /* signal / fake_signal */
 int fake_signal(void);

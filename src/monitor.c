@@ -39,15 +39,17 @@ arrange(Monitor *m)
 			arrangemon(m);
 		/* Flush all pending requests and discard stale EnterNotify
 		 * events so we don't spuriously change focus after a
-		 * layout change.  All operations stay on the XCB connection;
-		 * non-EnterNotify events are put back into the Xlib queue. */
+		 * layout change.  Non-EnterNotify events are dispatched
+		 * through the normal handler. */
 		{
 			xcb_connection_t    *xc = XGetXCBConnection(dpy);
 			xcb_generic_event_t *xe;
 			xcb_flush(xc);
 			while ((xe = xcb_poll_for_event(xc))) {
-				if ((xe->response_type & ~0x80) != XCB_ENTER_NOTIFY)
-					XPutBackEvent(dpy, (XEvent *) (void *) xe); /* NOLINT */
+				uint8_t type = xe->response_type & ~0x80;
+				if (type != XCB_ENTER_NOTIFY && type < LASTEvent &&
+				    handler[type])
+					handler[type](xe);
 				free(xe);
 			}
 		}
@@ -404,8 +406,9 @@ restack(Monitor *m)
 		xcb_generic_event_t *xe;
 		xcb_flush(xc);
 		while ((xe = xcb_poll_for_event(xc))) {
-			if ((xe->response_type & ~0x80) != XCB_ENTER_NOTIFY)
-				XPutBackEvent(dpy, (XEvent *) (void *) xe); /* NOLINT */
+			uint8_t type = xe->response_type & ~0x80;
+			if (type != XCB_ENTER_NOTIFY && type < LASTEvent && handler[type])
+				handler[type](xe);
 			free(xe);
 		}
 	}

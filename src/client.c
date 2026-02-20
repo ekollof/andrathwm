@@ -738,9 +738,8 @@ killclient(const Arg *arg)
 void
 manage(Window w, XWindowAttributes *wa)
 {
-	Client        *c, *t = NULL;
-	Window         trans = None;
-	XWindowChanges wc;
+	Client *c, *t = NULL;
+	Window  trans = None;
 
 	c      = ecalloc(1, sizeof(Client));
 	c->win = w;
@@ -784,7 +783,6 @@ manage(Window w, XWindowAttributes *wa)
 	c->y  = MAX(c->y, c->mon->wy);
 	c->bw = borderpx;
 
-	wc.border_width = c->bw;
 	{
 		xcb_connection_t *xcb = XGetXCBConnection(dpy);
 		uint32_t          bw  = (uint32_t) c->bw;
@@ -869,11 +867,12 @@ manage(Window w, XWindowAttributes *wa)
 void
 movemouse(const Arg *arg)
 {
-	int      x, y, ocx, ocy, nx, ny;
-	Client  *c;
-	Monitor *m;
-	XEvent   ev;
-	Time     lasttime = 0;
+	int                  x, y, ocx, ocy, nx, ny;
+	Client              *c;
+	Monitor             *m;
+	xcb_generic_event_t *xe;
+	xcb_connection_t    *xc       = XGetXCBConnection(dpy);
+	Time                 lasttime = 0;
 
 	if (!(c = selmon->sel))
 		return;
@@ -883,7 +882,6 @@ movemouse(const Arg *arg)
 	ocx = c->x;
 	ocy = c->y;
 	{
-		xcb_connection_t         *xc = XGetXCBConnection(dpy);
 		xcb_grab_pointer_cookie_t gck =
 		    xcb_grab_pointer(xc, 0, root, MOUSEMASK, XCB_GRAB_MODE_ASYNC,
 		        XCB_GRAB_MODE_ASYNC, XCB_WINDOW_NONE,
@@ -897,42 +895,61 @@ movemouse(const Arg *arg)
 	}
 	if (!getrootptr(&x, &y))
 		return;
-	do {
-		XMaskEvent(
-		    dpy, MOUSEMASK | ExposureMask | SubstructureRedirectMask, &ev);
-		switch (ev.type) {
-		case ConfigureRequest:
-		case Expose:
-		case MapRequest:
-			handler[ev.type](&ev);
-			break;
-		case MotionNotify:
-			if ((ev.xmotion.time - lasttime) <= (1000 / motionfps))
-				continue;
-			lasttime = ev.xmotion.time;
+	xcb_flush(xc);
+	for (;;) {
+		while (!(xe = xcb_wait_for_event(xc)))
+			;
+		{
+			uint8_t type = xe->response_type & ~0x80;
+			if (type == XCB_BUTTON_RELEASE) {
+				free(xe);
+				break;
+			}
+			switch (type) {
+			case XCB_CONFIGURE_REQUEST:
+			case XCB_EXPOSE:
+			case XCB_MAP_REQUEST:
+				if (handler[type])
+					handler[type](xe);
+				break;
+			case XCB_MOTION_NOTIFY: {
+				xcb_motion_notify_event_t *me =
+				    (xcb_motion_notify_event_t *) xe;
+				if ((me->time - lasttime) <= (1000 / motionfps)) {
+					free(xe);
+					continue;
+				}
+				lasttime = me->time;
 
-			nx = ocx + (ev.xmotion.x - x);
-			ny = ocy + (ev.xmotion.y - y);
-			if (abs(selmon->wx - nx) < snap)
-				nx = selmon->wx;
-			else if (abs((selmon->wx + selmon->ww) - (nx + WIDTH(c))) < snap)
-				nx = selmon->wx + selmon->ww - WIDTH(c);
-			if (abs(selmon->wy - ny) < snap)
-				ny = selmon->wy;
-			else if (abs((selmon->wy + selmon->wh) - (ny + HEIGHT(c))) < snap)
-				ny = selmon->wy + selmon->wh - HEIGHT(c);
-			if (!c->isfloating && selmon->lt[selmon->sellt]->arrange &&
-			    (abs(nx - c->x) > snap || abs(ny - c->y) > snap))
-				togglefloating(NULL);
-			if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
-				resize(c, nx, ny, c->w, c->h, 1);
+				nx = ocx + (me->root_x - x);
+				ny = ocy + (me->root_y - y);
+				if (abs(selmon->wx - nx) < snap)
+					nx = selmon->wx;
+				else if (abs((selmon->wx + selmon->ww) - (nx + WIDTH(c))) <
+				    snap)
+					nx = selmon->wx + selmon->ww - WIDTH(c);
+				if (abs(selmon->wy - ny) < snap)
+					ny = selmon->wy;
+				else if (abs((selmon->wy + selmon->wh) - (ny + HEIGHT(c))) <
+				    snap)
+					ny = selmon->wy + selmon->wh - HEIGHT(c);
+				if (!c->isfloating && selmon->lt[selmon->sellt]->arrange &&
+				    (abs(nx - c->x) > snap || abs(ny - c->y) > snap))
+					togglefloating(NULL);
+				if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
+					resize(c, nx, ny, c->w, c->h, 1);
 #ifdef COMPOSITOR
-			compositor_repaint_now();
+				compositor_repaint_now();
 #endif
-			break;
+				break;
+			}
+			default:
+				break;
+			}
 		}
-	} while (ev.type != ButtonRelease);
-	xcb_ungrab_pointer(XGetXCBConnection(dpy), XCB_CURRENT_TIME);
+		free(xe);
+	}
+	xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
 	if ((m = recttomon(c->x, c->y, c->w, c->h)) != selmon) {
 		sendmon(c, m);
 		selmon = m;
@@ -968,31 +985,30 @@ resize(Client *c, int x, int y, int w, int h, int interact)
 void
 resizeclient(Client *c, int x, int y, int w, int h)
 {
-	XWindowChanges wc;
+	int bw;
 
 	c->oldx = c->x;
-	c->x = wc.x = x;
-	c->oldy     = c->y;
-	c->y = wc.y = y;
-	c->oldw     = c->w;
-	c->w = wc.width = w;
-	c->oldh         = c->h;
-	c->h = wc.height = h;
-	wc.border_width  = c->bw;
+	c->x    = x;
+	c->oldy = c->y;
+	c->y    = y;
+	c->oldw = c->w;
+	c->w    = w;
+	c->oldh = c->h;
+	c->h    = h;
+	bw      = c->bw;
 	if (!selmon->pertag->drawwithgaps[selmon->pertag->curtag] &&
 	    (((nexttiled(c->mon->cl->clients, selmon) == c &&
 	          !nexttiled(c->next, selmon)) ||
 	        &monocle == c->mon->lt[c->mon->sellt]->arrange)) &&
 	    !c->isfullscreen && !c->isfloating &&
 	    NULL != c->mon->lt[c->mon->sellt]->arrange) {
-		c->w            = wc.width += c->bw * 2;
-		c->h            = wc.height += c->bw * 2;
-		wc.border_width = 0;
+		c->w = w += c->bw * 2;
+		c->h = h += c->bw * 2;
+		bw   = 0;
 	}
 	{
-		uint32_t vals[5] = { (uint32_t) wc.x, (uint32_t) wc.y,
-			(uint32_t) wc.width, (uint32_t) wc.height,
-			(uint32_t) wc.border_width };
+		uint32_t vals[5] = { (uint32_t) x, (uint32_t) y, (uint32_t) w,
+			(uint32_t) h, (uint32_t) bw };
 		xcb_configure_window(XGetXCBConnection(dpy), c->win,
 		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
 		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
@@ -1002,18 +1018,19 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	configure(c);
 	xflush(dpy);
 #ifdef COMPOSITOR
-	compositor_configure_window(c, wc.border_width);
+	compositor_configure_window(c, bw);
 #endif
 }
 
 void
 resizemouse(const Arg *arg)
 {
-	int      ocx, ocy, nw, nh;
-	Client  *c;
-	Monitor *m;
-	XEvent   ev;
-	Time     lasttime = 0;
+	int                  ocx, ocy, nw, nh;
+	Client              *c;
+	Monitor             *m;
+	xcb_generic_event_t *xe;
+	xcb_connection_t    *xc       = XGetXCBConnection(dpy);
+	xcb_timestamp_t      lasttime = 0;
 
 	if (!(c = selmon->sel))
 		return;
@@ -1023,7 +1040,6 @@ resizemouse(const Arg *arg)
 	ocx = c->x;
 	ocy = c->y;
 	{
-		xcb_connection_t         *xc = XGetXCBConnection(dpy);
 		xcb_grab_pointer_cookie_t gck =
 		    xcb_grab_pointer(xc, 0, root, MOUSEMASK, XCB_GRAB_MODE_ASYNC,
 		        XCB_GRAB_MODE_ASYNC, XCB_WINDOW_NONE,
@@ -1035,54 +1051,69 @@ resizemouse(const Arg *arg)
 		}
 		free(gr);
 	}
-	xcb_warp_pointer(XGetXCBConnection(dpy), XCB_WINDOW_NONE, c->win, 0, 0, 0,
-	    0, (int16_t) (c->w + c->bw - 1), (int16_t) (c->h + c->bw - 1));
-	do {
-		XMaskEvent(
-		    dpy, MOUSEMASK | ExposureMask | SubstructureRedirectMask, &ev);
-		switch (ev.type) {
-		case ConfigureRequest:
-		case Expose:
-		case MapRequest:
-			handler[ev.type](&ev);
-			break;
-		case MotionNotify:
-			if ((ev.xmotion.time - lasttime) <= (1000 / motionfps))
-				continue;
-			lasttime = ev.xmotion.time;
-
-			nw = MAX(ev.xmotion.x - ocx - 2 * c->bw + 1, 1);
-			nh = MAX(ev.xmotion.y - ocy - 2 * c->bw + 1, 1);
-			if (c->mon->wx + nw >= selmon->wx &&
-			    c->mon->wx + nw <= selmon->wx + selmon->ww &&
-			    c->mon->wy + nh >= selmon->wy &&
-			    c->mon->wy + nh <= selmon->wy + selmon->wh) {
-				if (!c->isfloating && selmon->lt[selmon->sellt]->arrange &&
-				    (abs(nw - c->w) > snap || abs(nh - c->h) > snap))
-					togglefloating(NULL);
+	xcb_warp_pointer(xc, XCB_WINDOW_NONE, c->win, 0, 0, 0, 0,
+	    (int16_t) (c->w + c->bw - 1), (int16_t) (c->h + c->bw - 1));
+	xcb_flush(xc);
+	for (;;) {
+		while (!(xe = xcb_wait_for_event(xc)))
+			;
+		{
+			uint8_t type = xe->response_type & ~0x80;
+			if (type == XCB_BUTTON_RELEASE) {
+				free(xe);
+				break;
 			}
-			if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
-				resize(c, c->x, c->y, nw, nh, 1);
+			switch (type) {
+			case XCB_CONFIGURE_REQUEST:
+			case XCB_EXPOSE:
+			case XCB_MAP_REQUEST:
+				if (handler[type])
+					handler[type](xe);
+				break;
+			case XCB_MOTION_NOTIFY: {
+				xcb_motion_notify_event_t *me =
+				    (xcb_motion_notify_event_t *) xe;
+				if ((me->time - lasttime) <= (1000 / motionfps)) {
+					free(xe);
+					continue;
+				}
+				lasttime = me->time;
+
+				nw = MAX(me->event_x - ocx - 2 * c->bw + 1, 1);
+				nh = MAX(me->event_y - ocy - 2 * c->bw + 1, 1);
+				if (c->mon->wx + nw >= selmon->wx &&
+				    c->mon->wx + nw <= selmon->wx + selmon->ww &&
+				    c->mon->wy + nh >= selmon->wy &&
+				    c->mon->wy + nh <= selmon->wy + selmon->wh) {
+					if (!c->isfloating && selmon->lt[selmon->sellt]->arrange &&
+					    (abs(nw - c->w) > snap || abs(nh - c->h) > snap))
+						togglefloating(NULL);
+				}
+				if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
+					resize(c, c->x, c->y, nw, nh, 1);
 #ifdef COMPOSITOR
-			compositor_repaint_now();
+				compositor_repaint_now();
 #endif
-			break;
+				break;
+			}
+			default:
+				break;
+			}
 		}
-	} while (ev.type != ButtonRelease);
-	xcb_warp_pointer(XGetXCBConnection(dpy), XCB_WINDOW_NONE, c->win, 0, 0, 0,
-	    0, (int16_t) (c->w + c->bw - 1), (int16_t) (c->h + c->bw - 1));
-	xcb_ungrab_pointer(XGetXCBConnection(dpy), XCB_CURRENT_TIME);
-	/* Discard any stale EnterNotify events that accumulated during the
-	 * grab so we don't spuriously change focus after a resize. */
-	{
-		xcb_connection_t    *xc = XGetXCBConnection(dpy);
-		xcb_generic_event_t *xe;
-		xcb_flush(xc);
-		while ((xe = xcb_poll_for_event(xc))) {
-			if ((xe->response_type & ~0x80) != XCB_ENTER_NOTIFY)
-				XPutBackEvent(dpy, (XEvent *) (void *) xe); /* NOLINT */
-			free(xe);
-		}
+		free(xe);
+	}
+	xcb_warp_pointer(xc, XCB_WINDOW_NONE, c->win, 0, 0, 0, 0,
+	    (int16_t) (c->w + c->bw - 1), (int16_t) (c->h + c->bw - 1));
+	xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
+	/* Discard stale EnterNotify events accumulated during the grab so
+	 * we don't spuriously change focus after a resize.  Non-EnterNotify
+	 * events are dispatched through the normal handler. */
+	xcb_flush(xc);
+	while ((xe = xcb_poll_for_event(xc))) {
+		uint8_t type = xe->response_type & ~0x80;
+		if (type != XCB_ENTER_NOTIFY && type < LASTEvent && handler[type])
+			handler[type](xe);
+		free(xe);
 	}
 	if ((m = recttomon(c->x, c->y, c->w, c->h)) != selmon) {
 		sendmon(c, m);

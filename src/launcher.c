@@ -1298,23 +1298,28 @@ launcher_scroll(Launcher *launcher, int delta)
 }
 
 int
-launcher_handle_event(Launcher *launcher, XEvent *ev)
+launcher_handle_event(Launcher *launcher, xcb_generic_event_t *ev)
 {
 	xcb_keysym_t key;
 	int          idx, y;
+	uint8_t      type;
 
 	if (!launcher || !launcher->visible)
 		return 0;
 
-	if (ev->type == Expose) {
-		if (ev->xexpose.count == 0)
+	type = ev->response_type & ~0x80;
+
+	if (type == XCB_EXPOSE) {
+		xcb_expose_event_t *e = (xcb_expose_event_t *) ev;
+		if (e->count == 0)
 			launcher_render(launcher);
 		return 1;
 	}
 
-	if (ev->type == KeyPress) {
-		key = xcb_key_symbols_get_keysym(
-		    keysyms, (xcb_keycode_t) ev->xkey.keycode, 0);
+	if (type == XCB_KEY_PRESS) {
+		xcb_key_press_event_t *e = (xcb_key_press_event_t *) ev;
+		key =
+		    xcb_key_symbols_get_keysym(keysyms, (xcb_keycode_t) e->detail, 0);
 
 		switch (key) {
 		case XK_Escape:
@@ -1381,7 +1386,7 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 			launcher_render(launcher);
 			return 1;
 		case XK_Tab:
-			if (ev->xkey.state & ShiftMask) {
+			if (e->state & XCB_MOD_MASK_SHIFT) {
 				if (launcher->selected > 0) {
 					launcher->selected--;
 					if (launcher->selected < launcher->scroll_offset)
@@ -1401,7 +1406,7 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 			break;
 		}
 
-		if (ev->xkey.state & ControlMask) {
+		if (e->state & XCB_MOD_MASK_CONTROL) {
 			switch (key) {
 			case XK_u:
 				launcher->input[0]   = '\0';
@@ -1448,8 +1453,9 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 		return 1;
 	}
 
-	if (ev->type == MotionNotify) {
-		if (ev->xmotion.y <
+	if (type == XCB_MOTION_NOTIFY) {
+		xcb_motion_notify_event_t *e = (xcb_motion_notify_event_t *) ev;
+		if (e->event_y <
 		    (int) (LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING * 2)) {
 			launcher->selected = -1;
 			launcher_render(launcher);
@@ -1461,8 +1467,7 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 
 		while (idx < launcher->visible_count &&
 		    y + LAUNCHER_ITEM_HEIGHT <= (int) launcher->h) {
-			if (ev->xmotion.y >= y &&
-			    ev->xmotion.y < y + LAUNCHER_ITEM_HEIGHT) {
+			if (e->event_y >= y && e->event_y < y + LAUNCHER_ITEM_HEIGHT) {
 				if (launcher->selected != idx) {
 					launcher->selected = idx;
 					launcher_render(launcher);
@@ -1475,13 +1480,15 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 		return 1;
 	}
 
-	if (ev->type == ButtonPress || ev->type == ButtonRelease) {
+	if (type == XCB_BUTTON_PRESS || type == XCB_BUTTON_RELEASE) {
+		xcb_button_press_event_t *e = (xcb_button_press_event_t *) ev;
 		/* Swallow all wheel events — Button4/5 generate both press and
 		 * release; if we only handle press, the release falls through to
 		 * the launch path. */
-		if (ev->xbutton.button == Button4 || ev->xbutton.button == Button5) {
-			if (ev->type == ButtonPress) {
-				if (ev->xbutton.button == Button4) {
+		if (e->detail == XCB_BUTTON_INDEX_4 ||
+		    e->detail == XCB_BUTTON_INDEX_5) {
+			if (type == XCB_BUTTON_PRESS) {
+				if (e->detail == XCB_BUTTON_INDEX_4) {
 					if (launcher->selected > 0)
 						launcher->selected--;
 					if (launcher->selected < launcher->scroll_offset)
@@ -1498,13 +1505,13 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 			return 1;
 		}
 
-		if (ev->xbutton.y <
+		if (e->event_y <
 		    (int) (LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING * 2)) {
 			launcher_hide(launcher);
 			return 1;
 		}
 
-		if (ev->type == ButtonRelease && launcher->selected >= 0) {
+		if (type == XCB_BUTTON_RELEASE && launcher->selected >= 0) {
 			launcher_launch_selected(launcher);
 			return 1;
 		}

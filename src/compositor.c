@@ -2111,17 +2111,18 @@ compositor_repaint_now(void)
  * ---------------------------------------------------------------------- */
 
 void
-compositor_handle_event(XEvent *ev)
+compositor_handle_event(xcb_generic_event_t *ev)
 {
 	if (!comp.active)
 		return;
 
 	/* Apply the XESetWireToEvent workaround before dispatching.
 	 * See compositor_fix_wire_to_event() for a full explanation. */
-	compositor_fix_wire_to_event(ev);
+	compositor_fix_wire_to_event((XEvent *) (void *) ev);
 
-	if (ev->type == comp.damage_ev_base + XDamageNotify) {
-		XDamageNotifyEvent *dev = (XDamageNotifyEvent *) ev;
+	if ((ev->response_type & ~0x80) ==
+	    (uint8_t) (comp.damage_ev_base + XDamageNotify)) {
+		XDamageNotifyEvent *dev = (XDamageNotifyEvent *) (void *) ev;
 		CompWin            *dcw = comp_find_by_xid(dev->drawable);
 
 		if (!dcw) {
@@ -2191,106 +2192,22 @@ compositor_handle_event(XEvent *ev)
 		return;
 	}
 
-	if (ev->type == MapNotify) {
-		XMapEvent *mev = (XMapEvent *) ev;
-		if (mev->event == root)
-			comp_add_by_xid(mev->window);
-		schedule_repaint();
-		return;
-	}
+	{
+		uint8_t type = ev->response_type & ~0x80;
 
-	if (ev->type == UnmapNotify) {
-		XUnmapEvent *uev = (XUnmapEvent *) ev;
-		CompWin     *cw  = comp_find_by_xid(uev->window);
-		if (cw && !cw->client) {
-			CompWin *prev = NULL, *cur;
-			{
-				xcb_connection_t   *xc = XGetXCBConnection(dpy);
-				xcb_rectangle_t     r;
-				xcb_xfixes_region_t sr;
-				r.x      = (short) cw->x;
-				r.y      = (short) cw->y;
-				r.width  = (uint16_t) (cw->w + 2 * cw->bw);
-				r.height = (uint16_t) (cw->h + 2 * cw->bw);
-				sr       = xcb_generate_id(xc);
-				xcb_xfixes_create_region(xc, sr, 1, &r);
-				xcb_xfixes_union_region(xc, comp.dirty, sr, comp.dirty);
-				xcb_xfixes_destroy_region(xc, sr);
-			}
-			for (cur = comp.windows; cur; cur = cur->next) {
-				if (cur == cw) {
-					if (prev)
-						prev->next = cw->next;
-					else
-						comp.windows = cw->next;
-					if (comp.use_gl)
-						comp_release_tfp(cw);
-					comp_free_win(cw);
-					free(cw);
-					break;
-				}
-				prev = cur;
-			}
-		}
-		schedule_repaint();
-		return;
-	}
-
-	if (ev->type == ConfigureNotify) {
-		XConfigureEvent *cev = (XConfigureEvent *) ev;
-		CompWin         *cw  = comp_find_by_xid(cev->window);
-		if (cw) {
-			if (cw->client) {
-				/* Geometry for managed clients is tracked by
-				 * compositor_configure_window() (called from resizeclient()).
-				 * We only need to update the Z-order in our internal list so
-				 * the painter's algorithm draws them correctly. Without this,
-				 * comp.windows ordering is frozen at map time and monocle /
-				 * floating windows appear in the wrong layer. */
-				comp_restack_above(cw, cev->above);
-				schedule_repaint();
-				return;
-			}
-
-			int resized = (cev->width != cw->w || cev->height != cw->h);
-
-			{
-				xcb_connection_t   *xc = XGetXCBConnection(dpy);
-				xcb_rectangle_t     old_rect;
-				xcb_xfixes_region_t old_r;
-				old_rect.x      = (short) cw->x;
-				old_rect.y      = (short) cw->y;
-				old_rect.width  = (uint16_t) (cw->w + 2 * cw->bw);
-				old_rect.height = (uint16_t) (cw->h + 2 * cw->bw);
-				old_r           = xcb_generate_id(xc);
-				xcb_xfixes_create_region(xc, old_r, 1, &old_rect);
-				xcb_xfixes_union_region(xc, comp.dirty, old_r, comp.dirty);
-				xcb_xfixes_destroy_region(xc, old_r);
-			}
-
-			cw->x  = cev->x;
-			cw->y  = cev->y;
-			cw->w  = cev->width;
-			cw->h  = cev->height;
-			cw->bw = cev->border_width;
-
-			/* Restack in our internal list to match the X stacking order.
-			 * cev->above is the sibling directly below this window. */
-			comp_restack_above(cw, cev->above);
-
-			if (cw->redirected && resized)
-				comp_refresh_pixmap(cw);
-
+		if (type == MapNotify) {
+			xcb_map_notify_event_t *mev = (xcb_map_notify_event_t *) ev;
+			if (mev->event == root)
+				comp_add_by_xid(mev->window);
 			schedule_repaint();
+			return;
 		}
-		return;
-	}
 
-	if (ev->type == DestroyNotify) {
-		XDestroyWindowEvent *dev  = (XDestroyWindowEvent *) ev;
-		CompWin             *prev = NULL, *cw;
-		for (cw = comp.windows; cw; cw = cw->next) {
-			if (cw->win == dev->window) {
+		if (type == UnmapNotify) {
+			xcb_unmap_notify_event_t *uev = (xcb_unmap_notify_event_t *) ev;
+			CompWin                  *cw  = comp_find_by_xid(uev->window);
+			if (cw && !cw->client) {
+				CompWin *prev = NULL, *cur;
 				{
 					xcb_connection_t   *xc = XGetXCBConnection(dpy);
 					xcb_rectangle_t     r;
@@ -2304,110 +2221,204 @@ compositor_handle_event(XEvent *ev)
 					xcb_xfixes_union_region(xc, comp.dirty, sr, comp.dirty);
 					xcb_xfixes_destroy_region(xc, sr);
 				}
-				if (prev)
-					prev->next = cw->next;
-				else
-					comp.windows = cw->next;
-				if (comp.use_gl)
-					comp_release_tfp(cw);
-				comp_free_win(cw);
-				free(cw);
-				schedule_repaint();
-				return;
-			}
-			prev = cw;
-		}
-		return;
-	}
-
-	if (ev->type == PropertyNotify) {
-		XPropertyEvent *pev = (XPropertyEvent *) ev;
-		if (pev->window == root &&
-		    (pev->atom == comp.atom_rootpmap ||
-		        pev->atom == comp.atom_esetroot)) {
-			comp_update_wallpaper();
-			compositor_damage_all();
-		} else if (pev->atom == comp.atom_net_wm_opacity &&
-		    pev->window != root) {
-			/* _NET_WM_WINDOW_OPACITY changed on a client window.
-			 * Read the new value and propagate it to the CompWin. */
-			CompWin *cw = comp_find_by_xid(pev->window);
-			if (cw && cw->client) {
-				xcb_connection_t         *xc2 = XGetXCBConnection(dpy);
-				xcb_get_property_cookie_t ck2;
-				xcb_get_property_reply_t *r2;
-
-				ck2 = xcb_get_property(xc2, 0, (xcb_window_t) pev->window,
-				    (xcb_atom_t) comp.atom_net_wm_opacity, XCB_ATOM_CARDINAL,
-				    0, 1);
-				r2  = xcb_get_property_reply(xc2, ck2, NULL);
-				if (r2 &&
-				    xcb_get_property_value_length(r2) >=
-				        (int) sizeof(uint32_t)) {
-					unsigned long raw =
-					    *(uint32_t *) xcb_get_property_value(r2);
-					compositor_set_opacity(cw->client, raw);
-				} else {
-					/* Property deleted — restore to fully opaque */
-					compositor_set_opacity(cw->client, 0xFFFFFFFFUL);
+				for (cur = comp.windows; cur; cur = cur->next) {
+					if (cur == cw) {
+						if (prev)
+							prev->next = cw->next;
+						else
+							comp.windows = cw->next;
+						if (comp.use_gl)
+							comp_release_tfp(cw);
+						comp_free_win(cw);
+						free(cw);
+						break;
+					}
+					prev = cur;
 				}
-				free(r2);
 			}
+			schedule_repaint();
+			return;
 		}
-		return;
-	}
 
-	if (comp.has_xshape && ev->type == comp.shape_ev_base + ShapeNotify) {
-		XShapeEvent *sev = (XShapeEvent *) ev;
-		if (sev->kind == ShapeBounding) {
-			CompWin *cw = comp_find_by_xid(sev->window);
+		if (type == ConfigureNotify) {
+			xcb_configure_notify_event_t *cev =
+			    (xcb_configure_notify_event_t *) ev;
+			CompWin *cw = comp_find_by_xid(cev->window);
 			if (cw) {
-				if (comp.use_gl) {
-					/* In the GL path there's no per-picture clip region;
-					 * the shape is handled by re-acquiring the pixmap so
-					 * TFP naturally masks via the window's shape. */
-					if (cw->redirected)
-						comp_refresh_pixmap(cw);
-				} else if (cw->picture) {
-					comp_apply_shape(cw);
+				if (cw->client) {
+					/* Geometry for managed clients is tracked by
+					 * compositor_configure_window() (called from
+					 * resizeclient()). We only need to update the Z-order in
+					 * our internal list so the painter's algorithm draws them
+					 * correctly. Without this, comp.windows ordering is frozen
+					 * at map time and monocle / floating windows appear in the
+					 * wrong layer. */
+					comp_restack_above(cw, cev->above_sibling);
+					schedule_repaint();
+					return;
 				}
+
+				int resized = (cev->width != cw->w || cev->height != cw->h);
+
+				{
+					xcb_connection_t   *xc = XGetXCBConnection(dpy);
+					xcb_rectangle_t     old_rect;
+					xcb_xfixes_region_t old_r;
+					old_rect.x      = (short) cw->x;
+					old_rect.y      = (short) cw->y;
+					old_rect.width  = (uint16_t) (cw->w + 2 * cw->bw);
+					old_rect.height = (uint16_t) (cw->h + 2 * cw->bw);
+					old_r           = xcb_generate_id(xc);
+					xcb_xfixes_create_region(xc, old_r, 1, &old_rect);
+					xcb_xfixes_union_region(xc, comp.dirty, old_r, comp.dirty);
+					xcb_xfixes_destroy_region(xc, old_r);
+				}
+
+				cw->x  = cev->x;
+				cw->y  = cev->y;
+				cw->w  = cev->width;
+				cw->h  = cev->height;
+				cw->bw = cev->border_width;
+
+				/* Restack in our internal list to match the X stacking order.
+				 * cev->above_sibling is the sibling directly below this
+				 * window. */
+				comp_restack_above(cw, cev->above_sibling);
+
+				if (cw->redirected && resized)
+					comp_refresh_pixmap(cw);
+
 				schedule_repaint();
 			}
+			return;
 		}
-		return;
-	}
 
-	if (ev->type == SelectionClear) {
-		XSelectionClearEvent *sce = (XSelectionClearEvent *) ev;
-		if (sce->selection == comp.atom_cm_sn) {
-			/* Another compositor has claimed our selection — shut down. */
-			awm_warn("compositor: lost _NET_WM_CM_S%d selection to another "
-			         "compositor; disabling compositing",
-			    screen);
-			compositor_cleanup();
+		if (type == DestroyNotify) {
+			xcb_destroy_notify_event_t *dev =
+			    (xcb_destroy_notify_event_t *) ev;
+			CompWin *prev = NULL, *cw;
+			for (cw = comp.windows; cw; cw = cw->next) {
+				if (cw->win == dev->window) {
+					{
+						xcb_connection_t   *xc = XGetXCBConnection(dpy);
+						xcb_rectangle_t     r;
+						xcb_xfixes_region_t sr;
+						r.x      = (short) cw->x;
+						r.y      = (short) cw->y;
+						r.width  = (uint16_t) (cw->w + 2 * cw->bw);
+						r.height = (uint16_t) (cw->h + 2 * cw->bw);
+						sr       = xcb_generate_id(xc);
+						xcb_xfixes_create_region(xc, sr, 1, &r);
+						xcb_xfixes_union_region(
+						    xc, comp.dirty, sr, comp.dirty);
+						xcb_xfixes_destroy_region(xc, sr);
+					}
+					if (prev)
+						prev->next = cw->next;
+					else
+						comp.windows = cw->next;
+					if (comp.use_gl)
+						comp_release_tfp(cw);
+					comp_free_win(cw);
+					free(cw);
+					schedule_repaint();
+					return;
+				}
+				prev = cw;
+			}
+			return;
 		}
-		return;
-	}
 
-	/* ---- X Present CompleteNotify -----------------------------------------
-	 * Chrome/Chromium and other DRI3/Present clients submit GPU video frames
-	 * via xcb_present_pixmap rather than triggering XDamageNotify.  Without
-	 * this handler the compositor would paint one static frame on resume from
-	 * fullscreen bypass and then freeze.
-	 *
-	 * Present events arrive as Xlib GenericEvent (type 35).  We call
-	 * XGetEventData to get the xcb_ge_generic_event_t cookie, check that its
-	 * extension field matches the Present major opcode, and for a
-	 * CompleteNotify we force a pixmap refresh + full damage + repaint on the
-	 * originating window.
-	 */
-	if (comp.has_present && ev->type == GenericEvent) {
-		XGenericEventCookie *cookie = &ev->xcookie;
-		if (XGetEventData(dpy, cookie)) {
-			if (cookie->extension == (int) comp.present_opcode &&
-			    cookie->evtype == XCB_PRESENT_COMPLETE_NOTIFY) {
+		if (type == PropertyNotify) {
+			xcb_property_notify_event_t *pev =
+			    (xcb_property_notify_event_t *) ev;
+			if (pev->window == root &&
+			    (pev->atom == comp.atom_rootpmap ||
+			        pev->atom == comp.atom_esetroot)) {
+				comp_update_wallpaper();
+				compositor_damage_all();
+			} else if (pev->atom == comp.atom_net_wm_opacity &&
+			    pev->window != root) {
+				/* _NET_WM_WINDOW_OPACITY changed on a client window.
+				 * Read the new value and propagate it to the CompWin. */
+				CompWin *cw = comp_find_by_xid(pev->window);
+				if (cw && cw->client) {
+					xcb_connection_t         *xc2 = XGetXCBConnection(dpy);
+					xcb_get_property_cookie_t ck2;
+					xcb_get_property_reply_t *r2;
+
+					ck2 = xcb_get_property(xc2, 0, (xcb_window_t) pev->window,
+					    (xcb_atom_t) comp.atom_net_wm_opacity,
+					    XCB_ATOM_CARDINAL, 0, 1);
+					r2  = xcb_get_property_reply(xc2, ck2, NULL);
+					if (r2 &&
+					    xcb_get_property_value_length(r2) >=
+					        (int) sizeof(uint32_t)) {
+						unsigned long raw =
+						    *(uint32_t *) xcb_get_property_value(r2);
+						compositor_set_opacity(cw->client, raw);
+					} else {
+						/* Property deleted — restore to fully opaque */
+						compositor_set_opacity(cw->client, 0xFFFFFFFFUL);
+					}
+					free(r2);
+				}
+			}
+			return;
+		}
+
+		if (comp.has_xshape &&
+		    type == (uint8_t) (comp.shape_ev_base + ShapeNotify)) {
+			XShapeEvent *sev = (XShapeEvent *) (void *) ev;
+			if (sev->kind == ShapeBounding) {
+				CompWin *cw = comp_find_by_xid(sev->window);
+				if (cw) {
+					if (comp.use_gl) {
+						/* In the GL path there's no per-picture clip region;
+						 * the shape is handled by re-acquiring the pixmap so
+						 * TFP naturally masks via the window's shape. */
+						if (cw->redirected)
+							comp_refresh_pixmap(cw);
+					} else if (cw->picture) {
+						comp_apply_shape(cw);
+					}
+					schedule_repaint();
+				}
+			}
+			return;
+		}
+
+		if (type == SelectionClear) {
+			xcb_selection_clear_event_t *sce =
+			    (xcb_selection_clear_event_t *) ev;
+			if (sce->selection == comp.atom_cm_sn) {
+				/* Another compositor has claimed our selection — shut down. */
+				awm_warn(
+				    "compositor: lost _NET_WM_CM_S%d selection to another "
+				    "compositor; disabling compositing",
+				    screen);
+				compositor_cleanup();
+			}
+			return;
+		}
+
+		/* ---- X Present CompleteNotify
+		 * ----------------------------------------- Chrome/Chromium and other
+		 * DRI3/Present clients submit GPU video frames via xcb_present_pixmap
+		 * rather than triggering XDamageNotify.  Without this handler the
+		 * compositor would paint one static frame on resume from fullscreen
+		 * bypass and then freeze.
+		 *
+		 * Present events arrive as XCB GenericEvent (response_type == 35).
+		 * We check that the extension field matches the Present major opcode,
+		 * and for CompleteNotify we force a pixmap refresh + full damage.
+		 */
+		if (comp.has_present && type == XCB_GE_GENERIC) {
+			xcb_ge_generic_event_t *ge = (xcb_ge_generic_event_t *) ev;
+			if (ge->extension == (uint8_t) comp.present_opcode &&
+			    ge->event_type == XCB_PRESENT_COMPLETE_NOTIFY) {
 				xcb_present_complete_notify_event_t *pev =
-				    (xcb_present_complete_notify_event_t *) cookie->data;
+				    (xcb_present_complete_notify_event_t *) ev;
 				/* Only react to pixmap presents (kind==0), not MSC queries */
 				if (pev->kind == XCB_PRESENT_COMPLETE_KIND_PIXMAP) {
 					CompWin *cw = comp_find_by_xid((Window) pev->window);
@@ -2432,10 +2443,10 @@ compositor_handle_event(XEvent *ev)
 					}
 				}
 			}
-			XFreeEventData(dpy, cookie);
+			return;
 		}
-		return;
-	}
+
+	} /* end type switch block */
 }
 
 /* -------------------------------------------------------------------------
@@ -2472,11 +2483,16 @@ comp_repaint_idle(gpointer data)
 	 * before painting so we paint one complete frame covering all
 	 * accumulated damage instead of a series of partial frames. */
 	{
-		XEvent ev;
-		while (
-		    XCheckTypedEvent(dpy, comp.damage_ev_base + XDamageNotify, &ev)) {
-			compositor_fix_wire_to_event(&ev);
-			compositor_handle_event(&ev);
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
+		uint8_t dmgt         = (uint8_t) (comp.damage_ev_base + XDamageNotify);
+		xcb_generic_event_t *xe;
+		xcb_flush(xc);
+		while ((xe = xcb_poll_for_event(xc))) {
+			if ((xe->response_type & ~0x80) == dmgt) {
+				compositor_fix_wire_to_event((XEvent *) (void *) xe);
+				compositor_handle_event(xe);
+			}
+			free(xe);
 		}
 	}
 

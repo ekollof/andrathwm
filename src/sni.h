@@ -109,7 +109,7 @@ void sni_scroll(SNIItem *item, int delta, const char *orientation);
 /* Menu support */
 void sni_show_menu(SNIItem *item, int x, int y, Time event_time);
 void sni_free_menu(SNIMenuItem *menu);
-int  sni_handle_menu_event(XEvent *ev);
+int  sni_handle_menu_event(xcb_generic_event_t *ev);
 
 /* D-Bus helpers */
 DBusMessage *sni_call_method(const char *service, const char *path,
