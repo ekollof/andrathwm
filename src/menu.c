@@ -10,9 +10,9 @@
 #ifdef XINERAMA
 #include <X11/extensions/Xinerama.h>
 #endif
-#ifdef XRANDR
-#include <X11/extensions/Xrandr.h>
-#endif
+#include <xcb/xcb.h>
+#include <xcb/xcb_keysyms.h>
+#include <xcb/randr.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -20,6 +20,7 @@
 #include "drw.h"
 #include "log.h"
 #include "menu.h"
+#include "awm.h"
 
 #define MENU_ITEM_HEIGHT 22
 #define MENU_PADDING 4
@@ -196,8 +197,15 @@ menu_render(Menu *menu)
 Menu *
 menu_create(Display *dpy, Window root, Drw *drw, Clr **scheme)
 {
-	Menu                *menu;
-	XSetWindowAttributes wa;
+	Menu             *menu;
+	xcb_connection_t *xc = XGetXCBConnection(dpy);
+	uint32_t          mask;
+	uint32_t          vals[5];
+	xcb_colormap_t    cmap =
+	    (xcb_colormap_t) DefaultColormap(dpy, DefaultScreen(dpy));
+	xcb_visualid_t vid = (xcb_visualid_t) XVisualIDFromVisual(
+	    DefaultVisual(dpy, DefaultScreen(dpy)));
+	int depth = DefaultDepth(dpy, DefaultScreen(dpy));
 
 	menu = calloc(1, sizeof(Menu));
 	if (!menu)
@@ -217,21 +225,21 @@ menu_create(Display *dpy, Window root, Drw *drw, Clr **scheme)
 	menu->w                   = MENU_MIN_WIDTH;
 	menu->h                   = 100;
 
-	/* Create override-redirect window */
-	wa.override_redirect = True;
-	wa.background_pixel  = 0;
-	wa.border_pixel      = 0;
-	wa.colormap          = DefaultColormap(dpy, DefaultScreen(dpy));
-	wa.event_mask        = ExposureMask | KeyPressMask | ButtonPressMask |
-	    ButtonReleaseMask | PointerMotionMask | LeaveWindowMask |
-	    FocusChangeMask;
-
-	menu->win = XCreateWindow(dpy, root, 0, 0, menu->w, menu->h, 1,
-	    DefaultDepth(dpy, DefaultScreen(dpy)), CopyFromParent,
-	    DefaultVisual(dpy, DefaultScreen(dpy)),
-	    CWOverrideRedirect | CWBackPixel | CWBorderPixel | CWColormap |
-	        CWEventMask,
-	    &wa);
+	/* Create override-redirect window via XCB */
+	menu->win = xcb_generate_id(xc);
+	mask = XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL | XCB_CW_OVERRIDE_REDIRECT |
+	    XCB_CW_EVENT_MASK | XCB_CW_COLORMAP;
+	vals[0] = 0; /* back pixel */
+	vals[1] = 0; /* border pixel */
+	vals[2] = 1; /* override redirect */
+	vals[3] = XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS |
+	    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
+	    XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_LEAVE_WINDOW |
+	    XCB_EVENT_MASK_FOCUS_CHANGE;
+	vals[4] = cmap;
+	xcb_create_window(xc, (uint8_t) depth, menu->win, (xcb_window_t) root, 0,
+	    0, (uint16_t) menu->w, (uint16_t) menu->h, 1,
+	    XCB_WINDOW_CLASS_INPUT_OUTPUT, vid, mask, vals);
 
 	return menu;
 }
@@ -250,7 +258,7 @@ menu_free(Menu *menu)
 		menu_items_free(menu->items);
 
 	if (menu->win)
-		XDestroyWindow(menu->dpy, menu->win);
+		xcb_destroy_window(XGetXCBConnection(menu->dpy), menu->win);
 
 	free(menu);
 }
@@ -283,50 +291,67 @@ menu_get_monitor_geometry(
 
 #ifdef XRANDR
 	{
-		int                 randr_event, randr_error;
-		XRRScreenResources *sr;
-		int                 i;
+		xcb_connection_t                  *xc = XGetXCBConnection(dpy);
+		const xcb_query_extension_reply_t *ext =
+		    xcb_get_extension_data(xc, &xcb_randr_id);
 
-		if (XRRQueryExtension(dpy, &randr_event, &randr_error) &&
-		    (sr = XRRGetScreenResources(dpy, DefaultRootWindow(dpy)))) {
-			int found = 0;
+		if (ext && ext->present) {
+			xcb_randr_get_screen_resources_cookie_t src;
+			xcb_randr_get_screen_resources_reply_t *sr;
+			xcb_randr_crtc_t                       *crtcs;
+			int                                     ncrtc, i, found = 0;
+			xcb_window_t root = (xcb_window_t) DefaultRootWindow(dpy);
 
-			for (i = 0; i < sr->ncrtc && !found; i++) {
-				XRRCrtcInfo *ci = XRRGetCrtcInfo(dpy, sr, sr->crtcs[i]);
-				if (!ci)
-					continue;
-				if (ci->noutput > 0 && x >= ci->x &&
-				    x < (int) (ci->x + ci->width) && y >= ci->y &&
-				    y < (int) (ci->y + ci->height)) {
-					*mon_x = ci->x;
-					*mon_y = ci->y;
-					*mon_w = ci->width;
-					*mon_h = ci->height;
-					found  = 1;
-				}
-				XRRFreeCrtcInfo(ci);
-			}
+			src = xcb_randr_get_screen_resources(xc, root);
+			sr  = xcb_randr_get_screen_resources_reply(xc, src, NULL);
+			if (sr) {
+				ncrtc = xcb_randr_get_screen_resources_crtcs_length(sr);
+				crtcs = xcb_randr_get_screen_resources_crtcs(sr);
 
-			if (!found) {
-				/* Point not in any CRTC — use first active one */
-				for (i = 0; i < sr->ncrtc && !found; i++) {
-					XRRCrtcInfo *ci = XRRGetCrtcInfo(dpy, sr, sr->crtcs[i]);
+				for (i = 0; i < ncrtc && !found; i++) {
+					xcb_randr_get_crtc_info_cookie_t cic =
+					    xcb_randr_get_crtc_info(
+					        xc, crtcs[i], XCB_CURRENT_TIME);
+					xcb_randr_get_crtc_info_reply_t *ci =
+					    xcb_randr_get_crtc_info_reply(xc, cic, NULL);
 					if (!ci)
 						continue;
-					if (ci->noutput > 0) {
+					if (ci->num_outputs > 0 && x >= ci->x &&
+					    x < (int) (ci->x + ci->width) && y >= ci->y &&
+					    y < (int) (ci->y + ci->height)) {
 						*mon_x = ci->x;
 						*mon_y = ci->y;
 						*mon_w = ci->width;
 						*mon_h = ci->height;
 						found  = 1;
 					}
-					XRRFreeCrtcInfo(ci);
+					free(ci);
 				}
-			}
 
-			XRRFreeScreenResources(sr);
-			if (found)
-				return;
+				if (!found) {
+					/* Point not in any CRTC — use first active one */
+					for (i = 0; i < ncrtc && !found; i++) {
+						xcb_randr_get_crtc_info_cookie_t cic =
+						    xcb_randr_get_crtc_info(
+						        xc, crtcs[i], XCB_CURRENT_TIME);
+						xcb_randr_get_crtc_info_reply_t *ci =
+						    xcb_randr_get_crtc_info_reply(xc, cic, NULL);
+						if (!ci)
+							continue;
+						if (ci->num_outputs > 0) {
+							*mon_x = ci->x;
+							*mon_y = ci->y;
+							*mon_w = ci->width;
+							*mon_h = ci->height;
+							found  = 1;
+						}
+						free(ci);
+					}
+				}
+				free(sr);
+				if (found)
+					return;
+			}
 		}
 	}
 #endif /* XRANDR */
@@ -411,9 +436,22 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
 	awm_debug("Menu: Adjusted pos (%d,%d)", menu->x, menu->y);
 
 	/* Position and show window */
-	XMoveResizeWindow(
-	    menu->dpy, menu->win, menu->x, menu->y, menu->w, menu->h);
-	XMapRaised(menu->dpy, menu->win);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(menu->dpy);
+		uint32_t          cfg[4];
+
+		cfg[0] = (uint32_t) menu->x;
+		cfg[1] = (uint32_t) menu->y;
+		cfg[2] = menu->w;
+		cfg[3] = menu->h;
+		xcb_configure_window(xc, menu->win,
+		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+		    cfg);
+		xcb_map_window(xc, menu->win);
+		cfg[0] = XCB_STACK_MODE_ABOVE;
+		xcb_configure_window(xc, menu->win, XCB_CONFIG_WINDOW_STACK_MODE, cfg);
+	}
 
 	/* Process expose to render before grab */
 	xcb_flush(XGetXCBConnection(menu->dpy));
@@ -430,21 +468,34 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
 	 * client's async grab).  Using CurrentTime here would fail with
 	 * AlreadyGrabbed because X11 rejects a grab that pre-dates the
 	 * existing one. */
-	XUngrabPointer(menu->dpy, event_time);
-	xcb_flush(XGetXCBConnection(menu->dpy));
 	{
-		int grab_result = XGrabPointer(menu->dpy, menu->win, False,
-		    ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
-		    GrabModeAsync, GrabModeAsync, None, None, event_time);
-		if (grab_result != GrabSuccess)
-			awm_warn("Menu: Failed to grab pointer (result=%d)", grab_result);
-	}
+		xcb_connection_t          *xc = XGetXCBConnection(menu->dpy);
+		xcb_grab_pointer_cookie_t  gpc;
+		xcb_grab_pointer_reply_t  *gpr;
+		xcb_grab_keyboard_cookie_t gkc;
+		xcb_grab_keyboard_reply_t *gkr;
 
-	{
-		int key_grab = XGrabKeyboard(menu->dpy, menu->win, True, GrabModeAsync,
-		    GrabModeAsync, event_time);
-		if (key_grab != GrabSuccess)
-			awm_warn("Menu: Failed to grab keyboard (result=%d)", key_grab);
+		xcb_ungrab_pointer(xc, (xcb_timestamp_t) event_time);
+		xcb_flush(xc);
+
+		gpc = xcb_grab_pointer(xc, 0, menu->win,
+		    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
+		        XCB_EVENT_MASK_POINTER_MOTION,
+		    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, XCB_NONE, XCB_NONE,
+		    (xcb_timestamp_t) event_time);
+		gpr = xcb_grab_pointer_reply(xc, gpc, NULL);
+		if (!gpr || gpr->status != XCB_GRAB_STATUS_SUCCESS)
+			awm_warn("Menu: Failed to grab pointer (status=%d)",
+			    gpr ? gpr->status : -1);
+		free(gpr);
+
+		gkc = xcb_grab_keyboard(xc, 1, menu->win, (xcb_timestamp_t) event_time,
+		    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+		gkr = xcb_grab_keyboard_reply(xc, gkc, NULL);
+		if (!gkr || gkr->status != XCB_GRAB_STATUS_SUCCESS)
+			awm_warn("Menu: Failed to grab keyboard (status=%d)",
+			    gkr ? gkr->status : -1);
+		free(gkr);
 	}
 }
 
@@ -505,10 +556,23 @@ menu_show_submenu(Menu *parent, MenuItem *item, int item_y)
 	submenu->callback      = parent->callback;
 	submenu->callback_data = parent->callback_data;
 
-	XMoveResizeWindow(submenu->dpy, submenu->win, submenu->x, submenu->y,
-	    submenu->w, submenu->h);
-	XMapRaised(submenu->dpy, submenu->win);
-	submenu->visible = 1;
+	{
+		xcb_connection_t *xc = XGetXCBConnection(submenu->dpy);
+		uint32_t          cfg[4];
+
+		cfg[0] = (uint32_t) submenu->x;
+		cfg[1] = (uint32_t) submenu->y;
+		cfg[2] = submenu->w;
+		cfg[3] = submenu->h;
+		xcb_configure_window(xc, submenu->win,
+		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+		    cfg);
+		xcb_map_window(xc, submenu->win);
+		cfg[0] = XCB_STACK_MODE_ABOVE;
+		xcb_configure_window(
+		    xc, submenu->win, XCB_CONFIG_WINDOW_STACK_MODE, cfg);
+	}
 	menu_render(submenu);
 
 	parent->active_submenu = submenu;
@@ -528,9 +592,12 @@ menu_hide(Menu *menu)
 		menu->active_submenu = NULL;
 	}
 
-	XUngrabPointer(menu->dpy, CurrentTime);
-	XUngrabKeyboard(menu->dpy, CurrentTime);
-	XUnmapWindow(menu->dpy, menu->win);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(menu->dpy);
+		xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
+		xcb_ungrab_keyboard(xc, XCB_CURRENT_TIME);
+		xcb_unmap_window(xc, menu->win);
+	}
 	menu->visible  = 0;
 	menu->selected = -1;
 }
@@ -673,7 +740,8 @@ menu_handle_event(Menu *menu, XEvent *ev)
 		return 1;
 
 	case KeyPress: {
-		KeySym key = XLookupKeysym(&ev->xkey, 0);
+		xcb_keysym_t key = xcb_key_symbols_get_keysym(
+		    keysyms, (xcb_keycode_t) ev->xkey.keycode, 0);
 		switch (key) {
 		case XK_Escape:
 			menu_hide(menu);

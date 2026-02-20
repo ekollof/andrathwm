@@ -128,6 +128,9 @@ These are permanently Xlib and should not be touched:
 | `drw.c` — `XCreatePixmap`, `XCreateGC`, `XFillRectangle`, `XCopyArea`, `XSetForeground`, `XCreateFontCursor`, `XFreeCursor` | Drawing primitives; no XCB equivalents — permanent keeps even after Pango migration |
 | `launcher.c` entirely | Has its own event loop, intentional keep |
 | `xrdb.c` entirely | Standalone resource query, intentional keep |
+| `drw.c` — `XSetLineAttributes`, `XDrawRectangle` | Drawing primitives; permanent keeps (same rationale as other drw.c drawing calls) |
+| `menu.c` / `sni.c` Xinerama (`XineramaIsActive`, `XineramaQueryScreens`) | No XCB Xinerama extension library; `XFree(screens)` is correct per Xinerama spec |
+| `XrmInitialize()` in `awm.c` | Required to initialise Xresource subsystem for `xrdb.c` intentional keep; no XCB equivalent |
 | `events.c:127` `XSelectInput` (SubstructureRedirectMask on root at WM-already-running check) | Part of a deliberate detect-and-die sequence; acceptable |
 | `events.c:127-130` `XSync` pair surrounding the above | Flush for the error probe |
 | `client.c:480` `XFree(name.value)` | Freeing result of `XGetTextProperty` (intentional keep) |

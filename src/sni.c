@@ -8,6 +8,7 @@
 #ifdef STATUSNOTIFIER
 
 #include <X11/Xlib.h>
+#include <X11/Xlib-xcb.h>
 #include <X11/Xutil.h>
 #include <cairo/cairo-xcb.h>
 #include <xcb/xcb.h>
@@ -629,7 +630,7 @@ sni_remove_item(SNIItem *item)
 
 	if (item->win) {
 		removesniiconsystray(item->win);
-		XDestroyWindow(sni_dpy, item->win);
+		xcb_destroy_window(XGetXCBConnection(sni_dpy), item->win);
 	}
 
 	item->generation++; /* invalidate any in-flight async ctx */
@@ -1058,8 +1059,13 @@ sni_icon_render(SNIItem *item, int icon_size, cairo_surface_t *icon_surface)
 	cairo_surface_destroy(pixmap_surface);
 
 	/* Set as window background — pixmap XID is global to the X server */
-	XSetWindowBackgroundPixmap(sni_dpy, item->win, pixmap);
-	XClearWindow(sni_dpy, item->win);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(sni_dpy);
+		uint32_t          pm = (uint32_t) pixmap;
+		xcb_change_window_attributes(
+		    xc, (xcb_window_t) item->win, XCB_CW_BACK_PIXMAP, &pm);
+		xcb_clear_area(xc, 0, (xcb_window_t) item->win, 0, 0, 0, 0);
+	}
 	xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
 
 	awm_debug("SNI: Icon rendered for %s", item->service);
@@ -1190,16 +1196,22 @@ sni_render_item(SNIItem *item)
 
 	/* Create window if needed */
 	if (!item->win) {
-		XSetWindowAttributes wa;
-		wa.override_redirect = True;
-		wa.background_pixmap = None;
-		wa.border_pixel      = 0;
-		wa.event_mask = ButtonPressMask | ExposureMask | StructureNotifyMask;
+		xcb_connection_t *xc   = XGetXCBConnection(sni_dpy);
+		xcb_window_t      win  = xcb_generate_id(xc);
+		uint32_t          mask = XCB_CW_BACK_PIXMAP | XCB_CW_BORDER_PIXEL |
+		    XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK;
+		uint32_t vals[4];
 
-		item->win = XCreateWindow(sni_dpy, sni_root, 0, 0, sniconsize,
-		    sniconsize, 0, CopyFromParent, InputOutput, CopyFromParent,
-		    CWOverrideRedirect | CWBackPixmap | CWBorderPixel | CWEventMask,
-		    &wa);
+		vals[0] = XCB_BACK_PIXMAP_NONE;
+		vals[1] = 0;
+		vals[2] = 1;
+		vals[3] = XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE |
+		    XCB_EVENT_MASK_STRUCTURE_NOTIFY;
+		xcb_create_window(xc, XCB_COPY_FROM_PARENT, win,
+		    (xcb_window_t) sni_root, 0, 0, (uint16_t) sniconsize,
+		    (uint16_t) sniconsize, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+		    XCB_COPY_FROM_PARENT, mask, vals);
+		item->win = (Window) win;
 
 		if (!item->win) {
 			awm_error("SNI: Failed to create window for %s", item->service);
@@ -1274,8 +1286,13 @@ sni_render_item(SNIItem *item)
 	cairo_surface_destroy(pixmap_surface);
 
 	/* Set as window background — pixmap XID is global to the X server */
-	XSetWindowBackgroundPixmap(sni_dpy, item->win, pixmap);
-	XClearWindow(sni_dpy, item->win);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(sni_dpy);
+		uint32_t          pm = (uint32_t) pixmap;
+		xcb_change_window_attributes(
+		    xc, (xcb_window_t) item->win, XCB_CW_BACK_PIXMAP, &pm);
+		xcb_clear_area(xc, 0, (xcb_window_t) item->win, 0, 0, 0, 0);
+	}
 	xcb_free_pixmap(sni_cairo_xcb, (xcb_pixmap_t) pixmap);
 
 	awm_debug("SNI: Placeholder rendered for %s", item->service);
