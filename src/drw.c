@@ -1,4 +1,5 @@
 /* See LICENSE file for copyright and license details. */
+#include <X11/extensions/Xrender.h>
 #include <stdlib.h>
 #include <string.h>
 #include <xcb/xcb.h>
@@ -532,14 +533,21 @@ drw_cur_free(Drw *drw, Cur *cursor)
 	XFreeCursor(drw->dpy, cursor->cursor);
 	free(cursor);
 }
+
 void
 drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
     cairo_surface_t *surface)
 {
-	cairo_surface_t *tmp_surf;
-	cairo_t         *cr;
-	xcb_pixmap_t     tmp_pm;
-	int              depth;
+	int                src_w, src_h, stride;
+	unsigned char     *data;
+	Pixmap             tmp_pm;
+	XImage            *img;
+	Picture            src_pic, dst_pic;
+	XRenderPictFormat *argb_fmt, *dst_fmt;
+	Visual            *argb_vis = NULL;
+	XVisualInfo        vi_tmpl;
+	XVisualInfo       *vi_list;
+	int                vi_count, i;
 
 	if (!drw || !surface)
 		return;
@@ -547,67 +555,94 @@ drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
 		return;
 
+	if (cairo_surface_get_type(surface) != CAIRO_SURFACE_TYPE_IMAGE) {
+		awm_warn("drw_pic: non-image surface, icon skipped");
+		return;
+	}
+
+	cairo_surface_flush(surface);
+	data   = cairo_image_surface_get_data(surface);
+	src_w  = cairo_image_surface_get_width(surface);
+	src_h  = cairo_image_surface_get_height(surface);
+	stride = cairo_image_surface_get_stride(surface);
+
+	if (!data || src_w <= 0 || src_h <= 0)
+		return;
+
 	/*
-	 * Render the icon entirely on drw->cairo_xcb into a temporary pixmap
-	 * allocated on that same connection.  After a synchronising roundtrip
-	 * on cairo_xcb we copy the finished pixmap into drw->drawable via the
-	 * Xlib connection (dpy).  Doing everything on one connection before
-	 * switching avoids the cross-connection ordering hazard that caused
-	 * icons to be blank: if we draw with Cairo (cairo_xcb) and then
-	 * immediately XCopyArea (dpy) without a sync, the server may process
-	 * XCopyArea before the Cairo render commands because they travel on
-	 * different sockets.
+	 * Upload ARGB32 icon pixels into a temporary 32-bit depth pixmap and
+	 * alpha-composite it into drw->drawable using XRenderComposite.
+	 * Everything goes through the Xlib connection (dpy) — no separate XCB
+	 * connection, no cross-connection ordering hazard.
 	 */
-	if (!drw->cairo_xcb || !drw->xcb_visual) {
-		awm_warn("drw_pic: no cairo_xcb connection, icon skipped");
+	argb_fmt = XRenderFindStandardFormat(drw->dpy, PictStandardARGB32);
+	if (!argb_fmt) {
+		awm_warn("drw_pic: XRender ARGB32 format not available");
 		return;
 	}
 
-	depth  = DefaultDepth(drw->dpy, drw->screen);
-	tmp_pm = xcb_generate_id(drw->cairo_xcb);
-	xcb_create_pixmap(drw->cairo_xcb, (uint8_t) depth, tmp_pm,
-	    (xcb_drawable_t) drw->root, (uint16_t) w, (uint16_t) h);
-
-	tmp_surf = cairo_xcb_surface_create(drw->cairo_xcb,
-	    (xcb_drawable_t) tmp_pm, drw->xcb_visual, (int) w, (int) h);
-	if (cairo_surface_status(tmp_surf) != CAIRO_STATUS_SUCCESS) {
-		cairo_surface_destroy(tmp_surf);
-		xcb_free_pixmap(drw->cairo_xcb, tmp_pm);
-		return;
-	}
-
-	cr = cairo_create(tmp_surf);
-	/* Scale the source icon to fit the requested dimensions */
-	{
-		int src_w = cairo_image_surface_get_width(surface);
-		int src_h = cairo_image_surface_get_height(surface);
-		if (src_w > 0 && src_h > 0) {
-			cairo_scale(cr, (double) w / src_w, (double) h / src_h);
+	/* Find a 32-bit TrueColor visual for the temp pixmap */
+	vi_tmpl.screen = drw->screen;
+	vi_tmpl.depth  = 32;
+	vi_tmpl.class  = TrueColor; /* c89-safe: 'class' is the field name */
+	vi_list        = XGetVisualInfo(drw->dpy,
+	           VisualScreenMask | VisualDepthMask | VisualClassMask, &vi_tmpl,
+	           &vi_count);
+	if (vi_list) {
+		for (i = 0; i < vi_count; i++) {
+			if (vi_list[i].depth == 32) {
+				argb_vis = vi_list[i].visual;
+				break;
+			}
 		}
+		XFree(vi_list);
 	}
-	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
-	cairo_set_source_surface(cr, surface, 0, 0);
-	cairo_paint(cr);
-	cairo_destroy(cr);
+	if (!argb_vis) {
+		awm_warn("drw_pic: no 32-bit TrueColor visual, icon skipped");
+		return;
+	}
 
-	/* Flush Cairo's buffered requests and wait for the server to finish
-	 * processing them.  The roundtrip (get_input_focus cookie + reply)
-	 * is the cheapest available sync on an XCB-only connection. */
-	cairo_surface_flush(tmp_surf);
-	cairo_surface_destroy(tmp_surf);
+	tmp_pm = XCreatePixmap(
+	    drw->dpy, drw->root, (unsigned) src_w, (unsigned) src_h, 32);
+
+	img = XCreateImage(drw->dpy, argb_vis, 32, ZPixmap, 0, NULL,
+	    (unsigned) src_w, (unsigned) src_h, 32, stride);
+	if (!img) {
+		XFreePixmap(drw->dpy, tmp_pm);
+		return;
+	}
+	img->data = (char *) data; /* point at Cairo's buffer; we own it */
+
+	/* Create a matching GC for the 32-bit pixmap */
 	{
-		xcb_get_input_focus_cookie_t ck = xcb_get_input_focus(drw->cairo_xcb);
-		xcb_get_input_focus_reply_t *rep =
-		    xcb_get_input_focus_reply(drw->cairo_xcb, ck, NULL);
-		free(rep);
+		GC gc32 = XCreateGC(drw->dpy, tmp_pm, 0, NULL);
+		XPutImage(drw->dpy, tmp_pm, gc32, img, 0, 0, 0, 0, (unsigned) src_w,
+		    (unsigned) src_h);
+		XFreeGC(drw->dpy, gc32);
 	}
 
-	/* Now the pixmap is fully painted on the server.  Copy it into the
-	 * Xlib drawable (drw->drawable) via the Xlib connection. */
-	XCopyArea(
-	    drw->dpy, (Drawable) tmp_pm, drw->drawable, drw->gc, 0, 0, w, h, x, y);
+	/* Detach data pointer so XDestroyImage won't free Cairo's buffer */
+	img->data = NULL;
+	XDestroyImage(img);
 
-	/* Free the temporary pixmap on cairo_xcb (same connection that created
-	 * it). */
-	xcb_free_pixmap(drw->cairo_xcb, tmp_pm);
+	src_pic = XRenderCreatePicture(drw->dpy, tmp_pm, argb_fmt, 0, NULL);
+
+	dst_fmt = XRenderFindVisualFormat(
+	    drw->dpy, DefaultVisual(drw->dpy, drw->screen));
+	dst_pic = XRenderCreatePicture(drw->dpy, drw->drawable, dst_fmt, 0, NULL);
+
+	if ((unsigned) src_w != w || (unsigned) src_h != h) {
+		XTransform xform = { { { XDoubleToFixed((double) src_w / w), 0, 0 },
+			{ 0, XDoubleToFixed((double) src_h / h), 0 },
+			{ 0, 0, XDoubleToFixed(1.0) } } };
+		XRenderSetPictureTransform(drw->dpy, src_pic, &xform);
+		XRenderSetPictureFilter(drw->dpy, src_pic, FilterBilinear, NULL, 0);
+	}
+
+	XRenderComposite(
+	    drw->dpy, PictOpOver, src_pic, None, dst_pic, 0, 0, 0, 0, x, y, w, h);
+
+	XRenderFreePicture(drw->dpy, src_pic);
+	XRenderFreePicture(drw->dpy, dst_pic);
+	XFreePixmap(drw->dpy, tmp_pm);
 }
