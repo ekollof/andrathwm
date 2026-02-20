@@ -126,6 +126,17 @@ checkotherwm(void)
 	xcb_void_cookie_t    ck;
 	xcb_generic_error_t *err;
 
+	/* root is not yet set when this is called (setup() runs after us),
+	 * so derive it directly from the XCB setup data. */
+	if (!root) {
+		xcb_screen_iterator_t sit =
+		    xcb_setup_roots_iterator(xcb_get_setup(xc));
+		int i;
+		for (i = 0; i < screen; i++)
+			xcb_screen_next(&sit);
+		root = sit.data->root;
+	}
+
 	/* Probe for another WM by requesting SubstructureRedirect on root.
 	 * Only one client may hold this mask; xcb_request_check returns an
 	 * error synchronously if another WM is already running. */

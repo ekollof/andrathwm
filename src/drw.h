@@ -35,10 +35,9 @@ typedef struct {
 	xcb_gcontext_t    gc;
 	Clr              *scheme;
 	Fnt              *fonts;
-	xcb_connection_t
-	    *cairo_xcb; /* dedicated XCB conn for cairo — never read by Xlib */
-	xcb_visualtype_t *xcb_visual;    /* matches root visual for screen */
-	cairo_surface_t  *cairo_surface; /* cached surface for icon rendering */
+	xcb_visualtype_t *xcb_visual; /* matches root visual for screen */
+	cairo_surface_t
+	    *cairo_surface; /* cached surface for text/icon rendering */
 } Drw;
 
 /* Drawable abstraction */

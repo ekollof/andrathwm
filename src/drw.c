@@ -71,29 +71,21 @@ drw_create(xcb_connection_t *xc, int screen, xcb_window_t root, unsigned int w,
 		xcb_create_gc(xc, drw->gc, drw->drawable, mask, vals);
 	}
 
-	/* Open a dedicated XCB connection for Cairo.  Cairo's xcb backend
-	 * sends raw xcb_render_* requests on whatever xcb_connection_t it gets.
-	 * Using a separate connection that is never read from by the main loop
-	 * prevents sequence-counter ordering hazards. */
-	drw->cairo_xcb = xcb_connect(NULL, NULL);
-	if (xcb_connection_has_error(drw->cairo_xcb)) {
-		xcb_disconnect(drw->cairo_xcb);
-		drw->cairo_xcb = NULL;
-	}
-
-	if (drw->cairo_xcb) {
-		/* Walk XCB screen list to get root_visual for screen N */
+	/* Use the main XCB connection for Cairo.  A single connection removes the
+	 * two-connection race where xcb_copy_area could run before Cairo finishes
+	 * rendering into the pixmap.  cairo_surface_flush() in drw_map() ensures
+	 * all pending Cairo requests have been sent before xcb_copy_area. */
+	{
 		xcb_screen_iterator_t sit =
-		    xcb_setup_roots_iterator(xcb_get_setup(drw->cairo_xcb));
+		    xcb_setup_roots_iterator(xcb_get_setup(xc));
 		for (int i = 0; i < screen; i++)
 			xcb_screen_next(&sit);
 		drw->xcb_visual =
-		    xcb_find_visualtype(drw->cairo_xcb, screen, sit.data->root_visual);
+		    xcb_find_visualtype(xc, screen, sit.data->root_visual);
 	}
 
-	/* Create persistent Cairo surface for icon rendering */
-	if (drw->cairo_xcb && drw->xcb_visual) {
-		drw->cairo_surface = cairo_xcb_surface_create(drw->cairo_xcb,
+	if (drw->xcb_visual) {
+		drw->cairo_surface = cairo_xcb_surface_create(xc,
 		    (xcb_drawable_t) drw->drawable, drw->xcb_visual, (int) w, (int) h);
 	}
 
@@ -129,8 +121,8 @@ drw_resize(Drw *drw, unsigned int w, unsigned int h)
 	if (drw->cairo_surface)
 		cairo_surface_destroy(drw->cairo_surface);
 	drw->cairo_surface = NULL;
-	if (drw->cairo_xcb && drw->xcb_visual) {
-		drw->cairo_surface = cairo_xcb_surface_create(drw->cairo_xcb,
+	if (drw->xcb_visual) {
+		drw->cairo_surface = cairo_xcb_surface_create(drw->xc,
 		    (xcb_drawable_t) drw->drawable, drw->xcb_visual, (int) w, (int) h);
 	}
 }
@@ -140,8 +132,6 @@ drw_free(Drw *drw)
 {
 	if (drw->cairo_surface)
 		cairo_surface_destroy(drw->cairo_surface);
-	if (drw->cairo_xcb)
-		xcb_disconnect(drw->cairo_xcb);
 	xcb_free_pixmap(drw->xc, drw->drawable);
 	xcb_free_gc(drw->xc, drw->gc);
 	drw_fontset_free(drw->fonts);
@@ -399,9 +389,13 @@ drw_map(
 	if (!drw)
 		return;
 
-	/* Flush any pending Cairo operations to the drawable before X copies it */
-	if (drw->cairo_surface)
+	if (drw->cairo_surface) {
+		/* Flush all pending Cairo/Pango rendering to the XCB send buffer
+		 * before issuing xcb_copy_area.  Both Cairo and the XCB background
+		 * fills share the same connection (drw->xc), so the X server will
+		 * process them in submission order — no cross-connection race. */
 		cairo_surface_flush(drw->cairo_surface);
+	}
 
 	xcb_copy_area(drw->xc, drw->drawable, (xcb_drawable_t) win, drw->gc,
 	    (int16_t) x, (int16_t) y, (int16_t) x, (int16_t) y, (uint16_t) w,
@@ -435,7 +429,8 @@ drw_cur_create(Drw *drw, int shape)
 	if (!drw || !(cur = ecalloc(1, sizeof(Cur))))
 		return NULL;
 
-	/* Use xcb-cursor to load a cursor from the cursor font by glyph index */
+	/* Use xcb-cursor to load a cursor from the cursor font by glyph index
+	 */
 	if (xcb_cursor_context_new(drw->xc,
 	        xcb_setup_roots_iterator(xcb_get_setup(drw->xc)).data, &ctx) < 0) {
 		/* Fallback: create glyph cursor directly from cursor font */
@@ -451,7 +446,8 @@ drw_cur_create(Drw *drw, int shape)
 
 	xcb_cursor_context_free(ctx);
 
-	/* Create glyph cursor directly — reliable and matches Xlib behaviour */
+	/* Create glyph cursor directly — reliable and matches Xlib behaviour
+	 */
 	{
 		xcb_font_t font = xcb_generate_id(drw->xc);
 		xcb_open_font(drw->xc, font, strlen("cursor"), "cursor");
@@ -574,7 +570,8 @@ drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 	xcb_create_pixmap(
 	    drw->xc, 32, tmp_pm, drw->root, (uint16_t) src_w, (uint16_t) src_h);
 
-	/* Need a GC matched to tmp_pm's depth (32-bit) — drw->gc is root-depth */
+	/* Need a GC matched to tmp_pm's depth (32-bit) — drw->gc is root-depth
+	 */
 	{
 		xcb_gcontext_t gc32 = xcb_generate_id(drw->xc);
 		xcb_create_gc(drw->xc, gc32, tmp_pm, 0, NULL);

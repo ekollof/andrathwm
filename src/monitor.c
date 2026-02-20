@@ -8,6 +8,9 @@
 #include "spawn.h"
 #include "systray.h"
 #include "xrdb.h"
+#ifdef COMPOSITOR
+#include "compositor.h"
+#endif
 #include "config.h"
 
 #ifdef XINERAMA
@@ -40,12 +43,18 @@ arrange(Monitor *m)
 		/* Flush all pending requests and discard stale EnterNotify
 		 * events so we don't spuriously change focus after a
 		 * layout change.  Non-EnterNotify events are dispatched
-		 * through the normal handler. */
+		 * through the normal handler, and all events are also fed
+		 * to the compositor so it keeps its window list in sync
+		 * (ConfigureNotify, MapNotify, DamageNotify, etc.). */
 		{
 			xcb_generic_event_t *xe;
 			xcb_flush(xc);
 			while ((xe = xcb_poll_for_event(xc))) {
 				uint8_t type = xe->response_type & ~0x80;
+#ifdef COMPOSITOR
+				if (xe->response_type != 0)
+					compositor_handle_event(xe);
+#endif
 				if (type != XCB_ENTER_NOTIFY && type < LASTEvent &&
 				    handler[type])
 					handler[type](xe);
@@ -105,8 +114,8 @@ createmon(void)
 	/* find the first tag that isn't in use */
 	for (i = 0; i < LENGTH(tags); i++) {
 		for (tm = mons; tm && !(tm->tagset[tm->seltags] & (1 << i));
-		     tm = tm->next)
-			;
+		    tm  = tm->next)
+            ;
 		if (!tm)
 			break;
 	}
@@ -315,8 +324,8 @@ monocle(Monitor *m)
 	if (n > 0) /* override layout symbol */
 		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
 	for (c = m->cl->stack; c && (!ISVISIBLE(c, m) || c->isfloating);
-	     c = c->snext)
-		;
+	    c  = c->snext)
+        ;
 	if (c && !c->isfloating) {
 		/* Use resizeclient() directly, bypassing applysizehints().
 		 * resize() skips the XConfigureWindow call when the stored
@@ -405,6 +414,10 @@ restack(Monitor *m)
 		xcb_flush(xc);
 		while ((xe = xcb_poll_for_event(xc))) {
 			uint8_t type = xe->response_type & ~0x80;
+#ifdef COMPOSITOR
+			if (xe->response_type != 0)
+				compositor_handle_event(xe);
+#endif
 			if (type != XCB_ENTER_NOTIFY && type < LASTEvent && handler[type])
 				handler[type](xe);
 			free(xe);
@@ -420,7 +433,7 @@ tile(Monitor *m)
 	Client      *c;
 
 	for (n = 0, c = nexttiled(m->cl->clients, m); c;
-	     c = nexttiled(c->next, m), n++)
+	    c = nexttiled(c->next, m), n++)
 		;
 
 	if (n == 0)
@@ -432,8 +445,8 @@ tile(Monitor *m)
 		else
 			mw = m->ww - m->pertag->gappx[m->pertag->curtag];
 		for (i = 0, my = ty = m->pertag->gappx[m->pertag->curtag],
-		    c     = nexttiled(m->cl->clients, m);
-		     c; c = nexttiled(c->next, m), i++)
+		    c    = nexttiled(m->cl->clients, m);
+		    c; c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i) -
 				    m->pertag->gappx[m->pertag->curtag];
@@ -462,7 +475,7 @@ tile(Monitor *m)
 		else
 			mw = m->ww;
 		for (i = my = ty = 0, c = nexttiled(m->cl->clients, m); c;
-		     c = nexttiled(c->next, m), i++)
+		    c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i);
 				if (n == 1)
@@ -525,8 +538,9 @@ updatebars(void)
 		{
 			uint32_t vals[3] = {
 				(uint32_t) scheme[SchemeNorm][ColBg].pixel, /* back_pixel */
-				1,                              /* override_redirect */
-				XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE, /* event_mask */
+				1, /* override_redirect */
+				XCB_EVENT_MASK_BUTTON_PRESS |
+				    XCB_EVENT_MASK_EXPOSURE, /* event_mask */
 			};
 			m->barwin = xcb_generate_id(xc);
 			xcb_create_window(xc, (uint8_t) depth, m->barwin, root,
@@ -542,7 +556,8 @@ updatebars(void)
 				XCB_BACK_PIXMAP_PARENT_RELATIVE, /* back_pixmap =
 				                                    ParentRelative */
 				1,                               /* override_redirect */
-				XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE,  /* event_mask */
+				XCB_EVENT_MASK_BUTTON_PRESS |
+				    XCB_EVENT_MASK_EXPOSURE, /* event_mask */
 			};
 			m->barwin = xcb_generate_id(xc);
 			xcb_create_window(xc, (uint8_t) depth, m->barwin, root,

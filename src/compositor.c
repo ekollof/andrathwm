@@ -1940,14 +1940,16 @@ compositor_check_unredirect(void)
 		}
 		awm_debug("compositor: suspended (fullscreen unredirect)");
 	} else {
-		/* Resume: re-redirect any fullscreen windows that were bypassed
-		 * while the compositor was paused.  Without this, focusing away
-		 * from a fullscreen window raises the overlay but leaves the
-		 * fullscreen window unredirected (cw->redirected==0), so the
-		 * compositor skips it and paints the wallpaper over it instead. */
+		/* Resume: re-redirect any windows that were unredirected while
+		 * the compositor was paused.  We check !cw->redirected rather
+		 * than cw->client->isfullscreen because setfullscreen() may have
+		 * already cleared isfullscreen before this function runs —
+		 * checking the flag would silently skip the window, leaving it
+		 * unredirected (cw->redirected==0) permanently, so the
+		 * compositor skips it and paints the wallpaper over it. */
 		CompWin *cw;
 		for (cw = comp.windows; cw; cw = cw->next) {
-			if (cw->client && cw->client->isfullscreen && !cw->redirected) {
+			if (cw->client && !cw->redirected) {
 				xcb_void_cookie_t    ck;
 				xcb_generic_error_t *err;
 
@@ -2387,18 +2389,23 @@ comp_repaint_idle(gpointer data)
 	if (!comp.active || comp.paused)
 		return G_SOURCE_REMOVE;
 
-	/* Drain any XDamageNotify events still queued in the X connection
-	 * before painting so we paint one complete frame covering all
-	 * accumulated damage instead of a series of partial frames. */
+	/* Drain any events still queued in the X connection before painting
+	 * so we paint one complete frame covering all accumulated damage
+	 * instead of a series of partial frames.  All events (not just
+	 * DamageNotify) are dispatched through compositor_handle_event so
+	 * that ConfigureNotify, MapNotify, etc. update compositor state
+	 * before the repaint.  Non-compositor events that arrived after the
+	 * main x_dispatch_cb run will be re-dispatched on the next GLib
+	 * iteration by x_dispatch_cb; there is no need to call WM handlers
+	 * here because we only see events that arrived since the last
+	 * x_dispatch_cb ran, and those will be handled before the next
+	 * repaint is triggered. */
 	{
-
-		uint8_t dmgt = (uint8_t) (comp.damage_ev_base + XCB_DAMAGE_NOTIFY);
 		xcb_generic_event_t *xe;
 		xcb_flush(xc);
 		while ((xe = xcb_poll_for_event(xc))) {
-			if ((xe->response_type & ~0x80) == dmgt) {
+			if (xe->response_type != 0)
 				compositor_handle_event(xe);
-			}
 			free(xe);
 		}
 	}
