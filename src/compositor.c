@@ -51,14 +51,16 @@
 #include <X11/Xlibint.h>
 #include <X11/Xlib-xcb.h>
 #include <X11/Xutil.h>
-#include <X11/extensions/shape.h>
-#include <X11/extensions/Xcomposite.h>
-#include <X11/extensions/Xdamage.h>
-#include <X11/extensions/Xfixes.h>
-#include <X11/extensions/Xrender.h>
+#include <X11/extensions/shape.h> /* XShapeEvent, XESetWireToEvent — keep */
+#include <X11/extensions/Xdamage.h> /* XDamageNotifyEvent — keep (Xlib event) */
 
 #include <xcb/xcb.h>
+#include <xcb/composite.h>
+#include <xcb/damage.h>
 #include <xcb/render.h>
+#include <xcb/xfixes.h>
+#include <xcb/shape.h>
+#include <xcb/xcb_renderutil.h>
 #include <xcb/present.h>
 
 /* EGL + GL — only included when -DCOMPOSITOR is active */
@@ -79,22 +81,22 @@
  * ---------------------------------------------------------------------- */
 
 typedef struct CompWin {
-	Window  win;
-	Client *client; /* NULL for override_redirect windows        */
-	Pixmap  pixmap; /* XCompositeNameWindowPixmap result          */
+	Window       win;
+	Client      *client; /* NULL for override_redirect windows        */
+	xcb_pixmap_t pixmap; /* XCompositeNameWindowPixmap result          */
 	/* XRender path (fallback) */
-	Picture picture; /* XRenderCreatePicture on pixmap             */
+	xcb_render_picture_t picture; /* XRenderCreatePicture on pixmap */
 	/* GL/EGL path */
 	EGLImageKHR egl_image; /* EGL image wrapping pixmap (KHR_image_pixmap) */
 	GLuint      texture;   /* GL_TEXTURE_2D bound via EGL image            */
-	Damage      damage;
-	int         x, y, w, h, bw; /* last known geometry                */
-	int         depth;          /* window depth                              */
-	int         argb;           /* depth == 32                               */
-	double      opacity;      /* 0.0 – 1.0                                 */
-	int         redirected;   /* 0 = bypass (fullscreen/bypass-hint)    */
-	int         hidden;       /* 1 = moved off-screen by showhide()        */
-	int         ever_damaged; /* 0 = no damage received yet (since map) */
+	xcb_damage_damage_t damage;
+	int    x, y, w, h, bw; /* last known geometry                */
+	int    depth;          /* window depth                              */
+	int    argb;           /* depth == 32                               */
+	double opacity;        /* 0.0 – 1.0                                 */
+	int    redirected;     /* 0 = bypass (fullscreen/bypass-hint)    */
+	int    hidden;         /* 1 = moved off-screen by showhide()        */
+	int    ever_damaged;   /* 0 = no damage received yet (since map) */
 	xcb_present_event_t present_eid; /* 0 = not subscribed to Present events */
 	struct CompWin     *next;
 } CompWin;
@@ -134,31 +136,32 @@ static struct {
 	 * Each slot holds the bounding box of one past frame's dirty region.
 	 * ring_idx is the slot that will be written after the *next* swap. */
 #define DAMAGE_RING_SIZE 6
-	XRectangle damage_ring[DAMAGE_RING_SIZE];
-	int        ring_idx; /* next write position (0..DAMAGE_RING_SIZE-1) */
-	int        has_buffer_age; /* 1 if EGL_EXT_buffer_age is available    */
+	xcb_rectangle_t damage_ring[DAMAGE_RING_SIZE];
+	int             ring_idx; /* next write position (0..DAMAGE_RING_SIZE-1) */
+	int has_buffer_age;       /* 1 if EGL_EXT_buffer_age is available    */
 
 	/* ---- XRender path (fallback) ---- */
-	Picture target; /* XRenderPicture on overlay                   */
-	Pixmap  back_pixmap;
-	Picture back;            /* XRenderPicture on back_pixmap       */
-	Picture alpha_pict[256]; /* pre-built 1×1 RepeatNormal solids   */
+	xcb_render_picture_t target; /* XRenderPicture on overlay */
+	xcb_pixmap_t         back_pixmap;
+	xcb_render_picture_t back; /* XRenderPicture on back_pixmap       */
+	xcb_render_picture_t
+	    alpha_pict[256]; /* pre-built 1×1 RepeatNormal solids   */
 
 	/* ---- Shared state ---- */
-	int           damage_ev_base;
-	int           damage_err_base;
-	int           xfixes_ev_base;
-	int           xfixes_err_base;
-	guint         repaint_id; /* GLib idle source id, 0 = none            */
-	int           paused;     /* 1 = overlay hidden, repaints suppressed  */
-	XserverRegion dirty;      /* accumulated dirty region                 */
-	CompWin      *windows;
-	GMainContext *ctx;
+	int   damage_ev_base;
+	int   damage_err_base;
+	int   xfixes_ev_base;
+	int   xfixes_err_base;
+	guint repaint_id;          /* GLib idle source id, 0 = none            */
+	int   paused;              /* 1 = overlay hidden, repaints suppressed  */
+	xcb_xfixes_region_t dirty; /* accumulated dirty region                 */
+	CompWin            *windows;
+	GMainContext       *ctx;
 	/* Wallpaper support */
-	Atom        atom_rootpmap;
-	Atom        atom_esetroot;
-	Pixmap      wallpaper_pixmap;
-	Picture     wallpaper_pict;      /* XRender picture (fallback path)      */
+	Atom                 atom_rootpmap;
+	Atom                 atom_esetroot;
+	xcb_pixmap_t         wallpaper_pixmap;
+	xcb_render_picture_t wallpaper_pict; /* XRender picture (fallback path) */
 	EGLImageKHR wallpaper_egl_image; /* EGL image for wallpaper (GL)         */
 	GLuint      wallpaper_texture;   /* GL texture for wallpaper (GL)        */
 	/* XRender extension codes — needed for error whitelisting */
@@ -177,36 +180,36 @@ static struct {
 	Atom   atom_cm_sn;   /* _NET_WM_CM_S<screen> atom                    */
 	/* Per-window opacity atom */
 	Atom atom_net_wm_opacity; /* _NET_WM_WINDOW_OPACITY                 */
+	/* XRender picture format cache (queried once in compositor_init) */
+	const xcb_render_query_pict_formats_reply_t *render_formats;
 } comp;
 
 /* ---- compositor compile-time invariants ---- */
 _Static_assert(sizeof(unsigned short) == 2,
-    "unsigned short must be 16 bits for XRenderColor alpha/channel field "
-    "scaling");
+    "unsigned short must be 16 bits for xcb_render_color_t alpha/channel "
+    "field scaling");
 _Static_assert(sizeof(short) == 2,
-    "short must be 16 bits to match XRectangle.x and XRectangle.y field "
-    "types");
-_Static_assert(sizeof(Pixmap) == sizeof(unsigned long),
-    "Pixmap (XID) must equal unsigned long in size for format-32 property "
-    "reads");
+    "short must be 16 bits to match xcb_rectangle_t x and y field types");
+_Static_assert(sizeof(xcb_pixmap_t) == sizeof(uint32_t),
+    "xcb_pixmap_t must be 32 bits for format-32 property reads");
 
 /* -------------------------------------------------------------------------
  * Forward declarations
  * ---------------------------------------------------------------------- */
 
-static void     comp_add_by_xid(Window w);
-static CompWin *comp_find_by_xid(Window w);
-static CompWin *comp_find_by_client(Client *c);
-static void     comp_free_win(CompWin *cw);
-static void     comp_refresh_pixmap(CompWin *cw);
-static void     comp_apply_shape(CompWin *cw);
-static void     comp_update_wallpaper(void);
-static void     schedule_repaint(void);
-static void     comp_do_repaint(void);
-static void     comp_do_repaint_gl(void);
-static void     comp_do_repaint_xrender(void);
-static gboolean comp_repaint_idle(gpointer data);
-static Picture  make_alpha_picture(double a);
+static void                 comp_add_by_xid(Window w);
+static CompWin             *comp_find_by_xid(Window w);
+static CompWin             *comp_find_by_client(Client *c);
+static void                 comp_free_win(CompWin *cw);
+static void                 comp_refresh_pixmap(CompWin *cw);
+static void                 comp_apply_shape(CompWin *cw);
+static void                 comp_update_wallpaper(void);
+static void                 schedule_repaint(void);
+static void                 comp_do_repaint(void);
+static void                 comp_do_repaint_gl(void);
+static void                 comp_do_repaint_xrender(void);
+static gboolean             comp_repaint_idle(gpointer data);
+static xcb_render_picture_t make_alpha_picture(double a);
 
 /* -------------------------------------------------------------------------
  * Helpers
@@ -280,23 +283,29 @@ compositor_fix_wire_to_event(XEvent *ev)
 		XESetWireToEvent(dpy, type, proc);
 }
 
-static Picture
+static xcb_render_picture_t
 make_alpha_picture(double a)
 {
-	XRenderPictFormat       *fmt;
-	XRenderPictureAttributes pa;
-	Pixmap                   pix;
-	Picture                  pic;
-	XRenderColor             col;
+	xcb_connection_t                *xc = XGetXCBConnection(dpy);
+	const xcb_render_pictforminfo_t *fi;
+	xcb_pixmap_t                     pix;
+	xcb_render_picture_t             pic;
+	xcb_render_color_t               col;
+	xcb_rectangle_t                  r    = { 0, 0, 1, 1 };
+	uint32_t                         mask = XCB_RENDER_CP_REPEAT;
+	uint32_t                         val  = XCB_RENDER_REPEAT_NORMAL;
 
-	fmt       = XRenderFindStandardFormat(dpy, PictStandardA8);
-	pix       = XCreatePixmap(dpy, root, 1, 1, 8);
-	pa.repeat = RepeatNormal;
-	pic       = XRenderCreatePicture(dpy, pix, fmt, CPRepeat, &pa);
-	col.alpha = (unsigned short) (a * 0xffff);
+	fi = xcb_render_util_find_standard_format(
+	    comp.render_formats, XCB_PICT_STANDARD_A_8);
+	pix = xcb_generate_id(xc);
+	xcb_create_pixmap(xc, 8, pix, (xcb_drawable_t) root, 1, 1);
+	pic = xcb_generate_id(xc);
+	xcb_render_create_picture(
+	    xc, pic, (xcb_drawable_t) pix, fi ? fi->id : 0, mask, &val);
+	col.alpha = (uint16_t) (a * 0xffff);
 	col.red = col.green = col.blue = 0;
-	XRenderFillRectangle(dpy, PictOpSrc, pic, &col, 0, 0, 1, 1);
-	XFreePixmap(dpy, pix);
+	xcb_render_fill_rectangles(xc, XCB_RENDER_PICT_OP_SRC, pic, col, 1, &r);
+	xcb_free_pixmap(xc, pix);
 	return pic;
 }
 
@@ -723,66 +732,94 @@ comp_release_tfp(CompWin *cw)
 int
 compositor_init(GMainContext *ctx)
 {
-	int                      comp_ev, comp_err, render_ev, render_err;
-	int                      xfixes_major = 2, xfixes_minor = 0;
-	int                      damage_major = 1, damage_minor = 1;
-	int                      i;
-	XRenderPictFormat       *fmt;
-	XRenderPictureAttributes pa;
-	XserverRegion            empty;
+	int                                i;
+	xcb_connection_t                  *xc;
+	const xcb_query_extension_reply_t *ext;
 
 	memset(&comp, 0, sizeof(comp));
 	comp.ctx = ctx;
 
+	xc = XGetXCBConnection(dpy);
+
+	/* --- Query/cache XRender picture formats (needed for all format lookups)
+	 */
+	comp.render_formats = xcb_render_util_query_formats(xc);
+	if (!comp.render_formats) {
+		awm_warn("compositor: xcb_render_util_query_formats failed");
+		return -1;
+	}
+
 	/* --- Check required extensions ----------------------------------------
 	 */
 
-	if (!XCompositeQueryExtension(dpy, &comp_ev, &comp_err)) {
+	ext = xcb_get_extension_data(xc, &xcb_composite_id);
+	if (!ext || !ext->present) {
 		awm_warn("compositor: XComposite extension not available");
 		return -1;
 	}
 	{
-		int major = 0, minor = 2;
-		XCompositeQueryVersion(dpy, &major, &minor);
-		if (major < 0 || (major == 0 && minor < 2)) {
+		xcb_composite_query_version_cookie_t vck;
+		xcb_composite_query_version_reply_t *vr;
+		vck = xcb_composite_query_version(xc, 0, 2);
+		vr  = xcb_composite_query_version_reply(xc, vck, NULL);
+		if (!vr || (vr->major_version == 0 && vr->minor_version < 2)) {
 			awm_warn("compositor: XComposite >= 0.2 required (got %d.%d)",
-			    major, minor);
+			    vr ? (int) vr->major_version : 0,
+			    vr ? (int) vr->minor_version : 0);
+			free(vr);
 			return -1;
 		}
+		free(vr);
 	}
 
-	if (!XDamageQueryExtension(
-	        dpy, &comp.damage_ev_base, &comp.damage_err_base)) {
+	ext = xcb_get_extension_data(xc, &xcb_damage_id);
+	if (!ext || !ext->present) {
 		awm_warn("compositor: XDamage extension not available");
 		return -1;
 	}
-	XDamageQueryVersion(dpy, &damage_major, &damage_minor);
+	comp.damage_ev_base  = ext->first_event;
+	comp.damage_err_base = ext->first_error;
+	{
+		xcb_damage_query_version_cookie_t dvck;
+		xcb_damage_query_version_reply_t *dvr;
+		dvck = xcb_damage_query_version(xc, 1, 1);
+		dvr  = xcb_damage_query_version_reply(xc, dvck, NULL);
+		free(dvr);
+	}
 
-	if (!XFixesQueryExtension(
-	        dpy, &comp.xfixes_ev_base, &comp.xfixes_err_base)) {
+	ext = xcb_get_extension_data(xc, &xcb_xfixes_id);
+	if (!ext || !ext->present) {
 		awm_warn("compositor: XFixes extension not available");
 		return -1;
 	}
-	XFixesQueryVersion(dpy, &xfixes_major, &xfixes_minor);
+	comp.xfixes_ev_base  = ext->first_event;
+	comp.xfixes_err_base = ext->first_error;
+	{
+		xcb_xfixes_query_version_cookie_t fvck;
+		xcb_xfixes_query_version_reply_t *fvr;
+		fvck = xcb_xfixes_query_version(xc, 2, 0);
+		fvr  = xcb_xfixes_query_version_reply(xc, fvck, NULL);
+		free(fvr);
+	}
 
-	if (!XRenderQueryExtension(dpy, &render_ev, &render_err)) {
+	ext = xcb_get_extension_data(xc, &xcb_render_id);
+	if (!ext || !ext->present) {
 		awm_warn("compositor: XRender extension not available");
 		return -1;
 	}
-	comp.render_err_base = render_err;
-	{
-		xcb_connection_t                  *xc0 = XGetXCBConnection(dpy);
-		const xcb_query_extension_reply_t *ext;
-		ext = xcb_get_extension_data(xc0, &xcb_render_id);
-		if (ext && ext->present)
-			comp.render_request_base = ext->major_opcode;
-	}
+	comp.render_err_base     = ext->first_error;
+	comp.render_request_base = ext->major_opcode;
+
 	/* Query GLX extension opcode for error whitelisting — EGL has no X
 	 * request codes, but the glx_errors stub in compositor.h still exists
 	 * to avoid changing events.c; it will always return -1 after this. */
 
-	if (XShapeQueryExtension(dpy, &comp.shape_ev_base, &comp.shape_err_base))
-		comp.has_xshape = 1;
+	ext = xcb_get_extension_data(xc, &xcb_shape_id);
+	if (ext && ext->present) {
+		comp.has_xshape     = 1;
+		comp.shape_ev_base  = ext->first_event;
+		comp.shape_err_base = ext->first_error;
+	}
 
 	/* --- Query X Present extension (optional) ----------------------------
 	 * Used to subscribe to PresentCompleteNotify so DRI3/Present GPU frames
@@ -808,24 +845,37 @@ compositor_init(GMainContext *ctx)
 	 */
 
 	xerror_push_ignore();
-	XCompositeRedirectSubwindows(dpy, root, CompositeRedirectManual);
+	xcb_composite_redirect_subwindows(
+	    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
 	XSync(dpy, False);
 	xerror_pop();
 
 	/* --- Overlay window ---------------------------------------------------
 	 */
 
-	comp.overlay = XCompositeGetOverlayWindow(dpy, root);
+	{
+		xcb_composite_get_overlay_window_cookie_t owck;
+		xcb_composite_get_overlay_window_reply_t *owr;
+		owck = xcb_composite_get_overlay_window(xc, (xcb_window_t) root);
+		owr  = xcb_composite_get_overlay_window_reply(xc, owck, NULL);
+		comp.overlay = owr ? (Window) owr->overlay_win : 0;
+		free(owr);
+	}
 	if (!comp.overlay) {
 		awm_warn("compositor: failed to get overlay window");
-		XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
+		xcb_composite_unredirect_subwindows(
+		    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
 		return -1;
 	}
 
 	/* Make the overlay click-through */
-	empty = XFixesCreateRegion(dpy, NULL, 0);
-	XFixesSetWindowShapeRegion(dpy, comp.overlay, ShapeInput, 0, 0, empty);
-	XFixesDestroyRegion(dpy, empty);
+	{
+		xcb_xfixes_region_t empty = xcb_generate_id(xc);
+		xcb_xfixes_create_region(xc, empty, 0, NULL);
+		xcb_xfixes_set_window_shape_region(
+		    xc, (xcb_window_t) comp.overlay, XCB_SHAPE_SK_INPUT, 0, 0, empty);
+		xcb_xfixes_destroy_region(xc, empty);
+	}
 
 	/* --- Try to initialise the EGL/GL path --------------------------------
 	 * A dedicated Display* (gl_dpy) is opened for all EGL/Mesa operations.
@@ -844,14 +894,31 @@ compositor_init(GMainContext *ctx)
 
 	if (comp.gl_dpy && comp_init_gl() != 0) {
 		/* GL path unavailable — set up XRender back-buffer + target */
-		fmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-		pa.subwindow_mode = IncludeInferiors;
-		comp.target =
-		    XRenderCreatePicture(dpy, comp.overlay, fmt, CPSubwindowMode, &pa);
-		comp.back_pixmap = XCreatePixmap(dpy, root, (unsigned int) sw,
-		    (unsigned int) sh, (unsigned int) DefaultDepth(dpy, screen));
-		comp.back        = XRenderCreatePicture(
-            dpy, comp.back_pixmap, fmt, CPSubwindowMode, &pa);
+		const xcb_render_pictvisual_t *pv;
+		xcb_render_pictformat_t        fmt;
+		uint32_t                       pict_mask;
+		uint32_t                       pict_val;
+
+		pv  = xcb_render_util_find_visual_format(comp.render_formats,
+		     (xcb_visualid_t) XVisualIDFromVisual(DefaultVisual(dpy, screen)));
+		fmt = pv ? pv->format : 0;
+
+		pict_mask = XCB_RENDER_CP_SUBWINDOW_MODE;
+		pict_val  = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;
+
+		comp.target = xcb_generate_id(xc);
+		xcb_render_create_picture(xc, comp.target,
+		    (xcb_drawable_t) comp.overlay, fmt, pict_mask, &pict_val);
+
+		comp.back_pixmap = xcb_generate_id(xc);
+		xcb_create_pixmap(xc, (uint8_t) DefaultDepth(dpy, screen),
+		    comp.back_pixmap, (xcb_drawable_t) root, (uint16_t) sw,
+		    (uint16_t) sh);
+
+		comp.back = xcb_generate_id(xc);
+		xcb_render_create_picture(xc, comp.back,
+		    (xcb_drawable_t) comp.back_pixmap, fmt, pict_mask, &pict_val);
+
 		for (i = 0; i < 256; i++)
 			comp.alpha_pict[i] = make_alpha_picture((double) i / 255.0);
 	}
@@ -860,8 +927,9 @@ compositor_init(GMainContext *ctx)
 	 */
 
 	{
-		XRectangle full = { 0, 0, (unsigned short) sw, (unsigned short) sh };
-		comp.dirty      = XFixesCreateRegion(dpy, &full, 1);
+		xcb_rectangle_t full = { 0, 0, (uint16_t) sw, (uint16_t) sh };
+		comp.dirty           = xcb_generate_id(xc);
+		xcb_xfixes_create_region(xc, comp.dirty, 1, &full);
 	}
 
 	/* --- Claim _NET_WM_CM_S<n> composite manager selection ---------------
@@ -881,8 +949,13 @@ compositor_init(GMainContext *ctx)
 		free(r);
 
 		/* Create a small, invisible utility window to hold the selection. */
-		comp.cm_owner_win =
-		    XCreateSimpleWindow(dpy, root, -1, -1, 1, 1, 0, 0, 0);
+		{
+			xcb_window_t win = xcb_generate_id(xc);
+			xcb_create_window(xc, XCB_COPY_FROM_PARENT, win,
+			    (xcb_window_t) root, -1, -1, 1, 1, 0,
+			    XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, 0, NULL);
+			comp.cm_owner_win = win;
+		}
 
 		xcb_set_selection_owner(xc, comp.cm_owner_win,
 		    (xcb_atom_t) comp.atom_cm_sn, XCB_CURRENT_TIME);
@@ -1021,41 +1094,50 @@ compositor_cleanup(void)
 			eglTerminate(comp.egl_dpy);
 	} else {
 		/* XRender path cleanup */
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
 		for (i = 0; i < 256; i++)
 			if (comp.alpha_pict[i])
-				XRenderFreePicture(dpy, comp.alpha_pict[i]);
+				xcb_render_free_picture(xc, comp.alpha_pict[i]);
 		if (comp.back)
-			XRenderFreePicture(dpy, comp.back);
+			xcb_render_free_picture(xc, comp.back);
 		if (comp.back_pixmap)
-			XFreePixmap(dpy, comp.back_pixmap);
+			xcb_free_pixmap(xc, comp.back_pixmap);
 		if (comp.target)
-			XRenderFreePicture(dpy, comp.target);
+			xcb_render_free_picture(xc, comp.target);
 	}
 
-	if (comp.wallpaper_pict)
-		XRenderFreePicture(dpy, comp.wallpaper_pict);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
 
-	/* Release cached GL wallpaper resources */
-	if (comp.use_gl) {
-		if (comp.wallpaper_texture)
-			glDeleteTextures(1, &comp.wallpaper_texture);
-		if (comp.wallpaper_egl_image != EGL_NO_IMAGE_KHR)
-			comp.egl_destroy_image(comp.egl_dpy, comp.wallpaper_egl_image);
+		if (comp.wallpaper_pict)
+			xcb_render_free_picture(xc, comp.wallpaper_pict);
+
+		/* Release cached GL wallpaper resources */
+		if (comp.use_gl) {
+			if (comp.wallpaper_texture)
+				glDeleteTextures(1, &comp.wallpaper_texture);
+			if (comp.wallpaper_egl_image != EGL_NO_IMAGE_KHR)
+				comp.egl_destroy_image(comp.egl_dpy, comp.wallpaper_egl_image);
+		}
+
+		if (comp.overlay)
+			xcb_composite_release_overlay_window(xc, (xcb_window_t) root);
+
+		/* Release _NET_WM_CM_Sn selection */
+		if (comp.cm_owner_win) {
+			xcb_destroy_window(xc, comp.cm_owner_win);
+			comp.cm_owner_win = 0;
+		}
+
+		if (comp.dirty)
+			xcb_xfixes_destroy_region(xc, comp.dirty);
+
+		xcb_composite_unredirect_subwindows(
+		    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
+
+		/* Release xcb-renderutil format cache */
+		xcb_render_util_disconnect(xc);
 	}
-
-	if (comp.overlay)
-		XCompositeReleaseOverlayWindow(dpy, comp.overlay);
-
-	/* Release _NET_WM_CM_Sn selection */
-	if (comp.cm_owner_win) {
-		xcb_destroy_window(XGetXCBConnection(dpy), comp.cm_owner_win);
-		comp.cm_owner_win = 0;
-	}
-
-	if (comp.dirty)
-		XFixesDestroyRegion(dpy, comp.dirty);
-
-	XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
 	xflush(dpy);
 
 	/* Close the dedicated EGL/GL display connection last — after all EGL
@@ -1145,8 +1227,9 @@ comp_free_win(CompWin *cw)
 	 * but prevents a leak when comp_free_win is called on live windows
 	 * (e.g. unmap of non-client override-redirect windows). */
 	if (comp.has_xshape) {
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
 		xerror_push_ignore();
-		XShapeSelectInput(dpy, cw->win, 0);
+		xcb_shape_select_input(xc, (xcb_window_t) cw->win, 0);
 		XSync(dpy, False);
 		xerror_pop();
 	}
@@ -1155,18 +1238,19 @@ comp_free_win(CompWin *cw)
 	comp_unsubscribe_present(cw);
 
 	if (cw->damage) {
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
 		xerror_push_ignore();
-		XDamageDestroy(dpy, cw->damage);
+		xcb_damage_destroy(xc, cw->damage);
 		XSync(dpy, False);
 		xerror_pop();
 		cw->damage = 0;
 	}
 	if (cw->picture) {
-		XRenderFreePicture(dpy, cw->picture);
+		xcb_render_free_picture(XGetXCBConnection(dpy), cw->picture);
 		cw->picture = None;
 	}
 	if (cw->pixmap) {
-		XFreePixmap(dpy, cw->pixmap);
+		xcb_free_pixmap(XGetXCBConnection(dpy), cw->pixmap);
 		cw->pixmap = None;
 	}
 }
@@ -1174,19 +1258,18 @@ comp_free_win(CompWin *cw)
 static void
 comp_refresh_pixmap(CompWin *cw)
 {
-	XRenderPictFormat       *fmt;
-	XRenderPictureAttributes pa;
+	xcb_connection_t *xc = XGetXCBConnection(dpy);
 
 	/* Release TFP resources before freeing the pixmap */
 	if (comp.use_gl)
 		comp_release_tfp(cw);
 
 	if (cw->picture) {
-		XRenderFreePicture(dpy, cw->picture);
+		xcb_render_free_picture(xc, cw->picture);
 		cw->picture = None;
 	}
 	if (cw->pixmap) {
-		XFreePixmap(dpy, cw->pixmap);
+		xcb_free_pixmap(xc, cw->pixmap);
 		cw->pixmap = None;
 	}
 
@@ -1194,7 +1277,12 @@ comp_refresh_pixmap(CompWin *cw)
 	cw->ever_damaged = 0;
 
 	xerror_push_ignore();
-	cw->pixmap = XCompositeNameWindowPixmap(dpy, cw->win);
+	{
+		xcb_pixmap_t pix = xcb_generate_id(xc);
+		xcb_composite_name_window_pixmap(xc, (xcb_window_t) cw->win, pix);
+		xcb_flush(xc);
+		cw->pixmap = pix;
+	}
 	XSync(dpy, False);
 	xerror_pop();
 
@@ -1202,15 +1290,14 @@ comp_refresh_pixmap(CompWin *cw)
 		return;
 
 	{
-		xcb_connection_t         *xc3 = XGetXCBConnection(dpy);
 		xcb_get_geometry_cookie_t gck;
 		xcb_get_geometry_reply_t *gr;
-		gck = xcb_get_geometry(xc3, (xcb_drawable_t) cw->pixmap);
-		gr  = xcb_get_geometry_reply(xc3, gck, NULL);
+		gck = xcb_get_geometry(xc, (xcb_drawable_t) cw->pixmap);
+		gr  = xcb_get_geometry_reply(xc, gck, NULL);
 		if (!gr) {
 			awm_warn("compositor: pixmap geometry query failed — releasing "
 			         "stale pixmap");
-			XFreePixmap(dpy, cw->pixmap);
+			xcb_free_pixmap(xc, cw->pixmap);
 			cw->pixmap = None;
 			return;
 		}
@@ -1222,13 +1309,27 @@ comp_refresh_pixmap(CompWin *cw)
 		comp_bind_tfp(cw);
 	} else {
 		/* XRender fallback: create an XRender Picture */
+		const xcb_render_pictvisual_t *pv;
+		xcb_render_pictformat_t        fmt;
+		uint32_t                       pmask;
+		uint32_t                       pval;
+
 		xerror_push_ignore();
-		fmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-		if (cw->argb)
-			fmt = XRenderFindStandardFormat(dpy, PictStandardARGB32);
-		pa.subwindow_mode = IncludeInferiors;
-		cw->picture =
-		    XRenderCreatePicture(dpy, cw->pixmap, fmt, CPSubwindowMode, &pa);
+		pv  = xcb_render_util_find_visual_format(comp.render_formats,
+		     (xcb_visualid_t) XVisualIDFromVisual(DefaultVisual(dpy, screen)));
+		fmt = pv ? pv->format : 0;
+		if (cw->argb) {
+			const xcb_render_pictforminfo_t *fi =
+			    xcb_render_util_find_standard_format(
+			        comp.render_formats, XCB_PICT_STANDARD_ARGB_32);
+			fmt = fi ? fi->id : fmt;
+		}
+		pmask       = XCB_RENDER_CP_SUBWINDOW_MODE;
+		pval        = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;
+		cw->picture = xcb_generate_id(xc);
+		xcb_render_create_picture(
+		    xc, cw->picture, (xcb_drawable_t) cw->pixmap, fmt, pmask, &pval);
+		xcb_flush(xc);
 		XSync(dpy, False);
 		xerror_pop();
 		comp_apply_shape(cw);
@@ -1240,34 +1341,43 @@ comp_refresh_pixmap(CompWin *cw)
 static void
 comp_apply_shape(CompWin *cw)
 {
-	int         nrects, ordering;
-	XRectangle *rects;
+	xcb_connection_t *xc = XGetXCBConnection(dpy);
 
 	if (!cw->picture)
 		return;
 
 	if (!comp.has_xshape) {
-		XFixesSetPictureClipRegion(dpy, cw->picture, 0, 0, None);
-		return;
-	}
-
-	rects =
-	    XShapeGetRectangles(dpy, cw->win, ShapeBounding, &nrects, &ordering);
-
-	if (!rects || nrects == 0) {
-		if (rects)
-			XFree(rects);
-		XFixesSetPictureClipRegion(dpy, cw->picture, 0, 0, None);
+		xcb_xfixes_set_picture_clip_region(xc, cw->picture, XCB_NONE, 0, 0);
 		return;
 	}
 
 	{
-		XserverRegion region =
-		    XFixesCreateRegion(dpy, rects, (unsigned int) nrects);
-		XFixesSetPictureClipRegion(dpy, cw->picture, 0, 0, region);
-		XFixesDestroyRegion(dpy, region);
+		xcb_shape_get_rectangles_cookie_t sck;
+		xcb_shape_get_rectangles_reply_t *sr;
+		xcb_rectangle_t                  *rects;
+		int                               nrects;
+
+		sck = xcb_shape_get_rectangles(
+		    xc, (xcb_window_t) cw->win, XCB_SHAPE_SK_BOUNDING);
+		sr     = xcb_shape_get_rectangles_reply(xc, sck, NULL);
+		rects  = sr ? xcb_shape_get_rectangles_rectangles(sr) : NULL;
+		nrects = sr ? xcb_shape_get_rectangles_rectangles_length(sr) : 0;
+
+		if (!rects || nrects == 0) {
+			free(sr);
+			xcb_xfixes_set_picture_clip_region(
+			    xc, cw->picture, XCB_NONE, 0, 0);
+			return;
+		}
+
+		{
+			xcb_xfixes_region_t region = xcb_generate_id(xc);
+			xcb_xfixes_create_region(xc, region, (uint32_t) nrects, rects);
+			xcb_xfixes_set_picture_clip_region(xc, cw->picture, region, 0, 0);
+			xcb_xfixes_destroy_region(xc, region);
+		}
+		free(sr);
 	}
-	XFree(rects);
 }
 
 /* Read _XROOTPMAP_ID (or ESETROOT_PMAP_ID fallback) and rebuild wallpaper.
@@ -1285,7 +1395,7 @@ comp_update_wallpaper(void)
 
 	/* Release previous wallpaper resources */
 	if (comp.wallpaper_pict) {
-		XRenderFreePicture(dpy, comp.wallpaper_pict);
+		xcb_render_free_picture(XGetXCBConnection(dpy), comp.wallpaper_pict);
 		comp.wallpaper_pict   = None;
 		comp.wallpaper_pixmap = None;
 	}
@@ -1320,14 +1430,22 @@ comp_update_wallpaper(void)
 	/* Always build the XRender picture — used by the XRender fallback path
 	 * and as a sentinel meaning "we have a wallpaper" in the GL path. */
 	{
-		XRenderPictFormat       *fmt;
-		XRenderPictureAttributes pa;
+		xcb_connection_t              *xc2 = XGetXCBConnection(dpy);
+		const xcb_render_pictvisual_t *pv;
+		xcb_render_pictformat_t        fmt;
+		uint32_t                       pmask;
+		uint32_t                       pval;
 
-		fmt       = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-		pa.repeat = RepeatNormal;
+		pv    = xcb_render_util_find_visual_format(comp.render_formats,
+		       (xcb_visualid_t) XVisualIDFromVisual(DefaultVisual(dpy, screen)));
+		fmt   = pv ? pv->format : 0;
+		pmask = XCB_RENDER_CP_REPEAT;
+		pval  = XCB_RENDER_REPEAT_NORMAL;
 		xerror_push_ignore();
-		comp.wallpaper_pict =
-		    XRenderCreatePicture(dpy, pmap, fmt, CPRepeat, &pa);
+		comp.wallpaper_pict = xcb_generate_id(xc2);
+		xcb_render_create_picture(xc2, comp.wallpaper_pict,
+		    (xcb_drawable_t) pmap, fmt, pmask, &pval);
+		xcb_flush(xc2);
 		XSync(dpy, False);
 		xerror_pop();
 
@@ -1488,8 +1606,12 @@ comp_add_by_xid(Window w)
 	comp_refresh_pixmap(cw);
 
 	if (cw->pixmap) {
+		xcb_connection_t *xc2 = XGetXCBConnection(dpy);
 		xerror_push_ignore();
-		cw->damage = XDamageCreate(dpy, w, XDamageReportNonEmpty);
+		cw->damage = xcb_generate_id(xc2);
+		xcb_damage_create(xc2, cw->damage, (xcb_drawable_t) w,
+		    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
+		xcb_flush(xc2);
 		XSync(dpy, False);
 		xerror_pop();
 	}
@@ -1498,8 +1620,10 @@ comp_add_by_xid(Window w)
 	 * (e.g. Chrome video) trigger repaints even without XDamageNotify. */
 	comp_subscribe_present(cw);
 
-	if (comp.has_xshape)
-		XShapeSelectInput(dpy, w, ShapeNotifyMask);
+	if (comp.has_xshape) {
+		xcb_connection_t *xcs = XGetXCBConnection(dpy);
+		xcb_shape_select_input(xcs, (xcb_window_t) w, 1);
+	}
 
 	/* Insert at the tail (topmost position in bottom-to-top ordering) */
 	if (!comp.windows) {
@@ -1556,15 +1680,17 @@ compositor_remove_window(Client *c)
 	for (cw = comp.windows; cw; cw = cw->next) {
 		if (cw->client == c || cw->win == c->win) {
 			{
-				XRectangle    r;
-				XserverRegion sr;
+				xcb_connection_t   *xc = XGetXCBConnection(dpy);
+				xcb_rectangle_t     r;
+				xcb_xfixes_region_t sr;
 				r.x      = (short) cw->x;
 				r.y      = (short) cw->y;
-				r.width  = (unsigned short) (cw->w + 2 * cw->bw);
-				r.height = (unsigned short) (cw->h + 2 * cw->bw);
-				sr       = XFixesCreateRegion(dpy, &r, 1);
-				XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-				XFixesDestroyRegion(dpy, sr);
+				r.width  = (uint16_t) (cw->w + 2 * cw->bw);
+				r.height = (uint16_t) (cw->h + 2 * cw->bw);
+				sr       = xcb_generate_id(xc);
+				xcb_xfixes_create_region(xc, sr, 1, &r);
+				xcb_xfixes_union_region(xc, comp.dirty, sr, comp.dirty);
+				xcb_xfixes_destroy_region(xc, sr);
 			}
 			if (prev)
 				prev->next = cw->next;
@@ -1584,10 +1710,11 @@ compositor_remove_window(Client *c)
 void
 compositor_configure_window(Client *c, int actual_bw)
 {
-	CompWin      *cw;
-	int           resized;
-	XRectangle    old_rect;
-	XserverRegion old_r;
+	xcb_connection_t   *xc = XGetXCBConnection(dpy);
+	CompWin            *cw;
+	int                 resized;
+	xcb_rectangle_t     old_rect;
+	xcb_xfixes_region_t old_r;
 
 	if (!comp.active || !c)
 		return;
@@ -1598,11 +1725,12 @@ compositor_configure_window(Client *c, int actual_bw)
 
 	old_rect.x      = (short) cw->x;
 	old_rect.y      = (short) cw->y;
-	old_rect.width  = (unsigned short) (cw->w + 2 * cw->bw);
-	old_rect.height = (unsigned short) (cw->h + 2 * cw->bw);
-	old_r           = XFixesCreateRegion(dpy, &old_rect, 1);
-	XFixesUnionRegion(dpy, comp.dirty, comp.dirty, old_r);
-	XFixesDestroyRegion(dpy, old_r);
+	old_rect.width  = (uint16_t) (cw->w + 2 * cw->bw);
+	old_rect.height = (uint16_t) (cw->h + 2 * cw->bw);
+	old_r           = xcb_generate_id(xc);
+	xcb_xfixes_create_region(xc, old_r, 1, &old_rect);
+	xcb_xfixes_union_region(xc, comp.dirty, old_r, comp.dirty);
+	xcb_xfixes_destroy_region(xc, old_r);
 
 	resized = (c->w != cw->w || c->h != cw->h);
 
@@ -1613,15 +1741,16 @@ compositor_configure_window(Client *c, int actual_bw)
 	cw->bw = actual_bw;
 
 	{
-		XRectangle    new_rect;
-		XserverRegion new_r;
+		xcb_rectangle_t     new_rect;
+		xcb_xfixes_region_t new_r;
 		new_rect.x      = (short) cw->x;
 		new_rect.y      = (short) cw->y;
-		new_rect.width  = (unsigned short) (cw->w + 2 * cw->bw);
-		new_rect.height = (unsigned short) (cw->h + 2 * cw->bw);
-		new_r           = XFixesCreateRegion(dpy, &new_rect, 1);
-		XFixesUnionRegion(dpy, comp.dirty, comp.dirty, new_r);
-		XFixesDestroyRegion(dpy, new_r);
+		new_rect.width  = (uint16_t) (cw->w + 2 * cw->bw);
+		new_rect.height = (uint16_t) (cw->h + 2 * cw->bw);
+		new_r           = xcb_generate_id(xc);
+		xcb_xfixes_create_region(xc, new_r, 1, &new_rect);
+		xcb_xfixes_union_region(xc, comp.dirty, new_r, comp.dirty);
+		xcb_xfixes_destroy_region(xc, new_r);
 	}
 
 	if (cw->redirected && resized)
@@ -1647,17 +1776,23 @@ compositor_bypass_window(Client *c, int bypass)
 
 	xerror_push_ignore();
 	if (bypass) {
-		XCompositeUnredirectWindow(dpy, c->win, CompositeRedirectManual);
+		xcb_composite_unredirect_window(XGetXCBConnection(dpy),
+		    (xcb_window_t) c->win, XCB_COMPOSITE_REDIRECT_MANUAL);
 		cw->redirected = 0;
 		if (comp.use_gl)
 			comp_release_tfp(cw);
 		comp_free_win(cw);
 	} else {
-		XCompositeRedirectWindow(dpy, c->win, CompositeRedirectManual);
+		xcb_connection_t *xc2 = XGetXCBConnection(dpy);
+		xcb_composite_redirect_window(
+		    xc2, (xcb_window_t) c->win, XCB_COMPOSITE_REDIRECT_MANUAL);
 		cw->redirected = 1;
 		comp_refresh_pixmap(cw);
-		if (cw->pixmap && !cw->damage)
-			cw->damage = XDamageCreate(dpy, c->win, XDamageReportNonEmpty);
+		if (cw->pixmap && !cw->damage) {
+			cw->damage = xcb_generate_id(xc2);
+			xcb_damage_create(xc2, cw->damage, (xcb_drawable_t) c->win,
+			    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
+		}
 		comp_subscribe_present(cw);
 	}
 	XSync(dpy, False);
@@ -1686,9 +1821,10 @@ compositor_set_opacity(Client *c, unsigned long raw)
 void
 compositor_focus_window(Client *c)
 {
-	CompWin      *cw;
-	XRectangle    r;
-	XserverRegion sr;
+	xcb_connection_t   *xc = XGetXCBConnection(dpy);
+	CompWin            *cw;
+	xcb_rectangle_t     r;
+	xcb_xfixes_region_t sr;
 
 	if (!comp.active || !c)
 		return;
@@ -1699,11 +1835,12 @@ compositor_focus_window(Client *c)
 
 	r.x      = (short) cw->x;
 	r.y      = (short) cw->y;
-	r.width  = (unsigned short) (cw->w + 2 * cw->bw);
-	r.height = (unsigned short) (cw->h + 2 * cw->bw);
-	sr       = XFixesCreateRegion(dpy, &r, 1);
-	XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-	XFixesDestroyRegion(dpy, sr);
+	r.width  = (uint16_t) (cw->w + 2 * cw->bw);
+	r.height = (uint16_t) (cw->h + 2 * cw->bw);
+	sr       = xcb_generate_id(xc);
+	xcb_xfixes_create_region(xc, sr, 1, &r);
+	xcb_xfixes_union_region(xc, comp.dirty, sr, comp.dirty);
+	xcb_xfixes_destroy_region(xc, sr);
 	schedule_repaint();
 }
 
@@ -1726,15 +1863,17 @@ compositor_set_hidden(Client *c, int hidden)
 
 	/* Dirty the window region so the vacated area gets repainted */
 	{
-		XRectangle    r;
-		XserverRegion sr;
+		xcb_connection_t   *xc = XGetXCBConnection(dpy);
+		xcb_rectangle_t     r;
+		xcb_xfixes_region_t sr;
 		r.x      = (short) cw->x;
 		r.y      = (short) cw->y;
-		r.width  = (unsigned short) (cw->w + 2 * cw->bw);
-		r.height = (unsigned short) (cw->h + 2 * cw->bw);
-		sr       = XFixesCreateRegion(dpy, &r, 1);
-		XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-		XFixesDestroyRegion(dpy, sr);
+		r.width  = (uint16_t) (cw->w + 2 * cw->bw);
+		r.height = (uint16_t) (cw->h + 2 * cw->bw);
+		sr       = xcb_generate_id(xc);
+		xcb_xfixes_create_region(xc, sr, 1, &r);
+		xcb_xfixes_union_region(xc, comp.dirty, sr, comp.dirty);
+		xcb_xfixes_destroy_region(xc, sr);
 	}
 	schedule_repaint();
 }
@@ -1742,15 +1881,15 @@ compositor_set_hidden(Client *c, int hidden)
 void
 compositor_damage_all(void)
 {
-	XRectangle full;
+	xcb_rectangle_t full;
 
 	if (!comp.active)
 		return;
 
 	full.x = full.y = 0;
-	full.width      = (unsigned short) sw;
-	full.height     = (unsigned short) sh;
-	XFixesSetRegion(dpy, comp.dirty, &full, 1);
+	full.width      = (uint16_t) sw;
+	full.height     = (uint16_t) sh;
+	xcb_xfixes_set_region(XGetXCBConnection(dpy), comp.dirty, 1, &full);
 	schedule_repaint();
 }
 
@@ -1774,23 +1913,30 @@ compositor_notify_screen_resize(void)
 		comp.ring_idx = 0;
 	} else {
 		/* XRender: rebuild back pixmap at new size */
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
 		if (comp.back) {
-			XRenderFreePicture(dpy, comp.back);
+			xcb_render_free_picture(xc, comp.back);
 			comp.back = None;
 		}
 		if (comp.back_pixmap) {
-			XFreePixmap(dpy, comp.back_pixmap);
+			xcb_free_pixmap(xc, comp.back_pixmap);
 			comp.back_pixmap = None;
 		}
-		comp.back_pixmap = XCreatePixmap(dpy, root, (unsigned int) sw,
-		    (unsigned int) sh, (unsigned int) DefaultDepth(dpy, screen));
+		comp.back_pixmap = xcb_generate_id(xc);
+		xcb_create_pixmap(xc, (uint8_t) DefaultDepth(dpy, screen),
+		    comp.back_pixmap, (xcb_drawable_t) root, (uint16_t) sw,
+		    (uint16_t) sh);
 		if (comp.back_pixmap) {
-			XRenderPictFormat *fmt =
-			    XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-			XRenderPictureAttributes pa = { 0 };
-			pa.subwindow_mode           = IncludeInferiors;
-			comp.back                   = XRenderCreatePicture(
-                dpy, comp.back_pixmap, fmt, CPSubwindowMode, &pa);
+			const xcb_render_pictvisual_t *pv =
+			    xcb_render_util_find_visual_format(comp.render_formats,
+			        (xcb_visualid_t) XVisualIDFromVisual(
+			            DefaultVisual(dpy, screen)));
+			xcb_render_pictformat_t fmt   = pv ? pv->format : 0;
+			uint32_t                pmask = XCB_RENDER_CP_SUBWINDOW_MODE;
+			uint32_t pval = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;
+			comp.back     = xcb_generate_id(xc);
+			xcb_render_create_picture(xc, comp.back,
+			    (xcb_drawable_t) comp.back_pixmap, fmt, pmask, &pval);
 		}
 	}
 
@@ -1861,9 +2007,10 @@ compositor_check_unredirect(void)
 			CompWin *cw;
 			for (cw = comp.windows; cw; cw = cw->next) {
 				if (cw->client && cw->client->isfullscreen && cw->redirected) {
+					xcb_connection_t *xc2 = XGetXCBConnection(dpy);
 					xerror_push_ignore();
-					XCompositeUnredirectWindow(
-					    dpy, cw->win, CompositeRedirectManual);
+					xcb_composite_unredirect_window(xc2,
+					    (xcb_window_t) cw->win, XCB_COMPOSITE_REDIRECT_MANUAL);
 					XSync(dpy, False);
 					xerror_pop();
 					cw->redirected = 0;
@@ -1889,14 +2036,18 @@ compositor_check_unredirect(void)
 		CompWin *cw;
 		for (cw = comp.windows; cw; cw = cw->next) {
 			if (cw->client && cw->client->isfullscreen && !cw->redirected) {
+				xcb_connection_t *xc3 = XGetXCBConnection(dpy);
 				xerror_push_ignore();
-				XCompositeRedirectWindow(
-				    dpy, cw->win, CompositeRedirectManual);
+				xcb_composite_redirect_window(xc3, (xcb_window_t) cw->win,
+				    XCB_COMPOSITE_REDIRECT_MANUAL);
 				cw->redirected = 1;
 				comp_refresh_pixmap(cw);
-				if (cw->pixmap && !cw->damage)
-					cw->damage =
-					    XDamageCreate(dpy, cw->win, XDamageReportNonEmpty);
+				if (cw->pixmap && !cw->damage) {
+					cw->damage = xcb_generate_id(xc3);
+					xcb_damage_create(xc3, cw->damage,
+					    (xcb_drawable_t) cw->win,
+					    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
+				}
 				XSync(dpy, False);
 				xerror_pop();
 				/* Re-subscribe Present events — the eid was cleared by
@@ -1982,7 +2133,8 @@ compositor_handle_event(XEvent *ev)
 		if (!dcw) {
 			/* Unknown window — just ack the damage and ignore. */
 			xerror_push_ignore();
-			XDamageSubtract(dpy, dev->damage, None, None);
+			xcb_damage_subtract(
+			    XGetXCBConnection(dpy), dev->damage, XCB_NONE, XCB_NONE);
 			xerror_pop();
 			schedule_repaint();
 			return;
@@ -1994,32 +2146,39 @@ compositor_handle_event(XEvent *ev)
 			 * reported in the notify.  Ack by discarding the region. */
 			dcw->ever_damaged = 1;
 			xerror_push_ignore();
-			XDamageSubtract(dpy, dev->damage, None, None);
+			xcb_damage_subtract(
+			    XGetXCBConnection(dpy), dev->damage, XCB_NONE, XCB_NONE);
 			xerror_pop();
 			{
-				XRectangle    r;
-				XserverRegion sr;
+				xcb_connection_t   *xc = XGetXCBConnection(dpy);
+				xcb_rectangle_t     r;
+				xcb_xfixes_region_t sr;
 				r.x      = (short) dcw->x;
 				r.y      = (short) dcw->y;
-				r.width  = (unsigned short) (dcw->w + 2 * dcw->bw);
-				r.height = (unsigned short) (dcw->h + 2 * dcw->bw);
-				sr       = XFixesCreateRegion(dpy, &r, 1);
-				XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-				XFixesDestroyRegion(dpy, sr);
+				r.width  = (uint16_t) (dcw->w + 2 * dcw->bw);
+				r.height = (uint16_t) (dcw->h + 2 * dcw->bw);
+				sr       = xcb_generate_id(xc);
+				xcb_xfixes_create_region(xc, sr, 1, &r);
+				xcb_xfixes_union_region(xc, comp.dirty, sr, comp.dirty);
+				xcb_xfixes_destroy_region(xc, sr);
 			}
 		} else {
 			/* Subsequent damage: fetch the exact damage region from the
-			 * server via XDamageSubtract so we can dirty only what changed.
-			 * dev->area is only the bounding box of the event's inline area,
-			 * not the full accumulated server-side damage region. */
-			XserverRegion dmg_region = XFixesCreateRegion(dpy, NULL, 0);
+			 * server via xcb_damage_subtract so we can dirty only what
+			 * changed. dev->area is only the bounding box of the event's
+			 * inline area, not the full accumulated server-side damage
+			 * region. */
+			xcb_connection_t   *xc         = XGetXCBConnection(dpy);
+			xcb_xfixes_region_t dmg_region = xcb_generate_id(xc);
+			xcb_xfixes_create_region(xc, dmg_region, 0, NULL);
 			xerror_push_ignore();
-			XDamageSubtract(dpy, dev->damage, None, dmg_region);
+			xcb_damage_subtract(xc, dev->damage, XCB_NONE, dmg_region);
 			xerror_pop();
 			/* Translate from window-local to screen coordinates */
-			XFixesTranslateRegion(dpy, dmg_region, dcw->x, dcw->y);
-			XFixesUnionRegion(dpy, comp.dirty, comp.dirty, dmg_region);
-			XFixesDestroyRegion(dpy, dmg_region);
+			xcb_xfixes_translate_region(
+			    xc, dmg_region, (int16_t) dcw->x, (int16_t) dcw->y);
+			xcb_xfixes_union_region(xc, comp.dirty, dmg_region, comp.dirty);
+			xcb_xfixes_destroy_region(xc, dmg_region);
 		}
 
 		schedule_repaint();
@@ -2040,15 +2199,17 @@ compositor_handle_event(XEvent *ev)
 		if (cw && !cw->client) {
 			CompWin *prev = NULL, *cur;
 			{
-				XRectangle    r;
-				XserverRegion sr;
+				xcb_connection_t   *xc = XGetXCBConnection(dpy);
+				xcb_rectangle_t     r;
+				xcb_xfixes_region_t sr;
 				r.x      = (short) cw->x;
 				r.y      = (short) cw->y;
-				r.width  = (unsigned short) (cw->w + 2 * cw->bw);
-				r.height = (unsigned short) (cw->h + 2 * cw->bw);
-				sr       = XFixesCreateRegion(dpy, &r, 1);
-				XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-				XFixesDestroyRegion(dpy, sr);
+				r.width  = (uint16_t) (cw->w + 2 * cw->bw);
+				r.height = (uint16_t) (cw->h + 2 * cw->bw);
+				sr       = xcb_generate_id(xc);
+				xcb_xfixes_create_region(xc, sr, 1, &r);
+				xcb_xfixes_union_region(xc, comp.dirty, sr, comp.dirty);
+				xcb_xfixes_destroy_region(xc, sr);
 			}
 			for (cur = comp.windows; cur; cur = cur->next) {
 				if (cur == cw) {
@@ -2088,15 +2249,17 @@ compositor_handle_event(XEvent *ev)
 			int resized = (cev->width != cw->w || cev->height != cw->h);
 
 			{
-				XRectangle    old_rect;
-				XserverRegion old_r;
+				xcb_connection_t   *xc = XGetXCBConnection(dpy);
+				xcb_rectangle_t     old_rect;
+				xcb_xfixes_region_t old_r;
 				old_rect.x      = (short) cw->x;
 				old_rect.y      = (short) cw->y;
-				old_rect.width  = (unsigned short) (cw->w + 2 * cw->bw);
-				old_rect.height = (unsigned short) (cw->h + 2 * cw->bw);
-				old_r           = XFixesCreateRegion(dpy, &old_rect, 1);
-				XFixesUnionRegion(dpy, comp.dirty, comp.dirty, old_r);
-				XFixesDestroyRegion(dpy, old_r);
+				old_rect.width  = (uint16_t) (cw->w + 2 * cw->bw);
+				old_rect.height = (uint16_t) (cw->h + 2 * cw->bw);
+				old_r           = xcb_generate_id(xc);
+				xcb_xfixes_create_region(xc, old_r, 1, &old_rect);
+				xcb_xfixes_union_region(xc, comp.dirty, old_r, comp.dirty);
+				xcb_xfixes_destroy_region(xc, old_r);
 			}
 
 			cw->x  = cev->x;
@@ -2123,15 +2286,17 @@ compositor_handle_event(XEvent *ev)
 		for (cw = comp.windows; cw; cw = cw->next) {
 			if (cw->win == dev->window) {
 				{
-					XRectangle    r;
-					XserverRegion sr;
+					xcb_connection_t   *xc = XGetXCBConnection(dpy);
+					xcb_rectangle_t     r;
+					xcb_xfixes_region_t sr;
 					r.x      = (short) cw->x;
 					r.y      = (short) cw->y;
-					r.width  = (unsigned short) (cw->w + 2 * cw->bw);
-					r.height = (unsigned short) (cw->h + 2 * cw->bw);
-					sr       = XFixesCreateRegion(dpy, &r, 1);
-					XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-					XFixesDestroyRegion(dpy, sr);
+					r.width  = (uint16_t) (cw->w + 2 * cw->bw);
+					r.height = (uint16_t) (cw->h + 2 * cw->bw);
+					sr       = xcb_generate_id(xc);
+					xcb_xfixes_create_region(xc, sr, 1, &r);
+					xcb_xfixes_union_region(xc, comp.dirty, sr, comp.dirty);
+					xcb_xfixes_destroy_region(xc, sr);
 				}
 				if (prev)
 					prev->next = cw->next;
@@ -2331,19 +2496,26 @@ comp_do_repaint(void)
  * ---------------------------------------------------------------------- */
 
 /*
- * Fetch the bounding box of comp.dirty as a single XRectangle.
+ * Fetch the bounding box of comp.dirty as a single xcb_rectangle_t.
  * Returns 1 on success, 0 if the region is empty or the fetch fails.
  * On failure *out is set to the full screen rect.
  */
 static int
-dirty_get_bbox(XRectangle *out)
+dirty_get_bbox(xcb_rectangle_t *out)
 {
-	int         nrects = 0;
-	XRectangle *rects  = XFixesFetchRegion(dpy, comp.dirty, &nrects);
+	xcb_connection_t                *xc = XGetXCBConnection(dpy);
+	xcb_xfixes_fetch_region_cookie_t fck;
+	xcb_xfixes_fetch_region_reply_t *fr;
+	xcb_rectangle_t                 *rects;
+	int                              nrects;
+
+	fck    = xcb_xfixes_fetch_region(xc, comp.dirty);
+	fr     = xcb_xfixes_fetch_region_reply(xc, fck, NULL);
+	rects  = fr ? xcb_xfixes_fetch_region_rectangles(fr) : NULL;
+	nrects = fr ? xcb_xfixes_fetch_region_rectangles_length(fr) : 0;
 
 	if (!rects || nrects == 0) {
-		if (rects)
-			XFree(rects);
+		free(fr);
 		out->x = out->y = 0;
 		out->width      = (unsigned short) sw;
 		out->height     = (unsigned short) sh;
@@ -2365,7 +2537,7 @@ dirty_get_bbox(XRectangle *out)
 		if (ey > y2)
 			y2 = ey;
 	}
-	XFree(rects);
+	free(fr); /* rects is interior to fr — do NOT free separately */
 
 	/* Clamp to screen */
 	if (x1 < 0)
@@ -2387,9 +2559,9 @@ dirty_get_bbox(XRectangle *out)
 static void
 comp_do_repaint_gl(void)
 {
-	CompWin   *cw;
-	XRectangle scissor;
-	int        use_scissor = 0;
+	CompWin        *cw;
+	xcb_rectangle_t scissor;
+	int             use_scissor = 0;
 
 	/* --- Partial repaint via EGL_EXT_buffer_age + glScissor ------------- */
 	if (comp.has_buffer_age) {
@@ -2402,7 +2574,7 @@ comp_do_repaint_gl(void)
 		 * frame old — only this frame's dirty rect needs repainting. */
 		if (age > 0 && age <= (unsigned int) DAMAGE_RING_SIZE) {
 			/* Collect current dirty bbox */
-			XRectangle cur;
+			xcb_rectangle_t cur;
 			dirty_get_bbox(&cur);
 
 			/* Union current dirty with the past (age-1) frames */
@@ -2411,7 +2583,7 @@ comp_do_repaint_gl(void)
 			for (unsigned int a = 1; a < age; a++) {
 				int slot = ((comp.ring_idx - (int) a) + DAMAGE_RING_SIZE * 2) %
 				    DAMAGE_RING_SIZE;
-				XRectangle *r = &comp.damage_ring[slot];
+				xcb_rectangle_t *r = &comp.damage_ring[slot];
 				if (r->width == 0 || r->height == 0)
 					continue;
 				if (r->x < x1)
@@ -2561,7 +2733,7 @@ comp_do_repaint_gl(void)
 		glDisable(GL_SCISSOR_TEST);
 
 	/* Reset dirty region */
-	XFixesSetRegion(dpy, comp.dirty, NULL, 0);
+	xcb_xfixes_set_region(XGetXCBConnection(dpy), comp.dirty, 0, NULL);
 
 	/* Present — eglSwapBuffers is vsync-aware (swap interval = 1).
 	 * Re-check paused immediately before the swap: if a fullscreen bypass
@@ -2580,19 +2752,22 @@ comp_do_repaint_gl(void)
 static void
 comp_do_repaint_xrender(void)
 {
-	CompWin     *cw;
-	XRenderColor bg_color = { 0, 0, 0, 0xffff };
+	xcb_connection_t  *xc = XGetXCBConnection(dpy);
+	CompWin           *cw;
+	xcb_render_color_t bg_color = { 0, 0, 0, 0xffff };
 
 	/* Clip back-buffer to dirty region */
-	XFixesSetPictureClipRegion(dpy, comp.back, 0, 0, comp.dirty);
+	xcb_xfixes_set_picture_clip_region(xc, comp.back, comp.dirty, 0, 0);
 
 	/* Paint background */
 	if (comp.wallpaper_pict) {
-		XRenderComposite(dpy, PictOpSrc, comp.wallpaper_pict, None, comp.back,
-		    0, 0, 0, 0, 0, 0, (unsigned int) sw, (unsigned int) sh);
+		xcb_render_composite(xc, XCB_RENDER_PICT_OP_SRC, comp.wallpaper_pict,
+		    XCB_NONE, comp.back, 0, 0, 0, 0, 0, 0, (uint16_t) sw,
+		    (uint16_t) sh);
 	} else {
-		XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bg_color, 0, 0,
-		    (unsigned int) sw, (unsigned int) sh);
+		xcb_rectangle_t bg_rect = { 0, 0, (uint16_t) sw, (uint16_t) sh };
+		xcb_render_fill_rectangles(
+		    xc, XCB_RENDER_PICT_OP_SRC, comp.back, bg_color, 1, &bg_rect);
 	}
 
 	/* Walk windows bottom-to-top using our internal list.
@@ -2601,8 +2776,8 @@ comp_do_repaint_xrender(void)
 	xerror_push_ignore();
 
 	for (cw = comp.windows; cw; cw = cw->next) {
-		int     alpha_idx;
-		Picture mask;
+		int                  alpha_idx;
+		xcb_render_picture_t mask;
 
 		if (!cw->redirected || cw->picture == None || cw->hidden)
 			continue;
@@ -2615,46 +2790,49 @@ comp_do_repaint_xrender(void)
 
 		if (cw->argb || alpha_idx < 255) {
 			mask = comp.alpha_pict[alpha_idx];
-			XRenderComposite(dpy, PictOpOver, cw->picture, mask, comp.back, 0,
-			    0, 0, 0, cw->x + cw->bw, cw->y + cw->bw, (unsigned int) cw->w,
-			    (unsigned int) cw->h);
+			xcb_render_composite(xc, XCB_RENDER_PICT_OP_OVER, cw->picture,
+			    mask, comp.back, 0, 0, 0, 0, (int16_t) (cw->x + cw->bw),
+			    (int16_t) (cw->y + cw->bw), (uint16_t) cw->w,
+			    (uint16_t) cw->h);
 		} else {
-			XRenderComposite(dpy, PictOpSrc, cw->picture, None, comp.back, 0,
-			    0, 0, 0, cw->x + cw->bw, cw->y + cw->bw, (unsigned int) cw->w,
-			    (unsigned int) cw->h);
+			xcb_render_composite(xc, XCB_RENDER_PICT_OP_SRC, cw->picture,
+			    XCB_NONE, comp.back, 0, 0, 0, 0, (int16_t) (cw->x + cw->bw),
+			    (int16_t) (cw->y + cw->bw), (uint16_t) cw->w,
+			    (uint16_t) cw->h);
 		}
 
 		if (cw->client && cw->bw > 0) {
-			int  sel        = (selmon && cw->client == selmon->sel);
-			Clr *clr        = &scheme[sel ? SchemeSel : SchemeNorm][ColBorder];
-			XRenderColor bc = { clr->r, clr->g, clr->b, clr->a };
-			unsigned int bw = (unsigned int) cw->bw;
-			unsigned int ow = (unsigned int) cw->w + 2 * bw;
-			unsigned int oh = (unsigned int) cw->h + 2 * bw;
-
-			XRenderFillRectangle(
-			    dpy, PictOpSrc, comp.back, &bc, cw->x, cw->y, ow, bw);
-			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc, cw->x,
-			    cw->y + (int) (oh - bw), ow, bw);
-			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc, cw->x,
-			    cw->y + (int) bw, bw, (unsigned int) cw->h);
-			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc,
-			    cw->x + (int) (ow - bw), cw->y + (int) bw, bw,
-			    (unsigned int) cw->h);
+			int  sel = (selmon && cw->client == selmon->sel);
+			Clr *clr = &scheme[sel ? SchemeSel : SchemeNorm][ColBorder];
+			xcb_render_color_t bc         = { clr->r, clr->g, clr->b, clr->a };
+			uint16_t           bw         = (uint16_t) cw->bw;
+			uint16_t           ow         = (uint16_t) (cw->w + 2 * cw->bw);
+			uint16_t           oh         = (uint16_t) (cw->h + 2 * cw->bw);
+			xcb_rectangle_t    borders[4] = {
+                { (int16_t) cw->x, (int16_t) cw->y, ow, bw },
+                { (int16_t) cw->x, (int16_t) (cw->y + (int) (oh - bw)), ow,
+				       bw },
+                { (int16_t) cw->x, (int16_t) (cw->y + (int) bw), bw,
+				       (uint16_t) cw->h },
+                { (int16_t) (cw->x + (int) (ow - bw)),
+				       (int16_t) (cw->y + (int) bw), bw, (uint16_t) cw->h },
+			};
+			xcb_render_fill_rectangles(
+			    xc, XCB_RENDER_PICT_OP_SRC, comp.back, bc, 4, borders);
 		}
 	}
 
 	xerror_pop();
 
 	/* Blit full back-buffer to overlay — unconditional, no clip */
-	XFixesSetPictureClipRegion(dpy, comp.target, 0, 0, None);
-	XRenderComposite(dpy, PictOpSrc, comp.back, None, comp.target, 0, 0, 0, 0,
-	    0, 0, (unsigned int) sw, (unsigned int) sh);
+	xcb_xfixes_set_picture_clip_region(xc, comp.target, XCB_NONE, 0, 0);
+	xcb_render_composite(xc, XCB_RENDER_PICT_OP_SRC, comp.back, XCB_NONE,
+	    comp.target, 0, 0, 0, 0, 0, 0, (uint16_t) sw, (uint16_t) sh);
 
 	/* Reset dirty region */
-	XFixesSetRegion(dpy, comp.dirty, NULL, 0);
+	xcb_xfixes_set_region(xc, comp.dirty, 0, NULL);
 
-	XFixesSetPictureClipRegion(dpy, comp.back, 0, 0, None);
+	xcb_xfixes_set_picture_clip_region(xc, comp.back, XCB_NONE, 0, 0);
 	xflush(dpy);
 }
 

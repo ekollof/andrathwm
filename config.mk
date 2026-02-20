@@ -32,7 +32,7 @@ XCBLIBS  = $(shell pkg-config --libs xcb-icccm xcb-randr xcb-keysyms xcb-xineram
 XCBINC   = $(shell pkg-config --cflags xcb-icccm xcb-randr xcb-keysyms xcb-xinerama)
 
 # Built-in XRender compositor, comment if you don't want it
-COMPOSITORLIBS  = -lXcomposite -lXdamage -lXrender -lXfixes -lXext -lGL -lEGL -l:libX11-xcb.so.1 -lxcb -lxcb-render -lxcb-present
+COMPOSITORLIBS  = -lXcomposite -lXdamage -lXrender -lXfixes -lXext -lGL -lEGL -l:libX11-xcb.so.1 -lxcb -lxcb-render -lxcb-present -lxcb-composite -lxcb-damage -lxcb-xfixes -lxcb-shape -lxcb-render-util
 COMPOSITORFLAGS = -DCOMPOSITOR
 
 # PangoCairo (replaces Xft/freetype for text rendering)
