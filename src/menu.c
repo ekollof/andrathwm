@@ -8,7 +8,7 @@
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #ifdef XINERAMA
-#include <X11/extensions/Xinerama.h>
+#include <xcb/xinerama.h>
 #endif
 #include <xcb/xcb.h>
 #include <xcb/xcb_keysyms.h>
@@ -358,32 +358,41 @@ menu_get_monitor_geometry(
 
 #ifdef XINERAMA
 	{
-		XineramaScreenInfo *screens;
-		int                 nscreens, i;
-		int                 found = 0;
-
-		if (XineramaIsActive(dpy) &&
-		    (screens = XineramaQueryScreens(dpy, &nscreens))) {
-			for (i = 0; i < nscreens; i++) {
-				if (x >= screens[i].x_org &&
-				    x < screens[i].x_org + screens[i].width &&
-				    y >= screens[i].y_org &&
-				    y < screens[i].y_org + screens[i].height) {
-					*mon_x = screens[i].x_org;
-					*mon_y = screens[i].y_org;
-					*mon_w = screens[i].width;
-					*mon_h = screens[i].height;
-					found  = 1;
-					break;
+		xcb_connection_t               *xc = XGetXCBConnection(dpy);
+		xcb_xinerama_is_active_reply_t *ia =
+		    xcb_xinerama_is_active_reply(xc, xcb_xinerama_is_active(xc), NULL);
+		int xin_active = ia && ia->state;
+		free(ia);
+		if (xin_active) {
+			xcb_xinerama_query_screens_reply_t *qi =
+			    xcb_xinerama_query_screens_reply(
+			        xc, xcb_xinerama_query_screens(xc), NULL);
+			xcb_xinerama_screen_info_t *screens =
+			    xcb_xinerama_query_screens_screen_info(qi);
+			int nscreens = xcb_xinerama_query_screens_screen_info_length(qi);
+			int i, found = 0;
+			if (screens && nscreens > 0) {
+				for (i = 0; i < nscreens; i++) {
+					if (x >= screens[i].x_org &&
+					    x < screens[i].x_org + screens[i].width &&
+					    y >= screens[i].y_org &&
+					    y < screens[i].y_org + screens[i].height) {
+						*mon_x = screens[i].x_org;
+						*mon_y = screens[i].y_org;
+						*mon_w = screens[i].width;
+						*mon_h = screens[i].height;
+						found  = 1;
+						break;
+					}
+				}
+				if (!found) {
+					*mon_x = screens[0].x_org;
+					*mon_y = screens[0].y_org;
+					*mon_w = screens[0].width;
+					*mon_h = screens[0].height;
 				}
 			}
-			if (!found && nscreens > 0) {
-				*mon_x = screens[0].x_org;
-				*mon_y = screens[0].y_org;
-				*mon_w = screens[0].width;
-				*mon_h = screens[0].height;
-			}
-			XFree(screens);
+			free(qi); /* frees screens array too */
 		}
 	}
 #else
