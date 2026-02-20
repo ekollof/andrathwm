@@ -42,6 +42,8 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `7e7e3ce` | `ewmh.c`: `XGetWMProtocols`, `XSetInputFocus` |
 | `90bf747` | Geometry, grab/warp, class hint, keyboard mapping, visual walk |
 | `b45e0c7` | WM hints (`xcb-icccm`), size hints, keyboard (`xcb-keysyms`), RandR (`xcb-randr`), `compositor.c` `XGetWindowAttributes` |
+| `b7bd833` | `menu.c` and `sni.c`: window/grab/RandR/keysym calls migrated to XCB |
+| (this commit) | `launcher.c`: window/grab/keysym calls migrated to XCB; `XLookupString` kept |
 
 ---
 
@@ -126,7 +128,7 @@ These are permanently Xlib and should not be touched:
 | `compositor.c` `XInternAtom` for `_NET_WM_WINDOW_OPACITY` | Isolated single call, acceptable |
 | `compositor.c` `XCreateSimpleWindow` for CM owner window | Isolated single call, acceptable |
 | `drw.c` — `XCreatePixmap`, `XCreateGC`, `XFillRectangle`, `XCopyArea`, `XSetForeground`, `XCreateFontCursor`, `XFreeCursor` | Drawing primitives; no XCB equivalents — permanent keeps even after Pango migration |
-| `launcher.c` entirely | Has its own event loop, intentional keep |
+| `launcher.c` — `XLookupString` + `XComposeStatus` for character input | No XCB equivalent for compose/IM; intentional keep |
 | `xrdb.c` entirely | Standalone resource query, intentional keep |
 | `drw.c` — `XSetLineAttributes`, `XDrawRectangle` | Drawing primitives; permanent keeps (same rationale as other drw.c drawing calls) |
 | `menu.c` / `sni.c` Xinerama (`XineramaIsActive`, `XineramaQueryScreens`) | No XCB Xinerama extension library; `XFree(screens)` is correct per Xinerama spec |

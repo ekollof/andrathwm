@@ -6,6 +6,9 @@
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
+#include <X11/Xlib-xcb.h>
+#include <xcb/xcb.h>
+#include <xcb/xcb_keysyms.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -836,11 +839,10 @@ Launcher *
 launcher_create(
     Display *dpy, Window root, Drw *drw, Clr **scheme, const char *term)
 {
-	Launcher            *launcher;
-	XSetWindowAttributes wa;
-	char                *home;
-	char                 path[512];
-	int                  i;
+	Launcher *launcher;
+	char     *home;
+	char      path[512];
+	int       i;
 
 	launcher            = ecalloc(1, sizeof(Launcher));
 	launcher->dpy       = dpy;
@@ -904,19 +906,38 @@ launcher_create(
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);
 
-	wa.override_redirect = True;
-	wa.background_pixel  = 0;
-	wa.border_pixel      = 0;
-	wa.colormap          = DefaultColormap(dpy, DefaultScreen(dpy));
-	wa.event_mask        = ExposureMask | KeyPressMask | ButtonPressMask |
-	    ButtonReleaseMask | PointerMotionMask;
+	{
+		xcb_connection_t *xc  = XGetXCBConnection(dpy);
+		int               scr = DefaultScreen(dpy);
+		xcb_screen_t *xs = xcb_setup_roots_iterator(xcb_get_setup(xc)).data;
+		uint32_t vid = (uint32_t) XVisualIDFromVisual(DefaultVisual(dpy, scr));
+		xcb_colormap_t cmap;
+		uint32_t       vals[5];
+		uint32_t       mask;
 
-	launcher->win = XCreateWindow(dpy, root, 0, 0, launcher->w, launcher->h, 1,
-	    DefaultDepth(dpy, DefaultScreen(dpy)), CopyFromParent,
-	    DefaultVisual(dpy, DefaultScreen(dpy)),
-	    CWOverrideRedirect | CWBackPixel | CWBorderPixel | CWColormap |
-	        CWEventMask,
-	    &wa);
+		cmap = xcb_generate_id(xc);
+		xcb_create_colormap(xc, XCB_COLORMAP_ALLOC_NONE, cmap, xs->root, vid);
+
+		/* Values must be in ascending XCB_CW_* bit order:
+		 * BACK_PIXEL(1) BORDER_PIXEL(3) OVERRIDE_REDIRECT(9)
+		 * EVENT_MASK(11) COLORMAP(13) */
+		mask = XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL |
+		    XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK | XCB_CW_COLORMAP;
+		vals[0] = 0; /* back pixel */
+		vals[1] = 0; /* border pixel */
+		vals[2] = 1; /* override redirect */
+		vals[3] = XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS |
+		    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
+		    XCB_EVENT_MASK_POINTER_MOTION;
+		vals[4] = cmap;
+
+		launcher->win = xcb_generate_id(xc);
+		xcb_create_window(xc, (uint8_t) DefaultDepth(dpy, scr), launcher->win,
+		    (xcb_window_t) root, 0, 0, (uint16_t) launcher->w,
+		    (uint16_t) launcher->h, 1, XCB_WINDOW_CLASS_INPUT_OUTPUT, vid,
+		    mask, vals);
+		xcb_free_colormap(xc, cmap);
+	}
 
 	return launcher;
 }
@@ -933,7 +954,7 @@ launcher_free(Launcher *launcher)
 		launcher_hide(launcher);
 
 	if (launcher->win)
-		XDestroyWindow(launcher->dpy, launcher->win);
+		xcb_destroy_window(XGetXCBConnection(launcher->dpy), launcher->win);
 
 	if (launcher->filtered)
 		free(launcher->filtered);
@@ -980,9 +1001,24 @@ launcher_show(Launcher *launcher, int x, int y)
 	if (launcher->y < mon_y)
 		launcher->y = mon_y;
 
-	XMoveResizeWindow(launcher->dpy, launcher->win, launcher->x, launcher->y,
-	    launcher->w, launcher->h);
-	XMapRaised(launcher->dpy, launcher->win);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		uint32_t          cv[4];
+		uint32_t          sv[1];
+
+		cv[0] = (uint32_t) launcher->x;
+		cv[1] = (uint32_t) launcher->y;
+		cv[2] = (uint32_t) launcher->w;
+		cv[3] = (uint32_t) launcher->h;
+		xcb_configure_window(xc, launcher->win,
+		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+		    cv);
+		xcb_map_window(xc, launcher->win);
+		sv[0] = XCB_STACK_MODE_ABOVE;
+		xcb_configure_window(
+		    xc, launcher->win, XCB_CONFIG_WINDOW_STACK_MODE, sv);
+	}
 	xflush(launcher->dpy);
 
 	launcher->visible = 1;
@@ -993,23 +1029,38 @@ launcher_show(Launcher *launcher, int x, int y)
 	 * This ensures the WM's own passive keybinding grab (which delivered
 	 * the keypress that triggered us) is fully released before we try to
 	 * establish the active keyboard grab. */
-	XUngrabPointer(launcher->dpy, last_event_time);
-	XUngrabKeyboard(launcher->dpy, last_event_time);
-	xflush(launcher->dpy);
 	{
-		int grab_result = XGrabPointer(launcher->dpy, launcher->win, False,
-		    ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
-		    GrabModeAsync, GrabModeAsync, None, None, last_event_time);
-		if (grab_result != GrabSuccess)
-			awm_warn(
-			    "Launcher: Failed to grab pointer (result=%d)", grab_result);
-	}
-	{
-		int key_grab = XGrabKeyboard(launcher->dpy, launcher->win, True,
-		    GrabModeAsync, GrabModeAsync, last_event_time);
-		if (key_grab != GrabSuccess)
-			awm_warn(
-			    "Launcher: Failed to grab keyboard (result=%d)", key_grab);
+		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+
+		xcb_ungrab_pointer(xc, (xcb_timestamp_t) last_event_time);
+		xcb_ungrab_keyboard(xc, (xcb_timestamp_t) last_event_time);
+		xflush(launcher->dpy);
+		{
+			xcb_grab_pointer_cookie_t pc;
+			xcb_grab_pointer_reply_t *pr;
+
+			pc = xcb_grab_pointer(xc, 0, launcher->win,
+			    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
+			        XCB_EVENT_MASK_POINTER_MOTION,
+			    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, XCB_NONE, XCB_NONE,
+			    (xcb_timestamp_t) last_event_time);
+			pr = xcb_grab_pointer_reply(xc, pc, NULL);
+			if (!pr || pr->status != XCB_GRAB_STATUS_SUCCESS)
+				awm_warn("Launcher: Failed to grab pointer");
+			free(pr);
+		}
+		{
+			xcb_grab_keyboard_cookie_t kc;
+			xcb_grab_keyboard_reply_t *kr;
+
+			kc = xcb_grab_keyboard(xc, 1, launcher->win,
+			    (xcb_timestamp_t) last_event_time, XCB_GRAB_MODE_ASYNC,
+			    XCB_GRAB_MODE_ASYNC);
+			kr = xcb_grab_keyboard_reply(xc, kc, NULL);
+			if (!kr || kr->status != XCB_GRAB_STATUS_SUCCESS)
+				awm_warn("Launcher: Failed to grab keyboard");
+			free(kr);
+		}
 	}
 }
 
@@ -1019,9 +1070,13 @@ launcher_hide(Launcher *launcher)
 	if (!launcher || !launcher->visible)
 		return;
 
-	XUngrabPointer(launcher->dpy, CurrentTime);
-	XUngrabKeyboard(launcher->dpy, CurrentTime);
-	XUnmapWindow(launcher->dpy, launcher->win);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+
+		xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
+		xcb_ungrab_keyboard(xc, XCB_CURRENT_TIME);
+		xcb_unmap_window(xc, launcher->win);
+	}
 	launcher->visible = 0;
 }
 
@@ -1051,7 +1106,15 @@ launcher_insert_text(Launcher *launcher, const char *s, int len)
 
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);
-	XResizeWindow(launcher->dpy, launcher->win, launcher->w, launcher->h);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		uint32_t          rv[2];
+
+		rv[0] = (uint32_t) launcher->w;
+		rv[1] = (uint32_t) launcher->h;
+		xcb_configure_window(xc, launcher->win,
+		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, rv);
+	}
 	launcher_render(launcher);
 }
 
@@ -1079,7 +1142,15 @@ launcher_delete_char(Launcher *launcher)
 
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);
-	XResizeWindow(launcher->dpy, launcher->win, launcher->w, launcher->h);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		uint32_t          rv[2];
+
+		rv[0] = (uint32_t) launcher->w;
+		rv[1] = (uint32_t) launcher->h;
+		xcb_configure_window(xc, launcher->win,
+		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, rv);
+	}
 	launcher_render(launcher);
 }
 
@@ -1107,7 +1178,15 @@ launcher_delete_char_forward(Launcher *launcher)
 
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);
-	XResizeWindow(launcher->dpy, launcher->win, launcher->w, launcher->h);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		uint32_t          rv[2];
+
+		rv[0] = (uint32_t) launcher->w;
+		rv[1] = (uint32_t) launcher->h;
+		xcb_configure_window(xc, launcher->win,
+		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, rv);
+	}
 	launcher_render(launcher);
 }
 
@@ -1136,7 +1215,15 @@ launcher_delete_word(Launcher *launcher)
 
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);
-	XResizeWindow(launcher->dpy, launcher->win, launcher->w, launcher->h);
+	{
+		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		uint32_t          rv[2];
+
+		rv[0] = (uint32_t) launcher->w;
+		rv[1] = (uint32_t) launcher->h;
+		xcb_configure_window(xc, launcher->win,
+		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, rv);
+	}
 	launcher_render(launcher);
 }
 
@@ -1192,8 +1279,8 @@ launcher_scroll(Launcher *launcher, int delta)
 int
 launcher_handle_event(Launcher *launcher, XEvent *ev)
 {
-	KeySym key;
-	int    idx, y;
+	xcb_keysym_t key;
+	int          idx, y;
 
 	if (!launcher || !launcher->visible)
 		return 0;
@@ -1205,7 +1292,8 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 	}
 
 	if (ev->type == KeyPress) {
-		key = XLookupKeysym(&ev->xkey, 0);
+		key = xcb_key_symbols_get_keysym(
+		    keysyms, (xcb_keycode_t) ev->xkey.keycode, 0);
 
 		switch (key) {
 		case XK_Escape:
