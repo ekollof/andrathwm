@@ -62,6 +62,7 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `ebfa6b6` | Phase 1 batch: `ConnectionNumber` → `xcb_get_file_descriptor(XGetXCBConnection())` in `spawn.c`, `xsource.c`, `launcher.c`; `XSupportsLocale` removed from `awm.c`; `XRRUpdateConfiguration` removed, `RRScreenChangeNotify` → `XCB_RANDR_SCREEN_CHANGE_NOTIFY`; `DefaultScreen`/`DisplayWidth`/`DisplayHeight`/`RootWindow` → XCB setup roots iterator in `awm.c`; `awm.h`: `Xrandr.h`/`Xinerama.h` removed; `launcher.c`: `DefaultDepth` → `xs->root_depth`, `DefaultScreen`/`DisplayWidth`/`DisplayHeight` → XCB screen walk, `XLookupString` → `xkb_keysym_to_utf8`; `drw.c`: `XParseColor`/`XAllocColor`/`DefaultColormap` → sscanf hex parser + `xcb_alloc_color`; `compositor.c`: all 15 `xerror_push_ignore`/`XSync`/`xerror_pop` triplets replaced with `_checked`+`xcb_request_check` or `xcb_flush`; push/pop infrastructure deleted; `config.mk`: add `-lxkbcommon` |
 | `beaeb24` | Phase 2 complete: all 15 `handler[]` callbacks (`events.c/h`) rewritten from `void(*)(XEvent*)` to `void(*)(xcb_generic_event_t*)`; `x_dispatch_cb` (`awm.c`) replaced `XPending`/`XNextEvent` with `xcb_poll_for_event` drain loop; `movemouse` + `resizemouse` (`client.c`) replaced `XMaskEvent` with `xcb_wait_for_event` for-loop and `XPutBackEvent` drain with `xcb_poll_for_event` dispatch; `monitor.c` both `XPutBackEvent` sites replaced with dispatch loops; `compositor_handle_event` + `comp_repaint_idle` (`compositor.c`) fully rewritten with XCB types; `systray.h/c`, `launcher.h/c`, `menu.h/c`, `sni.h/c` handler signatures updated to `xcb_generic_event_t*`; `XPending` removed from `xsource.c` (both `prepare` and `check`); dead `XWindowChanges wc` removed from `manage()` and `resizeclient()` |
 | `615729e` | Phase 3b complete: replace global `Display *dpy` with `xcb_connection_t *xc` across all TUs — `awm.c/h`: `xcb_connect`/`xcb_disconnect`, `extern xcb_connection_t *xc`; `client.c`: remove local `xc` self-assign, fix `gettextprop`; `compositor.c`: remove Xlib headers, fix `pext` variable corruption, remove self-assigns; `drw.c/h`: `drw_create` shim accepts `xc`, opens private `Display*` for Phase 3c scaffolding; `events.c`, `ewmh.c`, `monitor.c`, `systray.c`: self-assigns removed, `DefaultDepth`/`DefaultScreen` replaced; `launcher.c/h`, `menu.c/h`, `xsource.c/h`: full `xcb_connection_t *xc` migration; `sni.c/h`: `sni_init` takes `xc`, local `xcb_screen_root_depth_sni` helper, `extern int screen`; `spawn.c`: replace `dpy` with `xc` in child fork fd-close guard |
+| `23cf5a7` | Phase 3c complete: `drw.h`/`drw.c` fully rewritten to pure XCB+xcb-renderutil (no Xlib); `awm.h` drops Xlib-xcb bridge and Xlib extension headers; `config.mk` fixes `xcb-renderutil` pkg-config name; `menu.h/c`, `sni.h/c`, `systray.h/c`, `launcher.h/c`: `Window`→`xcb_window_t`, `Time`→`xcb_timestamp_t`, `Pixmap`→`xcb_pixmap_t`, `Button[123]`→`1/2/3`, `CurrentTime`→`XCB_CURRENT_TIME` throughout; orphaned `SNIIconLoadData` struct and stale placeholder body removed from `sni.c` |
 
 ---
 
@@ -153,6 +154,8 @@ These are permanently Xlib and should not be touched:
 **Phase 2 (event loop rewrite) is complete as of `beaeb24`.**
 
 **Phase 3b (global `Display *dpy` → `xcb_connection_t *xc`) is complete as of `615729e`.**
+
+**Phase 3c (drw rewrite to pure XCB; Xlib types removed from all headers) is complete as of `23cf5a7`.**
 
 All Xlib event-dispatch APIs (`XMaskEvent`, `XNextEvent`, `XPending`, `XCheckTypedEvent`,
 `XPutBackEvent`) have been replaced with XCB equivalents.  All `handler[]` callbacks are
@@ -541,11 +544,9 @@ The migration is complete when:
 
 1. ~~**Phase 2** (event loop rewrite) is implemented~~ — **Done as of `beaeb24`.**
 2. ~~**Phase 3b** (global `Display *dpy` → `xcb_connection_t *xc`) is implemented~~ — **Done as of `615729e`.**
-3. **Phase 3c / Pango migration** is implemented: `drw.c` / `drw.h` rewritten,
-   `config.mk` updated, `config.h` + `config.def.h` font strings updated, `systray.c`
-   `Clr` field accesses updated, `awm.h` Xft include removed, `drw_font_getexts` deleted.
-4. `make clean && make` produces zero warnings and zero errors.
-5. The branch is rebased cleanly onto `main` (or merged) and pushed.
+3. ~~**Phase 3c** (`drw.c`/`drw.h` rewritten to pure XCB; Xlib types purged from all headers)~~ — **Done as of `23cf5a7`.**
+4. **Phase 4** (migrate remaining `Window`/`Pixmap` types in `Client`, `Monitor`, `awm.h` structs to `xcb_window_t`/`xcb_pixmap_t`): still pending.
+5. `make clean && make` produces zero warnings and zero errors.
 
 At that point:
 - `XGetWindowProperty` will be fully eliminated from the core WM files.
