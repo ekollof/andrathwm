@@ -61,8 +61,14 @@ drw_create(
 	}
 
 	if (drw->cairo_xcb) {
-		xcb_visualid_t vid = XVisualIDFromVisual(DefaultVisual(dpy, screen));
-		drw->xcb_visual    = xcb_find_visualtype(drw->cairo_xcb, screen, vid);
+		/* Walk XCB screen list to get root_visual for screen N,
+		 * replacing XVisualIDFromVisual(DefaultVisual(dpy, screen)). */
+		xcb_screen_iterator_t sit =
+		    xcb_setup_roots_iterator(xcb_get_setup(drw->cairo_xcb));
+		for (int i = 0; i < screen; i++)
+			xcb_screen_next(&sit);
+		drw->xcb_visual =
+		    xcb_find_visualtype(drw->cairo_xcb, screen, sit.data->root_visual);
 	}
 
 	/* Create persistent Cairo surface for icon rendering */

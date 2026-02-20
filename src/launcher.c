@@ -923,8 +923,8 @@ launcher_create(Display *dpy, Window root, Clr **scheme, const char **fonts,
 	{
 		xcb_connection_t *xc  = XGetXCBConnection(dpy);
 		int               scr = DefaultScreen(dpy);
-		xcb_screen_t *xs = xcb_setup_roots_iterator(xcb_get_setup(xc)).data;
-		uint32_t vid = (uint32_t) XVisualIDFromVisual(DefaultVisual(dpy, scr));
+		xcb_screen_t  *xs  = xcb_setup_roots_iterator(xcb_get_setup(xc)).data;
+		uint32_t       vid = xs->root_visual;
 		xcb_colormap_t cmap;
 		uint32_t       vals[5];
 		uint32_t       mask;

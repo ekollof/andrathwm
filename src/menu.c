@@ -203,9 +203,8 @@ menu_create(Display *dpy, Window root, Drw *drw, Clr **scheme)
 	uint32_t          vals[5];
 	xcb_colormap_t    cmap =
 	    (xcb_colormap_t) DefaultColormap(dpy, DefaultScreen(dpy));
-	xcb_visualid_t vid = (xcb_visualid_t) XVisualIDFromVisual(
-	    DefaultVisual(dpy, DefaultScreen(dpy)));
-	int depth = DefaultDepth(dpy, DefaultScreen(dpy));
+	xcb_visualid_t vid   = xcb_screen_root_visual(xc, DefaultScreen(dpy));
+	int            depth = DefaultDepth(dpy, DefaultScreen(dpy));
 
 	menu = calloc(1, sizeof(Menu));
 	if (!menu)

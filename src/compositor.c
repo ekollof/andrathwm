@@ -899,8 +899,8 @@ compositor_init(GMainContext *ctx)
 		uint32_t                       pict_mask;
 		uint32_t                       pict_val;
 
-		pv  = xcb_render_util_find_visual_format(comp.render_formats,
-		     (xcb_visualid_t) XVisualIDFromVisual(DefaultVisual(dpy, screen)));
+		pv = xcb_render_util_find_visual_format(
+		    comp.render_formats, xcb_screen_root_visual(xc, screen));
 		fmt = pv ? pv->format : 0;
 
 		pict_mask = XCB_RENDER_CP_SUBWINDOW_MODE;
@@ -1315,8 +1315,8 @@ comp_refresh_pixmap(CompWin *cw)
 		uint32_t                       pval;
 
 		xerror_push_ignore();
-		pv  = xcb_render_util_find_visual_format(comp.render_formats,
-		     (xcb_visualid_t) XVisualIDFromVisual(DefaultVisual(dpy, screen)));
+		pv = xcb_render_util_find_visual_format(
+		    comp.render_formats, xcb_screen_root_visual(xc, screen));
 		fmt = pv ? pv->format : 0;
 		if (cw->argb) {
 			const xcb_render_pictforminfo_t *fi =
@@ -1436,8 +1436,8 @@ comp_update_wallpaper(void)
 		uint32_t                       pmask;
 		uint32_t                       pval;
 
-		pv    = xcb_render_util_find_visual_format(comp.render_formats,
-		       (xcb_visualid_t) XVisualIDFromVisual(DefaultVisual(dpy, screen)));
+		pv = xcb_render_util_find_visual_format(
+		    comp.render_formats, xcb_screen_root_visual(xc, screen));
 		fmt   = pv ? pv->format : 0;
 		pmask = XCB_RENDER_CP_REPEAT;
 		pval  = XCB_RENDER_REPEAT_NORMAL;
@@ -1928,9 +1928,8 @@ compositor_notify_screen_resize(void)
 		    (uint16_t) sh);
 		if (comp.back_pixmap) {
 			const xcb_render_pictvisual_t *pv =
-			    xcb_render_util_find_visual_format(comp.render_formats,
-			        (xcb_visualid_t) XVisualIDFromVisual(
-			            DefaultVisual(dpy, screen)));
+			    xcb_render_util_find_visual_format(
+			        comp.render_formats, xcb_screen_root_visual(xc, screen));
 			xcb_render_pictformat_t fmt   = pv ? pv->format : 0;
 			uint32_t                pmask = XCB_RENDER_CP_SUBWINDOW_MODE;
 			uint32_t pval = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;

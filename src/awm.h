@@ -322,6 +322,17 @@ extern int randrbase, rrerrbase;
 #endif
 extern void (*handler[LASTEvent])(XEvent *);
 
+/* Return the root_visual of screen number scr_num from an XCB connection.
+ * Replaces XVisualIDFromVisual(DefaultVisual(dpy, screen)) everywhere. */
+static inline xcb_visualid_t
+xcb_screen_root_visual(xcb_connection_t *xc, int scr_num)
+{
+	xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(xc));
+	for (int i = 0; i < scr_num; i++)
+		xcb_screen_next(&it);
+	return it.data->root_visual;
+}
+
 /* core WM functions (defined in awm.c) */
 void quit(const Arg *arg);
 void launchermenu(const Arg *arg);
