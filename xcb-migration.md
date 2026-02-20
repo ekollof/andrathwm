@@ -54,6 +54,7 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `120a687` | `menu.c`: Xinerama block → `xcb_xinerama_is_active_reply`/`xcb_xinerama_query_screens_reply`; include updated |
 | `5611caa` | `ewmh.c` `setdesktopnames()`: `Xutf8TextListToTextProperty`/`XSetTextProperty` → `xcb_change_property` with NUL-separated UTF-8 blob |
 | `a8ce948` | `client.c` `gettextprop()`: `XGetTextProperty`/`XmbTextPropertyToTextList`/`XFree` → `xcb_icccm_get_text_property` |
+| `032ee8a` | `compositor.c`: `XInternAtom` (4×) → `xcb_intern_atom`; `XSetSelectionOwner`/`XGetSelectionOwner` → xcb; `XQueryTree` → `xcb_query_tree`; `XGetGeometry` → `xcb_get_geometry`; `XQueryExtension` → `xcb_get_extension_data` |
 
 ---
 
@@ -144,8 +145,8 @@ These are permanently Xlib and should not be touched:
 
 ## Remaining migration candidates
 
-All originally-planned migration candidates have been completed or explicitly documented
-as permanent keeps.  The following low-value items remain; they are acceptable to leave:
+All migration candidates are complete.  The only remaining Xlib in core WM files is
+the permanent-keep list above.  Two items are explicitly documented below for clarity:
 
 ### 1. `events.c:127` — `XSelectInput` at WM-already-running probe
 
@@ -153,17 +154,16 @@ as permanent keeps.  The following low-value items remain; they are acceptable t
 XSelectInput(dpy, DefaultRootWindow(dpy), SubstructureRedirectMask);
 XSync(dpy, False);
 ```
-This is intentionally a probe — if another WM is running the `XSync` triggers the error
-handler.  This is a one-shot startup path with no runtime cost.  **Permanent acceptable
-keep.**
+Intentionally a probe — `XSync` triggers the error handler if another WM is running.
+One-shot startup path.  **Permanent acceptable keep.**
 
 ### 2. `client.c` — `XMaskEvent` in `movemouse` / `resizemouse`
 
 ```c
 XMaskEvent(dpy, MOUSEMASK | ExposureMask | SubstructureRedirectMask, &ev);
 ```
-The event type dispatcher `handler[ev.type](&ev)` requires an `XEvent*`.  Converting XCB
-events back to `XEvent` structs is not practical without a full event translation layer.
+The `handler[ev.type](&ev)` dispatcher requires `XEvent*`.  Converting XCB events back
+to `XEvent` structs is not practical without a full translation layer.
 **Permanent keep.**
 
 ---
