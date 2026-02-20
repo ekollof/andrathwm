@@ -1,6 +1,8 @@
 /* See LICENSE file for copyright and license details. */
 #include <stdlib.h>
 #include <string.h>
+#include <xcb/xcb.h>
+#include <xcb/xproto.h>
 
 #include "drw.h"
 #include "log.h"
@@ -442,8 +444,8 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 				if (usedfont &&
 				    XftCharExists(drw->dpy, usedfont->xfont, utf8codepoint)) {
 					for (curfont = drw->fonts; curfont->next;
-					    curfont  = curfont->next)
-                        ; /* NOP */
+					     curfont = curfont->next)
+						; /* NOP */
 					curfont->next = usedfont;
 				} else {
 					xfont_free(usedfont);
@@ -534,18 +536,78 @@ void
 drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
     cairo_surface_t *surface)
 {
-	cairo_t *cr;
+	cairo_surface_t *tmp_surf;
+	cairo_t         *cr;
+	xcb_pixmap_t     tmp_pm;
+	int              depth;
 
-	if (!drw || !surface || !drw->cairo_surface)
+	if (!drw || !surface)
 		return;
 
 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
 		return;
 
-	cr = cairo_create(drw->cairo_surface);
-	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-	cairo_set_source_surface(cr, surface, x, y);
-	cairo_rectangle(cr, x, y, w, h);
-	cairo_fill(cr);
+	/*
+	 * Render the icon entirely on drw->cairo_xcb into a temporary pixmap
+	 * allocated on that same connection.  After a synchronising roundtrip
+	 * on cairo_xcb we copy the finished pixmap into drw->drawable via the
+	 * Xlib connection (dpy).  Doing everything on one connection before
+	 * switching avoids the cross-connection ordering hazard that caused
+	 * icons to be blank: if we draw with Cairo (cairo_xcb) and then
+	 * immediately XCopyArea (dpy) without a sync, the server may process
+	 * XCopyArea before the Cairo render commands because they travel on
+	 * different sockets.
+	 */
+	if (!drw->cairo_xcb || !drw->xcb_visual) {
+		awm_warn("drw_pic: no cairo_xcb connection, icon skipped");
+		return;
+	}
+
+	depth  = DefaultDepth(drw->dpy, drw->screen);
+	tmp_pm = xcb_generate_id(drw->cairo_xcb);
+	xcb_create_pixmap(drw->cairo_xcb, (uint8_t) depth, tmp_pm,
+	    (xcb_drawable_t) drw->root, (uint16_t) w, (uint16_t) h);
+
+	tmp_surf = cairo_xcb_surface_create(drw->cairo_xcb,
+	    (xcb_drawable_t) tmp_pm, drw->xcb_visual, (int) w, (int) h);
+	if (cairo_surface_status(tmp_surf) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(tmp_surf);
+		xcb_free_pixmap(drw->cairo_xcb, tmp_pm);
+		return;
+	}
+
+	cr = cairo_create(tmp_surf);
+	/* Scale the source icon to fit the requested dimensions */
+	{
+		int src_w = cairo_image_surface_get_width(surface);
+		int src_h = cairo_image_surface_get_height(surface);
+		if (src_w > 0 && src_h > 0) {
+			cairo_scale(cr, (double) w / src_w, (double) h / src_h);
+		}
+	}
+	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+	cairo_set_source_surface(cr, surface, 0, 0);
+	cairo_paint(cr);
 	cairo_destroy(cr);
+
+	/* Flush Cairo's buffered requests and wait for the server to finish
+	 * processing them.  The roundtrip (get_input_focus cookie + reply)
+	 * is the cheapest available sync on an XCB-only connection. */
+	cairo_surface_flush(tmp_surf);
+	cairo_surface_destroy(tmp_surf);
+	{
+		xcb_get_input_focus_cookie_t ck = xcb_get_input_focus(drw->cairo_xcb);
+		xcb_get_input_focus_reply_t *rep =
+		    xcb_get_input_focus_reply(drw->cairo_xcb, ck, NULL);
+		free(rep);
+	}
+
+	/* Now the pixmap is fully painted on the server.  Copy it into the
+	 * Xlib drawable (drw->drawable) via the Xlib connection. */
+	XCopyArea(
+	    drw->dpy, (Drawable) tmp_pm, drw->drawable, drw->gc, 0, 0, w, h, x, y);
+
+	/* Free the temporary pixmap on cairo_xcb (same connection that created
+	 * it). */
+	xcb_free_pixmap(drw->cairo_xcb, tmp_pm);
 }
