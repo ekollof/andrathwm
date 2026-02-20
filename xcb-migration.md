@@ -63,6 +63,7 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `beaeb24` | Phase 2 complete: all 15 `handler[]` callbacks (`events.c/h`) rewritten from `void(*)(XEvent*)` to `void(*)(xcb_generic_event_t*)`; `x_dispatch_cb` (`awm.c`) replaced `XPending`/`XNextEvent` with `xcb_poll_for_event` drain loop; `movemouse` + `resizemouse` (`client.c`) replaced `XMaskEvent` with `xcb_wait_for_event` for-loop and `XPutBackEvent` drain with `xcb_poll_for_event` dispatch; `monitor.c` both `XPutBackEvent` sites replaced with dispatch loops; `compositor_handle_event` + `comp_repaint_idle` (`compositor.c`) fully rewritten with XCB types; `systray.h/c`, `launcher.h/c`, `menu.h/c`, `sni.h/c` handler signatures updated to `xcb_generic_event_t*`; `XPending` removed from `xsource.c` (both `prepare` and `check`); dead `XWindowChanges wc` removed from `manage()` and `resizeclient()` |
 | `615729e` | Phase 3b complete: replace global `Display *dpy` with `xcb_connection_t *xc` across all TUs — `awm.c/h`: `xcb_connect`/`xcb_disconnect`, `extern xcb_connection_t *xc`; `client.c`: remove local `xc` self-assign, fix `gettextprop`; `compositor.c`: remove Xlib headers, fix `pext` variable corruption, remove self-assigns; `drw.c/h`: `drw_create` shim accepts `xc`, opens private `Display*` for Phase 3c scaffolding; `events.c`, `ewmh.c`, `monitor.c`, `systray.c`: self-assigns removed, `DefaultDepth`/`DefaultScreen` replaced; `launcher.c/h`, `menu.c/h`, `xsource.c/h`: full `xcb_connection_t *xc` migration; `sni.c/h`: `sni_init` takes `xc`, local `xcb_screen_root_depth_sni` helper, `extern int screen`; `spawn.c`: replace `dpy` with `xc` in child fork fd-close guard |
 | `23cf5a7` | Phase 3c complete: `drw.h`/`drw.c` fully rewritten to pure XCB+xcb-renderutil (no Xlib); `awm.h` drops Xlib-xcb bridge and Xlib extension headers; `config.mk` fixes `xcb-renderutil` pkg-config name; `menu.h/c`, `sni.h/c`, `systray.h/c`, `launcher.h/c`: `Window`→`xcb_window_t`, `Time`→`xcb_timestamp_t`, `Pixmap`→`xcb_pixmap_t`, `Button[123]`→`1/2/3`, `CurrentTime`→`XCB_CURRENT_TIME` throughout; orphaned `SNIIconLoadData` struct and stale placeholder body removed from `sni.c` |
+| `016c377` | Phase 4 complete: eliminate all remaining Xlib types — `Window`→`xcb_window_t`, `Atom`→`xcb_atom_t`, `Pixmap`→`xcb_pixmap_t`, `Time`→`xcb_timestamp_t`, `CurrentTime`→`XCB_CURRENT_TIME`, `None`→`XCB_ATOM_NONE`/`0` across `awm.h`, `awm.c`, `client.h/c`, `ewmh.h/c`, `events.c`, `monitor.h/c`, `compositor.c`, `systray.c`; `manage()` takes `xcb_get_geometry_reply_t*` directly; `sendevent()` fully typed as XCB |
 
 ---
 
@@ -545,7 +546,7 @@ The migration is complete when:
 1. ~~**Phase 2** (event loop rewrite) is implemented~~ — **Done as of `beaeb24`.**
 2. ~~**Phase 3b** (global `Display *dpy` → `xcb_connection_t *xc`) is implemented~~ — **Done as of `615729e`.**
 3. ~~**Phase 3c** (`drw.c`/`drw.h` rewritten to pure XCB; Xlib types purged from all headers)~~ — **Done as of `23cf5a7`.**
-4. **Phase 4** (migrate remaining `Window`/`Pixmap` types in `Client`, `Monitor`, `awm.h` structs to `xcb_window_t`/`xcb_pixmap_t`): still pending.
+4. ~~**Phase 4** (migrate remaining `Window`/`Atom`/`Pixmap`/`Time` Xlib types to XCB equivalents)~~ — **Done as of `016c377`.**
 5. `make clean && make` produces zero warnings and zero errors.
 
 At that point:
