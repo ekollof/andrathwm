@@ -219,12 +219,6 @@ x_dispatch_cb(gpointer user_data)
 
 	while ((ev = xcb_poll_for_event(xc))) {
 		uint8_t type = ev->response_type & ~0x80;
-#ifdef COMPOSITOR
-		/* Apply the XESetWireToEvent workaround for every event before
-		 * any handler sees it.  This prevents GL/DRI2 wire-to-event
-		 * hooks from corrupting Xlib's sequence tracking. */
-		compositor_fix_wire_to_event((XEvent *) (void *) ev);
-#endif
 #ifdef XRANDR
 		if (type == (uint8_t) (randrbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY)) {
 			/* XCB randr handles screen change — no XRRUpdateConfiguration

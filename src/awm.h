@@ -309,6 +309,17 @@ xcb_screen_root_visual(xcb_connection_t *xc, int scr_num)
 	return it.data->root_visual;
 }
 
+/* Return the root depth (bits-per-pixel) of screen number scr_num.
+ * Replaces DefaultDepth(dpy, screen) everywhere. */
+static inline uint8_t
+xcb_screen_root_depth(xcb_connection_t *xc, int scr_num)
+{
+	xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(xc));
+	for (int i = 0; i < scr_num; i++)
+		xcb_screen_next(&it);
+	return it.data->root_depth;
+}
+
 /* core WM functions (defined in awm.c) */
 void quit(const Arg *arg);
 void launchermenu(const Arg *arg);

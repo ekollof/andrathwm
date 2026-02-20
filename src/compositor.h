@@ -127,14 +127,5 @@ void compositor_check_unredirect(void);
  */
 void compositor_notify_screen_resize(void);
 
-/*
- * Apply the XESetWireToEvent workaround for a raw X event.
- * Must be called on every event immediately after XNextEvent, before any
- * handler dispatches it.  Prevents GL/DRI2 wire-to-event hooks from
- * corrupting Xlib's sequence tracking when GLX and Xlib share a Display.
- * No-op when the GL compositor path is not active.
- */
-void compositor_fix_wire_to_event(XEvent *ev);
-
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */

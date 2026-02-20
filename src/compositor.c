@@ -19,18 +19,13 @@
  *     was used for opacity; opacity is now handled by the GL blend equation
  *     directly (no XRender needed at runtime).
  *
- * Why EGL with a dedicated second Display* (gl_dpy):
- *   Mesa's DRI3/gallium backend (libgallium, libxcb-dri3, libxcb-present)
- *   sends XCB requests directly on the underlying xcb_connection_t,
- *   bypassing Xlib's dpy->request counter.  When the wire sequence
- *   crosses a 65535 boundary, Xlib's widening arithmetic in
- *   _XSetLastRequestRead sees the gap and prints "Xlib: sequence lost".
- *   Fix: open a dedicated second Display* for all EGL/GL operations and
- *   call XSetEventQueueOwner(gl_dpy, XCBOwnsEventQueue) immediately after.
- *   XCB then owns the authoritative sequence counter for that connection,
- *   so Xlib's widening always stays consistent.  The main dpy is never
- *   touched by Mesa.  EGL wraps gl_dpy; pixmap XIDs are valid across both
- *   connections (same X server), so EGLImageKHR creation works unchanged.
+ * Why EGL uses a dedicated second XCB connection (gl_xc):
+ *   Mesa's DRI3/gallium backend sends XCB requests directly on the
+ *   xcb_connection_t it is given.  Using a separate connection keeps Mesa's
+ *   traffic off the main xc so the main sequence counter is never corrupted.
+ *   EGL_PLATFORM_XCB_EXT (Mesa >= 21) takes an xcb_connection_t* directly,
+ *   so no Xlib bridge is required.  Pixmap XIDs are server-side and valid on
+ *   both connections (same X server), so EGLImageKHR creation works unchanged.
  *
  * Fallback:
  *   - If EGL_KHR_image_pixmap is unavailable the compositor falls back to
@@ -48,11 +43,7 @@
 #include <stdio.h>
 
 #include <X11/Xlib.h>
-#include <X11/Xlibint.h>
 #include <X11/Xlib-xcb.h>
-#include <X11/Xutil.h>
-#include <X11/extensions/shape.h> /* XShapeEvent, XESetWireToEvent — keep */
-#include <X11/extensions/Xdamage.h> /* XDamageNotifyEvent — keep (Xlib event) */
 
 #include <xcb/xcb.h>
 #include <xcb/composite.h>
@@ -110,11 +101,11 @@ static struct {
 	Window overlay;
 
 	/* ---- GL path (primary) ---- */
-	int      use_gl;    /* 1 if EGL_KHR_image_pixmap available and ctx ok */
-	Display *gl_dpy;    /* dedicated Display* for EGL/Mesa; XCBOwnsEventQueue
-	                     * is set on it so Mesa's DRI3 XCB calls don't
-	                     * corrupt the main dpy's Xlib sequence counter    */
-	EGLDisplay egl_dpy; /* EGL display wrapping gl_dpy                    */
+	int use_gl; /* 1 if EGL_KHR_image_pixmap available and ctx ok */
+	xcb_connection_t *gl_xc; /* dedicated XCB connection for EGL/Mesa;
+	                          * avoids Mesa's DRI3 XCB calls corrupting the
+	                          * main xc's sequence counter                  */
+	EGLDisplay egl_dpy; /* EGL display wrapping gl_xc                     */
 	EGLContext egl_ctx; /* EGL/GL context                                  */
 	EGLSurface egl_win; /* EGL surface wrapping comp.overlay               */
 	GLuint     prog;    /* shader program                                  */
@@ -214,45 +205,6 @@ static xcb_render_picture_t make_alpha_picture(double a);
 /* -------------------------------------------------------------------------
  * Helpers
  * ---------------------------------------------------------------------- */
-
-/* -------------------------------------------------------------------------
- * XESetWireToEvent workaround (picom-derived)
- *
- * Mesa's DRI3/present backend registers XESetWireToEvent hooks on whatever
- * Display* it is given.  Because EGL is initialised on the dedicated gl_dpy
- * (which has XCBOwnsEventQueue), Mesa's hooks live on gl_dpy — NOT on dpy.
- *
- * However libXdamage also registers a wire-to-event hook on dpy for
- * XDamageNotify.  If anything calls proc(dpy, dummy, (xEvent*)ev) with an
- * already-decoded XEvent*, the cast produces a layout mismatch:
- *   • XAnyEvent.serial  is at byte offset 8 (unsigned long, 8 bytes)
- *   • xGenericReply.sequenceNumber is at byte offset 2 (CARD16, 2 bytes)
- * so _XSetLastRequestRead reads garbage as the sequence number and emits
- * "Xlib: sequence lost" warnings on every XDamageNotify.
- *
- * The only safe thing to do is prevent Xlib from calling the hook a second
- * time when it processes the already-queued XEvent.  We do this by clearing
- * the hook and immediately restoring it — the event has already been decoded
- * by XNextEvent so no further wire-to-event translation is needed.
- * ---------------------------------------------------------------------- */
-
-void
-compositor_fix_wire_to_event(XEvent *ev)
-{
-	int type = ev->type & 0x7f; /* strip SendEvent bit */
-	Bool (*proc)(Display *, XEvent *, xEvent *);
-
-	if (!comp.use_gl)
-		return;
-
-	/* Temporarily clear the hook so Xlib won't re-invoke it, then restore.
-	 * Do NOT call proc ourselves: casting an XEvent* to xEvent* produces a
-	 * struct-layout mismatch that causes _XSetLastRequestRead to read garbage
-	 * bytes as the sequence number, triggering "sequence lost" warnings. */
-	proc = XESetWireToEvent(dpy, type, NULL);
-	if (proc)
-		XESetWireToEvent(dpy, type, proc);
-}
 
 static xcb_render_picture_t
 make_alpha_picture(double a)
@@ -400,12 +352,9 @@ comp_init_gl(void)
 	};
 
 	/* --- Get EGL display wrapping the dedicated GL connection ----------
-	 * Prefer eglGetPlatformDisplayEXT(EGL_PLATFORM_X11_EXT) over the
-	 * legacy eglGetDisplay(): the legacy path lets Mesa auto-detect the
-	 * platform, which on some driver/Mesa versions picks a non-X11
-	 * platform (device, surfaceless) that does not advertise
-	 * EGL_KHR_image_pixmap.  The explicit platform hint guarantees we
-	 * get the X11 EGL display, which does expose that extension.
+	 * Use EGL_PLATFORM_XCB_EXT (Mesa >= 21) to pass our xcb_connection_t
+	 * directly to EGL — no Xlib involved.  Fall back to the legacy
+	 * eglGetDisplay() cast if the function pointer is unavailable.
 	 */
 	{
 		PFNEGLGETPLATFORMDISPLAYEXTPROC get_plat_dpy =
@@ -413,11 +362,11 @@ comp_init_gl(void)
 		        "eglGetPlatformDisplayEXT");
 		if (get_plat_dpy) {
 			comp.egl_dpy =
-			    get_plat_dpy(EGL_PLATFORM_X11_EXT, comp.gl_dpy, NULL);
+			    get_plat_dpy(EGL_PLATFORM_XCB_EXT, comp.gl_xc, NULL);
 			awm_debug("compositor: used eglGetPlatformDisplayEXT"
-			          "(EGL_PLATFORM_X11_EXT)");
+			          "(EGL_PLATFORM_XCB_EXT)");
 		} else {
-			comp.egl_dpy = eglGetDisplay((EGLNativeDisplayType) comp.gl_dpy);
+			comp.egl_dpy = eglGetDisplay((EGLNativeDisplayType) comp.gl_xc);
 			awm_debug("compositor: eglGetPlatformDisplayEXT "
 			          "unavailable, used legacy eglGetDisplay");
 		}
@@ -847,21 +796,23 @@ compositor_init(GMainContext *ctx)
 	}
 
 	/* --- Try to initialise the EGL/GL path --------------------------------
-	 * A dedicated Display* (gl_dpy) is opened for all EGL/Mesa operations.
-	 * XSetEventQueueOwner hands XCB ownership of its event queue so Mesa's
-	 * DRI3 XCB calls don't corrupt the main dpy's Xlib sequence counter.
-	 * EGL wraps gl_dpy; pixmap XIDs are server-side and valid on both
+	 * A dedicated XCB connection (gl_xc) is opened for all EGL/Mesa
+	 * operations.  Because EGL_PLATFORM_XCB_EXT uses XCB natively, Mesa's
+	 * DRI3 calls stay on this connection and never touch the main xc
+	 * sequence counter.  Pixmap XIDs are server-side and valid on both
 	 * connections (same X server), so EGLImageKHR creation works unchanged.
 	 */
-	comp.gl_dpy = XOpenDisplay(NULL);
-	if (!comp.gl_dpy) {
-		awm_warn("compositor: XOpenDisplay for GL failed, "
+	comp.gl_xc = xcb_connect(NULL, NULL);
+	if (!comp.gl_xc || xcb_connection_has_error(comp.gl_xc)) {
+		if (comp.gl_xc) {
+			xcb_disconnect(comp.gl_xc);
+			comp.gl_xc = NULL;
+		}
+		awm_warn("compositor: xcb_connect for GL failed, "
 		         "GL path unavailable");
-	} else {
-		XSetEventQueueOwner(comp.gl_dpy, XCBOwnsEventQueue);
 	}
 
-	if (comp.gl_dpy && comp_init_gl() != 0) {
+	if (comp.gl_xc && comp_init_gl() != 0) {
 		/* GL path unavailable — set up XRender back-buffer + target */
 		const xcb_render_pictvisual_t *pv;
 		xcb_render_pictformat_t        fmt;
@@ -880,7 +831,7 @@ compositor_init(GMainContext *ctx)
 		    (xcb_drawable_t) comp.overlay, fmt, pict_mask, &pict_val);
 
 		comp.back_pixmap = xcb_generate_id(xc);
-		xcb_create_pixmap(xc, (uint8_t) DefaultDepth(dpy, screen),
+		xcb_create_pixmap(xc, xcb_screen_root_depth(xc, screen),
 		    comp.back_pixmap, (xcb_drawable_t) root, (uint16_t) sw,
 		    (uint16_t) sh);
 
@@ -1109,10 +1060,10 @@ compositor_cleanup(void)
 	}
 	xflush(dpy);
 
-	/* Close the dedicated EGL/GL display connection last — after all EGL
+	/* Close the dedicated EGL/GL XCB connection last — after all EGL
 	 * objects have been destroyed by eglTerminate above. */
-	if (comp.gl_dpy)
-		XCloseDisplay(comp.gl_dpy);
+	if (comp.gl_xc)
+		xcb_disconnect(comp.gl_xc);
 
 	comp.active = 0;
 }
@@ -1914,7 +1865,7 @@ compositor_notify_screen_resize(void)
 			comp.back_pixmap = None;
 		}
 		comp.back_pixmap = xcb_generate_id(xc);
-		xcb_create_pixmap(xc, (uint8_t) DefaultDepth(dpy, screen),
+		xcb_create_pixmap(xc, xcb_screen_root_depth(xc, screen),
 		    comp.back_pixmap, (xcb_drawable_t) root, (uint16_t) sw,
 		    (uint16_t) sh);
 		if (comp.back_pixmap) {
@@ -2116,14 +2067,11 @@ compositor_handle_event(xcb_generic_event_t *ev)
 	if (!comp.active)
 		return;
 
-	/* Apply the XESetWireToEvent workaround before dispatching.
-	 * See compositor_fix_wire_to_event() for a full explanation. */
-	compositor_fix_wire_to_event((XEvent *) (void *) ev);
-
 	if ((ev->response_type & ~0x80) ==
-	    (uint8_t) (comp.damage_ev_base + XDamageNotify)) {
-		XDamageNotifyEvent *dev = (XDamageNotifyEvent *) (void *) ev;
-		CompWin            *dcw = comp_find_by_xid(dev->drawable);
+	    (uint8_t) (comp.damage_ev_base + XCB_DAMAGE_NOTIFY)) {
+		xcb_damage_notify_event_t *dev =
+		    (xcb_damage_notify_event_t *) (void *) ev;
+		CompWin *dcw = comp_find_by_xid(dev->drawable);
 
 		if (!dcw) {
 			/* Unknown window — just ack the damage and ignore. */
@@ -2368,10 +2316,11 @@ compositor_handle_event(xcb_generic_event_t *ev)
 		}
 
 		if (comp.has_xshape &&
-		    type == (uint8_t) (comp.shape_ev_base + ShapeNotify)) {
-			XShapeEvent *sev = (XShapeEvent *) (void *) ev;
-			if (sev->kind == ShapeBounding) {
-				CompWin *cw = comp_find_by_xid(sev->window);
+		    type == (uint8_t) (comp.shape_ev_base + XCB_SHAPE_NOTIFY)) {
+			xcb_shape_notify_event_t *sev =
+			    (xcb_shape_notify_event_t *) (void *) ev;
+			if (sev->shape_kind == XCB_SHAPE_SK_BOUNDING) {
+				CompWin *cw = comp_find_by_xid(sev->affected_window);
 				if (cw) {
 					if (comp.use_gl) {
 						/* In the GL path there's no per-picture clip region;
@@ -2484,12 +2433,11 @@ comp_repaint_idle(gpointer data)
 	 * accumulated damage instead of a series of partial frames. */
 	{
 		xcb_connection_t *xc = XGetXCBConnection(dpy);
-		uint8_t dmgt         = (uint8_t) (comp.damage_ev_base + XDamageNotify);
+		uint8_t dmgt = (uint8_t) (comp.damage_ev_base + XCB_DAMAGE_NOTIFY);
 		xcb_generic_event_t *xe;
 		xcb_flush(xc);
 		while ((xe = xcb_poll_for_event(xc))) {
 			if ((xe->response_type & ~0x80) == dmgt) {
-				compositor_fix_wire_to_event((XEvent *) (void *) xe);
 				compositor_handle_event(xe);
 			}
 			free(xe);
