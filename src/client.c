@@ -20,7 +20,7 @@ static const char broken[] = "broken";
 void
 applyrules(Client *c)
 {
-	const char  *class, *instance;
+	const char *class, *instance;
 	unsigned int i;
 	const Rule  *r;
 	Monitor     *m;
@@ -79,8 +79,8 @@ applyrules(Client *c)
 			if (r->opacity > 0.0)
 				c->opacity = r->opacity;
 			for (m = mons; m && (m->tagset[m->seltags] & c->tags) == 0;
-			    m  = m->next)
-                ;
+			     m = m->next)
+				;
 			if (m)
 				c->mon = m;
 		}
@@ -317,8 +317,8 @@ focusstack(const Arg *arg)
 			;
 		if (!c)
 			for (c = selmon->cl->clients; c && !ISVISIBLE(c, selmon);
-			    c  = c->next)
-                ;
+			     c = c->next)
+				;
 	} else {
 		for (i = selmon->cl->clients; i != selmon->sel; i = i->next)
 			if (ISVISIBLE(i, selmon))
@@ -344,11 +344,12 @@ focusstackhidden(const Arg *arg)
 
 	if (arg->i > 0) {
 		for (c = selmon->sel->next;
-		    c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
+		     c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
 			;
 		if (!c)
 			for (c = selmon->cl->clients;
-			    c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
+			     c && !(c->tags & selmon->tagset[selmon->seltags]);
+			     c = c->next)
 				;
 	} else {
 		for (i = selmon->cl->clients; i != selmon->sel; i = i->next)
@@ -626,7 +627,7 @@ hide(Client *c)
 	Window            w  = c->win;
 	xcb_connection_t *xc = XGetXCBConnection(dpy);
 
-	XGrabServer(dpy);
+	xcb_grab_server(xc);
 	{
 		xcb_get_window_attributes_cookie_t rck =
 		    xcb_get_window_attributes(xc, root);
@@ -654,7 +655,7 @@ hide(Client *c)
 		mask = win_em;
 		xcb_change_window_attributes(xc, w, XCB_CW_EVENT_MASK, &mask);
 	}
-	XUngrabServer(dpy);
+	xcb_ungrab_server(xc);
 
 	c->ishidden = 1;
 	focus(NULL);
@@ -725,14 +726,12 @@ killclient(const Arg *arg)
 
 	if (!sendevent(selmon->sel->win, wmatom[WMDelete], NoEventMask,
 	        wmatom[WMDelete], CurrentTime, 0, 0, 0)) {
-		XGrabServer(dpy);
-		XSetErrorHandler(xerrordummy);
-		xcb_set_close_down_mode(
-		    XGetXCBConnection(dpy), XCB_CLOSE_DOWN_DESTROY_ALL);
-		xcb_kill_client(XGetXCBConnection(dpy), selmon->sel->win);
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
+		xcb_grab_server(xc);
+		xcb_set_close_down_mode(xc, XCB_CLOSE_DOWN_DESTROY_ALL);
+		xcb_kill_client(xc, selmon->sel->win);
+		xcb_ungrab_server(xc);
 		xflush(dpy);
-		XSetErrorHandler(xerror);
-		XUngrabServer(dpy);
 	}
 }
 
@@ -942,7 +941,7 @@ Client *
 nexttiled(Client *c, Monitor *m)
 {
 	for (; c && (c->isfloating || !ISVISIBLE(c, m) || c->ishidden);
-	    c = c->next)
+	     c = c->next)
 		;
 	return c;
 }
@@ -1310,7 +1309,8 @@ togglescratch(const Arg *arg)
 	unsigned int found = 0;
 
 	for (c = selmon->cl->clients;
-	    c && !(found = c->scratchkey == ((char **) arg->v)[0][0]); c = c->next)
+	     c && !(found = c->scratchkey == ((char **) arg->v)[0][0]);
+	     c = c->next)
 		;
 	if (found) {
 		if (ISVISIBLE(c, selmon)) {
@@ -1372,7 +1372,7 @@ toggleview(const Arg *arg)
 					selmon_curtag = 0;
 				else {
 					for (i = 0; !(selmon->tagset[selmon->seltags] & 1 << i);
-					    i++)
+					     i++)
 						;
 					selmon_curtag = i + 1;
 				}
@@ -1517,8 +1517,7 @@ unmanage(Client *c, int destroyed)
 	detachstack(c);
 	if (!destroyed) {
 		xcb_connection_t *xc = XGetXCBConnection(dpy);
-		XGrabServer(dpy);
-		XSetErrorHandler(xerrordummy);
+		xcb_grab_server(xc);
 		{
 			uint32_t no_events = XCB_EVENT_MASK_NO_EVENT;
 			xcb_change_window_attributes(
@@ -1531,9 +1530,8 @@ unmanage(Client *c, int destroyed)
 		}
 		xcb_ungrab_button(xc, XCB_BUTTON_INDEX_ANY, c->win, XCB_MOD_MASK_ANY);
 		setclientstate(c, WithdrawnState);
+		xcb_ungrab_server(xc);
 		xflush(dpy);
-		XSetErrorHandler(xerror);
-		XUngrabServer(dpy);
 	}
 	freeicon(c);
 #ifdef COMPOSITOR
@@ -1821,11 +1819,11 @@ movestack(const Arg *arg)
 	if (arg->i > 0) {
 		/* find the client after selmon->sel */
 		for (c = selmon->sel->next;
-		    c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
+		     c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
 			;
 		if (!c)
 			for (c = selmon->cl->clients;
-			    c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
+			     c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
 				;
 
 	} else {

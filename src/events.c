@@ -224,14 +224,12 @@ clientmessage(XEvent *e)
 		/* _NET_CLOSE_WINDOW client message */
 		if (!sendevent(c->win, wmatom[WMDelete], NoEventMask, wmatom[WMDelete],
 		        CurrentTime, 0, 0, 0)) {
-			XGrabServer(dpy);
-			XSetErrorHandler(xerrordummy);
-			xcb_set_close_down_mode(
-			    XGetXCBConnection(dpy), XCB_CLOSE_DOWN_DESTROY_ALL);
-			xcb_kill_client(XGetXCBConnection(dpy), c->win);
+			xcb_connection_t *xc = XGetXCBConnection(dpy);
+			xcb_grab_server(xc);
+			xcb_set_close_down_mode(xc, XCB_CLOSE_DOWN_DESTROY_ALL);
+			xcb_kill_client(xc, c->win);
+			xcb_ungrab_server(xc);
 			xflush(dpy);
-			XSetErrorHandler(xerror);
-			XUngrabServer(dpy);
 		}
 	} else if (cme->message_type == netatom[NetMoveResizeWindow]) {
 		/* _NET_MOVERESIZE_WINDOW client message */
@@ -803,12 +801,6 @@ xerror(Display *dpy, XErrorEvent *ee)
 		    (unsigned long) ee->resourceid);
 	}
 	return xerrorxlib(dpy, ee); /* may call exit */
-}
-
-int
-xerrordummy(Display *dpy, XErrorEvent *ee)
-{
-	return 0;
 }
 
 /* Startup Error handler to check if another window manager
