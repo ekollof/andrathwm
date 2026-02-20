@@ -168,15 +168,18 @@ static const Key keys[] = {
 	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_o, spawn, { .v = otpmenu } },
 	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_c, spawn, { .v = clipmenu } },
 	{ MODKEY, XKB_KEY_w, spawn, { .v = startbrowser } },
-	{ XCB_MOD_MASK_1 | XCB_MOD_MASK_CONTROL, XKB_KEY_l, spawn, { .v = screensaver } },
-	{ XCB_MOD_MASK_1 | XCB_MOD_MASK_CONTROL, XKB_KEY_w, spawn, { .v = wallpaper } },
+	{ XCB_MOD_MASK_1 | XCB_MOD_MASK_CONTROL, XKB_KEY_l, spawn,
+	    { .v = screensaver } },
+	{ XCB_MOD_MASK_1 | XCB_MOD_MASK_CONTROL, XKB_KEY_w, spawn,
+	    { .v = wallpaper } },
 	{ MODKEY | XCB_MOD_MASK_CONTROL, XKB_KEY_w, spawn, { .v = pickwall } },
 	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_l, spawn, { .v = layoutswitch } },
 	{ MODKEY, XKB_KEY_n, spawn, { .v = networkmanager } },
 	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_w, spawn, { .v = windowswitch } },
 	{ MODKEY, XKB_KEY_grave, togglescratch, { .v = notepadcmd } },
 	{ MODKEY, XKB_KEY_dead_grave, togglescratch, { .v = notepadcmd } },
-	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_m, togglescratch, { .v = musiccmd } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_m, togglescratch,
+	    { .v = musiccmd } },
 	{ MODKEY, XKB_KEY_b, togglebar, { 0 } },
 	{ MODKEY, XKB_KEY_j, focusstack, { .i = +1 } },
 	{ MODKEY, XKB_KEY_k, focusstack, { .i = -1 } },
@@ -204,15 +207,18 @@ static const Key keys[] = {
 	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_period, tagmon, { .i = +1 } },
 	{ MODKEY, XKB_KEY_minus, setgaps, { .i = -5 } },
 	{ MODKEY, XKB_KEY_equal, setgaps, { .i = +5 } },
-	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_minus, setgaps, { .i = GAP_RESET } },
-	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_equal, setgaps, { .i = GAP_TOGGLE } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_minus, setgaps,
+	    { .i = GAP_RESET } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_equal, setgaps,
+	    { .i = GAP_TOGGLE } },
 	{ MODKEY, XKB_KEY_F5, xrdb, { .v = NULL } },
 	{ MODKEY, XKB_KEY_h, hidewin, { 0 } },
 	{ MODKEY, XKB_KEY_s, restorewin, { 0 } },
 	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_s, showall, { 0 } },
-	TAGKEYS(XKB_KEY_1, 0) TAGKEYS(XKB_KEY_2, 1) TAGKEYS(XKB_KEY_3, 2) TAGKEYS(XKB_KEY_4, 3)
-	    TAGKEYS(XKB_KEY_5, 4) TAGKEYS(XKB_KEY_6, 5) TAGKEYS(XKB_KEY_7, 6) TAGKEYS(XKB_KEY_8, 7)
-	        TAGKEYS(XKB_KEY_9, 8) { MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_q, quit, { 0 } },
+	TAGKEYS(XKB_KEY_1, 0) TAGKEYS(XKB_KEY_2, 1) TAGKEYS(XKB_KEY_3, 2)
+	    TAGKEYS(XKB_KEY_4, 3) TAGKEYS(XKB_KEY_5, 4) TAGKEYS(XKB_KEY_6, 5)
+	        TAGKEYS(XKB_KEY_7, 6) TAGKEYS(XKB_KEY_8, 7) TAGKEYS(XKB_KEY_9, 8) {
+	            MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_q, quit, { 0 } },
 	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_r, quit, { 1 } },
 };
 
@@ -222,18 +228,18 @@ static const Key keys[] = {
 static const Button buttons[] = {
 	/* click                event mask      button          function argument
 	 */
-	{ ClkLtSymbol, 0, Button1, setlayout, { 0 } },
-	{ ClkLtSymbol, 0, Button3, setlayout, { .v = &layouts[2] } },
-	{ ClkWinTitle, 0, Button1, focuswin, { 0 } },
-	{ ClkWinTitle, 0, Button2, zoom, { 0 } },
-	{ ClkStatusText, 0, Button2, spawn, { .v = termcmd } },
-	{ ClkClientWin, MODKEY, Button1, movemouse, { 0 } },
-	{ ClkClientWin, MODKEY, Button2, togglefloating, { 0 } },
-	{ ClkClientWin, MODKEY, Button3, resizemouse, { 0 } },
-	{ ClkTagBar, 0, Button1, view, { 0 } },
-	{ ClkTagBar, 0, Button3, toggleview, { 0 } },
-	{ ClkTagBar, MODKEY, Button1, tag, { 0 } },
-	{ ClkTagBar, MODKEY, Button3, toggletag, { 0 } },
+	{ ClkLtSymbol, 0, XCB_BUTTON_INDEX_1, setlayout, { 0 } },
+	{ ClkLtSymbol, 0, XCB_BUTTON_INDEX_3, setlayout, { .v = &layouts[2] } },
+	{ ClkWinTitle, 0, XCB_BUTTON_INDEX_1, focuswin, { 0 } },
+	{ ClkWinTitle, 0, XCB_BUTTON_INDEX_2, zoom, { 0 } },
+	{ ClkStatusText, 0, XCB_BUTTON_INDEX_2, spawn, { .v = termcmd } },
+	{ ClkClientWin, MODKEY, XCB_BUTTON_INDEX_1, movemouse, { 0 } },
+	{ ClkClientWin, MODKEY, XCB_BUTTON_INDEX_2, togglefloating, { 0 } },
+	{ ClkClientWin, MODKEY, XCB_BUTTON_INDEX_3, resizemouse, { 0 } },
+	{ ClkTagBar, 0, XCB_BUTTON_INDEX_1, view, { 0 } },
+	{ ClkTagBar, 0, XCB_BUTTON_INDEX_3, toggleview, { 0 } },
+	{ ClkTagBar, MODKEY, XCB_BUTTON_INDEX_1, tag, { 0 } },
+	{ ClkTagBar, MODKEY, XCB_BUTTON_INDEX_3, toggletag, { 0 } },
 };
 
 /* signal definitions */

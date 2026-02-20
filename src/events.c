@@ -185,7 +185,8 @@ clientmessage(xcb_generic_event_t *e)
 			xcb_change_save_set(xc, XCB_SET_MODE_INSERT, c->win);
 			{
 				uint32_t mask = XCB_EVENT_MASK_STRUCTURE_NOTIFY |
-				    XCB_EVENT_MASK_PROPERTY_CHANGE | ResizeRedirectMask;
+				    XCB_EVENT_MASK_PROPERTY_CHANGE |
+				    XCB_EVENT_MASK_RESIZE_REDIRECT;
 				xcb_change_window_attributes(
 				    xc, c->win, XCB_CW_EVENT_MASK, &mask);
 			}
@@ -454,8 +455,8 @@ grabkeys(void)
 	updatenumlockmask();
 	{
 		unsigned int       i, j, k;
-		unsigned int       modifiers[] = { 0, LockMask, numlockmask,
-			      numlockmask | LockMask };
+		unsigned int       modifiers[] = { 0, XCB_MOD_MASK_LOCK, numlockmask,
+			      numlockmask | XCB_MOD_MASK_LOCK };
 		const xcb_setup_t *setup       = xcb_get_setup(xc);
 		xcb_keycode_t      kmin        = setup->min_keycode;
 		xcb_keycode_t      kmax        = setup->max_keycode;

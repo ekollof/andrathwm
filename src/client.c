@@ -583,8 +583,8 @@ grabbuttons(Client *c, int focused)
 	updatenumlockmask();
 	{
 		unsigned int i, j;
-		unsigned int modifiers[] = { 0, LockMask, numlockmask,
-			numlockmask | LockMask };
+		unsigned int modifiers[] = { 0, XCB_MOD_MASK_LOCK, numlockmask,
+			numlockmask | XCB_MOD_MASK_LOCK };
 
 		xcb_ungrab_button(xc, XCB_BUTTON_INDEX_ANY, c->win, XCB_MOD_MASK_ANY);
 		if (!focused)
@@ -783,8 +783,9 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 		c->y = c->mon->my + (c->mon->mh - HEIGHT(c)) / 2;
 	}
 	{
-		uint32_t mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_FOCUS_CHANGE |
-		    XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_STRUCTURE_NOTIFY;
+		uint32_t mask = XCB_EVENT_MASK_ENTER_WINDOW |
+		    XCB_EVENT_MASK_FOCUS_CHANGE | XCB_EVENT_MASK_PROPERTY_CHANGE |
+		    XCB_EVENT_MASK_STRUCTURE_NOTIFY;
 		xcb_change_window_attributes(xc, w, XCB_CW_EVENT_MASK, &mask);
 	}
 	grabbuttons(c, 0);

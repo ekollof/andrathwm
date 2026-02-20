@@ -4,8 +4,7 @@
 #ifndef AWM_H
 #define AWM_H
 
-#include <X11/X.h>
-#include <X11/Xproto.h>
+#include "x11_constants.h"
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include <xcb/randr.h>
 #include <xcb/xcb_icccm.h>

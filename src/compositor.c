@@ -2106,7 +2106,7 @@ compositor_handle_event(xcb_generic_event_t *ev)
 	{
 		uint8_t type = ev->response_type & ~0x80;
 
-		if (type == MapNotify) {
+		if (type == XCB_MAP_NOTIFY) {
 			xcb_map_notify_event_t *mev = (xcb_map_notify_event_t *) ev;
 			if (mev->event == root)
 				comp_add_by_xid(mev->window);
@@ -2114,7 +2114,7 @@ compositor_handle_event(xcb_generic_event_t *ev)
 			return;
 		}
 
-		if (type == UnmapNotify) {
+		if (type == XCB_UNMAP_NOTIFY) {
 			xcb_unmap_notify_event_t *uev = (xcb_unmap_notify_event_t *) ev;
 			CompWin                  *cw  = comp_find_by_xid(uev->window);
 			if (cw && !cw->client) {
@@ -2150,7 +2150,7 @@ compositor_handle_event(xcb_generic_event_t *ev)
 			return;
 		}
 
-		if (type == ConfigureNotify) {
+		if (type == XCB_CONFIGURE_NOTIFY) {
 			xcb_configure_notify_event_t *cev =
 			    (xcb_configure_notify_event_t *) ev;
 			CompWin *cw = comp_find_by_xid(cev->window);
@@ -2202,7 +2202,7 @@ compositor_handle_event(xcb_generic_event_t *ev)
 			return;
 		}
 
-		if (type == DestroyNotify) {
+		if (type == XCB_DESTROY_NOTIFY) {
 			xcb_destroy_notify_event_t *dev =
 			    (xcb_destroy_notify_event_t *) ev;
 			CompWin *prev = NULL, *cw;
@@ -2237,7 +2237,7 @@ compositor_handle_event(xcb_generic_event_t *ev)
 			return;
 		}
 
-		if (type == PropertyNotify) {
+		if (type == XCB_PROPERTY_NOTIFY) {
 			xcb_property_notify_event_t *pev =
 			    (xcb_property_notify_event_t *) ev;
 			if (pev->window == root &&
@@ -2296,7 +2296,7 @@ compositor_handle_event(xcb_generic_event_t *ev)
 			return;
 		}
 
-		if (type == SelectionClear) {
+		if (type == XCB_SELECTION_CLEAR) {
 			xcb_selection_clear_event_t *sce =
 			    (xcb_selection_clear_event_t *) ev;
 			if (sce->selection == comp.atom_cm_sn) {

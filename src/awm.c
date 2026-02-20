@@ -57,21 +57,21 @@ static guint dbus_retry_id = 0; /* GLib source ID for the reconnect timer */
 int randrbase, rrerrbase;
 #endif
 void (*handler[LASTEvent])(xcb_generic_event_t *) = {
-	[ButtonPress]      = buttonpress,
-	[ClientMessage]    = clientmessage,
-	[ConfigureRequest] = configurerequest,
-	[ConfigureNotify]  = configurenotify,
-	[DestroyNotify]    = destroynotify,
-	[EnterNotify]      = enternotify,
-	[Expose]           = expose,
-	[FocusIn]          = focusin,
-	[KeyPress]         = keypress,
-	[MappingNotify]    = mappingnotify,
-	[MapRequest]       = maprequest,
-	[MotionNotify]     = motionnotify,
-	[PropertyNotify]   = propertynotify,
-	[ResizeRequest]    = resizerequest,
-	[UnmapNotify]      = unmapnotify,
+	[XCB_BUTTON_PRESS]      = buttonpress,
+	[XCB_CLIENT_MESSAGE]    = clientmessage,
+	[XCB_CONFIGURE_REQUEST] = configurerequest,
+	[XCB_CONFIGURE_NOTIFY]  = configurenotify,
+	[XCB_DESTROY_NOTIFY]    = destroynotify,
+	[XCB_ENTER_NOTIFY]      = enternotify,
+	[XCB_EXPOSE]            = expose,
+	[XCB_FOCUS_IN]          = focusin,
+	[XCB_KEY_PRESS]         = keypress,
+	[XCB_MAPPING_NOTIFY]    = mappingnotify,
+	[XCB_MAP_REQUEST]       = maprequest,
+	[XCB_MOTION_NOTIFY]     = motionnotify,
+	[XCB_PROPERTY_NOTIFY]   = propertynotify,
+	[XCB_RESIZE_REQUEST]    = resizerequest,
+	[XCB_UNMAP_NOTIFY]      = unmapnotify,
 };
 xcb_atom_t         wmatom[WMLast], netatom[NetLast], xatom[XLast];
 static xcb_atom_t  utf8string_atom; /* UTF8_STRING — used in setup() */
