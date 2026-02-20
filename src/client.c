@@ -461,24 +461,24 @@ getstate(Window w)
 int
 gettextprop(Window w, Atom atom, char *text, unsigned int size)
 {
-	char        **list = NULL;
-	int           n;
-	XTextProperty name;
+	xcb_connection_t                   *xc;
+	xcb_get_property_cookie_t           ck;
+	xcb_icccm_get_text_property_reply_t prop;
+	unsigned int                        len;
 
 	if (!text || size == 0)
 		return 0;
 	text[0] = '\0';
-	if (!XGetTextProperty(dpy, w, &name, atom) || !name.nitems)
+	xc      = XGetXCBConnection(dpy);
+	ck = xcb_icccm_get_text_property(xc, (xcb_window_t) w, (xcb_atom_t) atom);
+	if (!xcb_icccm_get_text_property_reply(xc, ck, &prop, NULL))
 		return 0;
-	if (name.encoding == XA_STRING) {
-		strncpy(text, (char *) name.value, size - 1);
-	} else if (XmbTextPropertyToTextList(dpy, &name, &list, &n) >= Success &&
-	    n > 0 && *list) {
-		strncpy(text, *list, size - 1);
-		XFreeStringList(list);
+	if (prop.name_len > 0 && prop.name) {
+		len = prop.name_len < size - 1 ? prop.name_len : size - 1;
+		memcpy(text, prop.name, len);
+		text[len] = '\0';
 	}
-	text[size - 1] = '\0';
-	XFree(name.value);
+	xcb_icccm_get_text_property_reply_wipe(&prop);
 	return 1;
 }
 
