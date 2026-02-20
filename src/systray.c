@@ -146,18 +146,41 @@ updatesystray(void)
 
 		/* Prefer a 32-bit ARGB visual so XEMBED clients that use one
 		 * (e.g. nm-applet, pasystray) share the same visual depth and
-		 * colormap context.  Fall back to the default visual if unavailable.
-		 */
+		 * colormap context.  Walk the XCB screen's allowed depths to
+		 * find a 32-bit TrueColor visual; fall back to the default
+		 * screen visual if none is available. */
 		{
-			XVisualInfo vinfo;
-			if (XMatchVisualInfo(
-			        dpy, DefaultScreen(dpy), 32, TrueColor, &vinfo)) {
-				systray->visual = vinfo.visual;
-				systray->colormap =
-				    XCreateColormap(dpy, root, systray->visual, AllocNone);
+			xcb_connection_t     *xc    = XGetXCBConnection(dpy);
+			const xcb_setup_t    *setup = xcb_get_setup(xc);
+			xcb_screen_iterator_t si    = xcb_setup_roots_iterator(setup);
+			/* Advance to our screen number */
+			for (int s = DefaultScreen(dpy); s > 0; s--)
+				xcb_screen_next(&si);
+			xcb_screen_t *scr = si.data;
+
+			xcb_visualid_t       found_vis = 0;
+			xcb_depth_iterator_t di = xcb_screen_allowed_depths_iterator(scr);
+			for (; di.rem && !found_vis; xcb_depth_next(&di)) {
+				if (di.data->depth != 32)
+					continue;
+				xcb_visualtype_iterator_t vi =
+				    xcb_depth_visuals_iterator(di.data);
+				for (; vi.rem; xcb_visualtype_next(&vi)) {
+					if (vi.data->_class == XCB_VISUAL_CLASS_TRUE_COLOR) {
+						found_vis = vi.data->visual_id;
+						break;
+					}
+				}
+			}
+
+			if (found_vis) {
+				systray->visual_id = found_vis;
+				systray->colormap  = xcb_generate_id(xc);
+				xcb_create_colormap(xc, XCB_COLORMAP_ALLOC_NONE,
+				    systray->colormap, root, found_vis);
 			} else {
-				systray->visual   = DefaultVisual(dpy, DefaultScreen(dpy));
-				systray->colormap = DefaultColormap(dpy, DefaultScreen(dpy));
+				systray->visual_id = scr->root_visual;
+				systray->colormap  = scr->default_colormap;
 			}
 		}
 
@@ -181,8 +204,7 @@ updatesystray(void)
 			systray->win        = xcb_generate_id(xc);
 			xcb_create_window(xc, 32, systray->win, root, (int16_t) x,
 			    (int16_t) m->by, (uint16_t) w, (uint16_t) bh, 0,
-			    XCB_WINDOW_CLASS_INPUT_OUTPUT,
-			    (xcb_visualid_t) XVisualIDFromVisual(systray->visual),
+			    XCB_WINDOW_CLASS_INPUT_OUTPUT, systray->visual_id,
 			    XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL |
 			        XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK |
 			        XCB_CW_COLORMAP,
@@ -203,8 +225,7 @@ updatesystray(void)
 			}
 			/* _NET_SYSTEM_TRAY_VISUAL */
 			{
-				uint32_t vis_id =
-				    (uint32_t) XVisualIDFromVisual(systray->visual);
+				uint32_t vis_id = (uint32_t) systray->visual_id;
 				xcb_change_property(xc, XCB_PROP_MODE_REPLACE, systray->win,
 				    (xcb_atom_t) netatom[NetSystemTrayVisual],
 				    XCB_ATOM_VISUALID, 32, 1, &vis_id);

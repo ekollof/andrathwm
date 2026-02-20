@@ -25,7 +25,6 @@ isuniquegeom(XineramaScreenInfo *unique, size_t n, XineramaScreenInfo *info)
 void
 arrange(Monitor *m)
 {
-	XEvent ev;
 	if (m)
 		showhide(m->cl->stack);
 	else
@@ -37,9 +36,20 @@ arrange(Monitor *m)
 	} else {
 		for (m = mons; m; m = m->next)
 			arrangemon(m);
-		XSync(dpy, False);
-		while (XCheckMaskEvent(dpy, EnterWindowMask, &ev))
-			;
+		/* Flush all pending requests and discard stale EnterNotify
+		 * events so we don't spuriously change focus after a
+		 * layout change.  All operations stay on the XCB connection;
+		 * non-EnterNotify events are put back into the Xlib queue. */
+		{
+			xcb_connection_t    *xc = XGetXCBConnection(dpy);
+			xcb_generic_event_t *xe;
+			xcb_flush(xc);
+			while ((xe = xcb_poll_for_event(xc))) {
+				if ((xe->response_type & ~0x80) != XCB_ENTER_NOTIFY)
+					XPutBackEvent(dpy, (XEvent *) (void *) xe); /* NOLINT */
+				free(xe);
+			}
+		}
 	}
 }
 
@@ -364,7 +374,6 @@ void
 restack(Monitor *m)
 {
 	Client           *c;
-	XEvent            ev;
 	xcb_connection_t *xc = XGetXCBConnection(dpy);
 
 	drawbar(m);
@@ -389,9 +398,16 @@ restack(Monitor *m)
 	if (m == selmon && (m->tagset[m->seltags] & m->sel->tags) &&
 	    m->lt[m->sellt]->arrange != &monocle)
 		warp(m->sel);
-	XSync(dpy, False);
-	while (XCheckMaskEvent(dpy, EnterWindowMask, &ev))
-		;
+	/* Same EnterNotify drain as arrange() — see comment there. */
+	{
+		xcb_generic_event_t *xe;
+		xcb_flush(xc);
+		while ((xe = xcb_poll_for_event(xc))) {
+			if ((xe->response_type & ~0x80) != XCB_ENTER_NOTIFY)
+				XPutBackEvent(dpy, (XEvent *) (void *) xe); /* NOLINT */
+			free(xe);
+		}
+	}
 	updateclientlist(); /* Update stacking order */
 }
 

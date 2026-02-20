@@ -417,9 +417,19 @@ scan(void)
 		if (override || XGetTransientForHint(dpy, wins[i], &trans))
 			continue;
 		if (map_state == IsViewable || getstate(wins[i]) == IconicState) {
-			static XWindowAttributes wa;
-			if (XGetWindowAttributes(dpy, wins[i], &wa))
+			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
+			xcb_get_geometry_reply_t *gr =
+			    xcb_get_geometry_reply(xc, gck, NULL);
+			if (gr) {
+				XWindowAttributes wa;
+				wa.x            = gr->x;
+				wa.y            = gr->y;
+				wa.width        = gr->width;
+				wa.height       = gr->height;
+				wa.border_width = gr->border_width;
+				free(gr);
 				manage(wins[i], &wa);
+			}
 		}
 	}
 	/* second pass: transients */
@@ -435,9 +445,19 @@ scan(void)
 		Window trans = None;
 		if (XGetTransientForHint(dpy, wins[i], &trans) &&
 		    (map_state == IsViewable || getstate(wins[i]) == IconicState)) {
-			static XWindowAttributes wa;
-			if (XGetWindowAttributes(dpy, wins[i], &wa))
+			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
+			xcb_get_geometry_reply_t *gr =
+			    xcb_get_geometry_reply(xc, gck, NULL);
+			if (gr) {
+				XWindowAttributes wa;
+				wa.x            = gr->x;
+				wa.y            = gr->y;
+				wa.width        = gr->width;
+				wa.height       = gr->height;
+				wa.border_width = gr->border_width;
+				free(gr);
 				manage(wins[i], &wa);
+			}
 		}
 	}
 	free(tr);

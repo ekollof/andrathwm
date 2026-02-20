@@ -94,7 +94,8 @@ buttonpress(XEvent *e)
 	} else if ((c = wintoclient(ev->window))) {
 		focus(c);
 		restack(selmon);
-		XAllowEvents(dpy, ReplayPointer, CurrentTime);
+		xcb_allow_events(XGetXCBConnection(dpy), XCB_ALLOW_REPLAY_POINTER,
+		    XCB_CURRENT_TIME);
 		click = ClkClientWin;
 	}
 #ifdef STATUSNOTIFIER
@@ -225,7 +226,8 @@ clientmessage(XEvent *e)
 		        CurrentTime, 0, 0, 0)) {
 			XGrabServer(dpy);
 			XSetErrorHandler(xerrordummy);
-			XSetCloseDownMode(dpy, DestroyAll);
+			xcb_set_close_down_mode(
+			    XGetXCBConnection(dpy), XCB_CLOSE_DOWN_DESTROY_ALL);
 			xcb_kill_client(XGetXCBConnection(dpy), c->win);
 			xflush(dpy);
 			XSetErrorHandler(xerror);
@@ -444,28 +446,34 @@ grabkeys(void)
 {
 	updatenumlockmask();
 	{
-		unsigned int      i, j, k;
-		unsigned int      modifiers[] = { 0, LockMask, numlockmask,
-			     numlockmask | LockMask };
-		int               start, end, skip;
-		KeySym           *syms;
-		xcb_connection_t *xc = XGetXCBConnection(dpy);
+		unsigned int       i, j, k;
+		unsigned int       modifiers[] = { 0, LockMask, numlockmask,
+			      numlockmask | LockMask };
+		xcb_connection_t  *xc          = XGetXCBConnection(dpy);
+		const xcb_setup_t *setup       = xcb_get_setup(xc);
+		xcb_keycode_t      kmin        = setup->min_keycode;
+		xcb_keycode_t      kmax        = setup->max_keycode;
+		int                count       = kmax - kmin + 1;
 
 		xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
-		XDisplayKeycodes(dpy, &start, &end);
-		syms = XGetKeyboardMapping(dpy, start, end - start + 1, &skip);
-		if (!syms)
+
+		xcb_get_keyboard_mapping_cookie_t mck =
+		    xcb_get_keyboard_mapping(xc, kmin, (uint8_t) count);
+		xcb_get_keyboard_mapping_reply_t *mr =
+		    xcb_get_keyboard_mapping_reply(xc, mck, NULL);
+		if (!mr)
 			return;
-		for (k = start; k <= end; k++)
+		int           skip = mr->keysyms_per_keycode;
+		xcb_keysym_t *syms = xcb_get_keyboard_mapping_keysyms(mr);
+		for (k = kmin; k <= kmax; k++)
 			for (i = 0; i < LENGTH(keys); i++)
-				/* skip modifier codes, we do that ourselves */
-				if (keys[i].keysym == syms[(k - start) * skip])
+				if (keys[i].keysym == (KeySym) syms[(k - kmin) * skip])
 					for (j = 0; j < LENGTH(modifiers); j++)
 						xcb_grab_key(xc, 1, root,
 						    (uint16_t) (keys[i].mod | modifiers[j]),
 						    (xcb_keycode_t) k, XCB_GRAB_MODE_ASYNC,
 						    XCB_GRAB_MODE_ASYNC);
-		XFree(syms);
+		free(mr);
 	}
 }
 
@@ -566,9 +574,20 @@ maprequest(XEvent *e)
 			return;
 	}
 	if (!wintoclient(ev->window)) {
-		static XWindowAttributes wa;
-		if (XGetWindowAttributes(dpy, ev->window, &wa))
+		xcb_get_geometry_cookie_t gck =
+		    xcb_get_geometry(XGetXCBConnection(dpy), ev->window);
+		xcb_get_geometry_reply_t *gr =
+		    xcb_get_geometry_reply(XGetXCBConnection(dpy), gck, NULL);
+		if (gr) {
+			XWindowAttributes wa;
+			wa.x            = gr->x;
+			wa.y            = gr->y;
+			wa.width        = gr->width;
+			wa.height       = gr->height;
+			wa.border_width = gr->border_width;
+			free(gr);
 			manage(ev->window, &wa);
+		}
 	}
 }
 

@@ -29,7 +29,6 @@ applyrules(Client *c)
 	unsigned int i;
 	const Rule  *r;
 	Monitor     *m;
-	XClassHint   ch = { NULL, NULL };
 
 	/* rule matching */
 	c->iscentered = 0;
@@ -37,9 +36,38 @@ applyrules(Client *c)
 	c->ishidden   = 0;
 	c->tags       = 0;
 	c->scratchkey = 0;
-	XGetClassHint(dpy, c->win, &ch);
-	class    = ch.res_class ? ch.res_class : broken;
-	instance = ch.res_name ? ch.res_name : broken;
+
+	/* Fetch WM_CLASS via XCB: value is "instance\0class\0" (STRING).
+	 * Parse the two null-separated fields from the raw reply data. */
+	char cls_buf[256]  = { 0 };
+	char inst_buf[256] = { 0 };
+	{
+		xcb_get_property_cookie_t pck =
+		    xcb_get_property(XGetXCBConnection(dpy), 0, c->win,
+		        XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 0, 512);
+		xcb_get_property_reply_t *pr =
+		    xcb_get_property_reply(XGetXCBConnection(dpy), pck, NULL);
+		if (pr && xcb_get_property_value_length(pr) > 0) {
+			const char *val = (const char *) xcb_get_property_value(pr);
+			int         len = xcb_get_property_value_length(pr);
+			/* First field: instance (res_name) */
+			int inst_len = (int) strnlen(val, (size_t) len);
+			if (inst_len > 0)
+				snprintf(inst_buf, sizeof inst_buf, "%.*s", inst_len, val);
+			/* Second field: class (res_class) starts after first \0 */
+			if (inst_len + 1 < len) {
+				const char *cls_start = val + inst_len + 1;
+				int         cls_len =
+				    (int) strnlen(cls_start, (size_t) (len - inst_len - 1));
+				if (cls_len > 0)
+					snprintf(
+					    cls_buf, sizeof cls_buf, "%.*s", cls_len, cls_start);
+			}
+		}
+		free(pr);
+	}
+	class    = cls_buf[0] ? cls_buf : broken;
+	instance = inst_buf[0] ? inst_buf : broken;
 
 	if (strstr(class, "Steam") || strstr(class, "steam_app_"))
 		c->issteam = 1;
@@ -62,10 +90,6 @@ applyrules(Client *c)
 				c->mon = m;
 		}
 	}
-	if (ch.res_class)
-		XFree(ch.res_class);
-	if (ch.res_name)
-		XFree(ch.res_name);
 
 	/* Scratchpads always start hidden (tags=0 means off-screen until
 	 * toggled).  For normal clients, fall back to the monitor's current
@@ -704,7 +728,8 @@ killclient(const Arg *arg)
 	        wmatom[WMDelete], CurrentTime, 0, 0, 0)) {
 		XGrabServer(dpy);
 		XSetErrorHandler(xerrordummy);
-		XSetCloseDownMode(dpy, DestroyAll);
+		xcb_set_close_down_mode(
+		    XGetXCBConnection(dpy), XCB_CLOSE_DOWN_DESTROY_ALL);
 		xcb_kill_client(XGetXCBConnection(dpy), selmon->sel->win);
 		xflush(dpy);
 		XSetErrorHandler(xerror);
@@ -856,9 +881,19 @@ movemouse(const Arg *arg)
 	restack(selmon);
 	ocx = c->x;
 	ocy = c->y;
-	if (XGrabPointer(dpy, root, False, MOUSEMASK, GrabModeAsync, GrabModeAsync,
-	        None, cursor[CurMove]->cursor, CurrentTime) != GrabSuccess)
-		return;
+	{
+		xcb_connection_t         *xc = XGetXCBConnection(dpy);
+		xcb_grab_pointer_cookie_t gck =
+		    xcb_grab_pointer(xc, 0, root, MOUSEMASK, XCB_GRAB_MODE_ASYNC,
+		        XCB_GRAB_MODE_ASYNC, XCB_WINDOW_NONE,
+		        (xcb_cursor_t) cursor[CurMove]->cursor, XCB_CURRENT_TIME);
+		xcb_grab_pointer_reply_t *gr = xcb_grab_pointer_reply(xc, gck, NULL);
+		if (!gr || gr->status != XCB_GRAB_STATUS_SUCCESS) {
+			free(gr);
+			return;
+		}
+		free(gr);
+	}
 	if (!getrootptr(&x, &y))
 		return;
 	do {
@@ -896,7 +931,7 @@ movemouse(const Arg *arg)
 			break;
 		}
 	} while (ev.type != ButtonRelease);
-	XUngrabPointer(dpy, CurrentTime);
+	xcb_ungrab_pointer(XGetXCBConnection(dpy), XCB_CURRENT_TIME);
 	if ((m = recttomon(c->x, c->y, c->w, c->h)) != selmon) {
 		sendmon(c, m);
 		selmon = m;
@@ -986,11 +1021,21 @@ resizemouse(const Arg *arg)
 	restack(selmon);
 	ocx = c->x;
 	ocy = c->y;
-	if (XGrabPointer(dpy, root, False, MOUSEMASK, GrabModeAsync, GrabModeAsync,
-	        None, cursor[CurResize]->cursor, CurrentTime) != GrabSuccess)
-		return;
-	XWarpPointer(
-	    dpy, None, c->win, 0, 0, 0, 0, c->w + c->bw - 1, c->h + c->bw - 1);
+	{
+		xcb_connection_t         *xc = XGetXCBConnection(dpy);
+		xcb_grab_pointer_cookie_t gck =
+		    xcb_grab_pointer(xc, 0, root, MOUSEMASK, XCB_GRAB_MODE_ASYNC,
+		        XCB_GRAB_MODE_ASYNC, XCB_WINDOW_NONE,
+		        (xcb_cursor_t) cursor[CurResize]->cursor, XCB_CURRENT_TIME);
+		xcb_grab_pointer_reply_t *gr = xcb_grab_pointer_reply(xc, gck, NULL);
+		if (!gr || gr->status != XCB_GRAB_STATUS_SUCCESS) {
+			free(gr);
+			return;
+		}
+		free(gr);
+	}
+	xcb_warp_pointer(XGetXCBConnection(dpy), XCB_WINDOW_NONE, c->win, 0, 0, 0,
+	    0, (int16_t) (c->w + c->bw - 1), (int16_t) (c->h + c->bw - 1));
 	do {
 		XMaskEvent(
 		    dpy, MOUSEMASK | ExposureMask | SubstructureRedirectMask, &ev);
@@ -1023,11 +1068,21 @@ resizemouse(const Arg *arg)
 			break;
 		}
 	} while (ev.type != ButtonRelease);
-	XWarpPointer(
-	    dpy, None, c->win, 0, 0, 0, 0, c->w + c->bw - 1, c->h + c->bw - 1);
-	XUngrabPointer(dpy, CurrentTime);
-	while (XCheckMaskEvent(dpy, EnterWindowMask, &ev))
-		;
+	xcb_warp_pointer(XGetXCBConnection(dpy), XCB_WINDOW_NONE, c->win, 0, 0, 0,
+	    0, (int16_t) (c->w + c->bw - 1), (int16_t) (c->h + c->bw - 1));
+	xcb_ungrab_pointer(XGetXCBConnection(dpy), XCB_CURRENT_TIME);
+	/* Discard any stale EnterNotify events that accumulated during the
+	 * grab so we don't spuriously change focus after a resize. */
+	{
+		xcb_connection_t    *xc = XGetXCBConnection(dpy);
+		xcb_generic_event_t *xe;
+		xcb_flush(xc);
+		while ((xe = xcb_poll_for_event(xc))) {
+			if ((xe->response_type & ~0x80) != XCB_ENTER_NOTIFY)
+				XPutBackEvent(dpy, (XEvent *) (void *) xe); /* NOLINT */
+			free(xe);
+		}
+	}
 	if ((m = recttomon(c->x, c->y, c->w, c->h)) != selmon) {
 		sendmon(c, m);
 		selmon = m;
@@ -1711,8 +1766,9 @@ warp(const Client *c)
 	int x, y;
 
 	if (!c) {
-		XWarpPointer(dpy, None, root, 0, 0, 0, 0, selmon->wx + selmon->ww / 2,
-		    selmon->wy + selmon->wh / 2);
+		xcb_warp_pointer(XGetXCBConnection(dpy), XCB_WINDOW_NONE, root, 0, 0,
+		    0, 0, (int16_t) (selmon->wx + selmon->ww / 2),
+		    (int16_t) (selmon->wy + selmon->wh / 2));
 		return;
 	}
 
@@ -1722,7 +1778,8 @@ warp(const Client *c)
 	    (y > c->mon->by && y < c->mon->by + bh) || (c->mon->topbar && !y))
 		return;
 
-	XWarpPointer(dpy, None, c->win, 0, 0, 0, 0, c->w / 2, c->h / 2);
+	xcb_warp_pointer(XGetXCBConnection(dpy), XCB_WINDOW_NONE, c->win, 0, 0, 0,
+	    0, (int16_t) (c->w / 2), (int16_t) (c->h / 2));
 }
 
 Client *
