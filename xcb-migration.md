@@ -43,7 +43,7 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `90bf747` | Geometry, grab/warp, class hint, keyboard mapping, visual walk |
 | `b45e0c7` | WM hints (`xcb-icccm`), size hints, keyboard (`xcb-keysyms`), RandR (`xcb-randr`), `compositor.c` `XGetWindowAttributes` |
 | `b7bd833` | `menu.c` and `sni.c`: window/grab/RandR/keysym calls migrated to XCB |
-| (this commit) | `launcher.c`: window/grab/keysym calls migrated to XCB; `XLookupString` kept |
+| `ef9ad51` | `launcher.c`: window/grab/keysym calls migrated to XCB; `XLookupString` kept |
 
 ---
 
