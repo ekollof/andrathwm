@@ -1,6 +1,9 @@
 /* See LICENSE file for copyright and license details. */
+#include <X11/extensions/Xrender.h>
 #include <stdlib.h>
 #include <string.h>
+#include <xcb/xcb.h>
+#include <xcb/xproto.h>
 
 #include <X11/Xlib-xcb.h>
 #include <pango/pangocairo.h>
@@ -372,22 +375,116 @@ drw_cur_free(Drw *drw, Cur *cursor)
 	XFreeCursor(drw->dpy, cursor->cursor);
 	free(cursor);
 }
+
 void
 drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
     cairo_surface_t *surface)
 {
-	cairo_t *cr;
+	int                src_w, src_h, stride;
+	unsigned char     *data;
+	Pixmap             tmp_pm;
+	XImage            *img;
+	Picture            src_pic, dst_pic;
+	XRenderPictFormat *argb_fmt, *dst_fmt;
+	Visual            *argb_vis = NULL;
+	XVisualInfo        vi_tmpl;
+	XVisualInfo       *vi_list;
+	int                vi_count, i;
 
-	if (!drw || !surface || !drw->cairo_surface)
+	if (!drw || !surface)
 		return;
 
 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
 		return;
 
-	cr = cairo_create(drw->cairo_surface);
-	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-	cairo_set_source_surface(cr, surface, x, y);
-	cairo_rectangle(cr, x, y, w, h);
-	cairo_fill(cr);
-	cairo_destroy(cr);
+	if (cairo_surface_get_type(surface) != CAIRO_SURFACE_TYPE_IMAGE) {
+		awm_warn("drw_pic: non-image surface, icon skipped");
+		return;
+	}
+
+	cairo_surface_flush(surface);
+	data   = cairo_image_surface_get_data(surface);
+	src_w  = cairo_image_surface_get_width(surface);
+	src_h  = cairo_image_surface_get_height(surface);
+	stride = cairo_image_surface_get_stride(surface);
+
+	if (!data || src_w <= 0 || src_h <= 0)
+		return;
+
+	/*
+	 * Upload ARGB32 icon pixels into a temporary 32-bit depth pixmap and
+	 * alpha-composite it into drw->drawable using XRenderComposite.
+	 * Everything goes through the Xlib connection (dpy) — no separate XCB
+	 * connection, no cross-connection ordering hazard.
+	 */
+	argb_fmt = XRenderFindStandardFormat(drw->dpy, PictStandardARGB32);
+	if (!argb_fmt) {
+		awm_warn("drw_pic: XRender ARGB32 format not available");
+		return;
+	}
+
+	/* Find a 32-bit TrueColor visual for the temp pixmap */
+	vi_tmpl.screen = drw->screen;
+	vi_tmpl.depth  = 32;
+	vi_tmpl.class  = TrueColor; /* c89-safe: 'class' is the field name */
+	vi_list        = XGetVisualInfo(drw->dpy,
+	           VisualScreenMask | VisualDepthMask | VisualClassMask, &vi_tmpl,
+	           &vi_count);
+	if (vi_list) {
+		for (i = 0; i < vi_count; i++) {
+			if (vi_list[i].depth == 32) {
+				argb_vis = vi_list[i].visual;
+				break;
+			}
+		}
+		XFree(vi_list);
+	}
+	if (!argb_vis) {
+		awm_warn("drw_pic: no 32-bit TrueColor visual, icon skipped");
+		return;
+	}
+
+	tmp_pm = XCreatePixmap(
+	    drw->dpy, drw->root, (unsigned) src_w, (unsigned) src_h, 32);
+
+	img = XCreateImage(drw->dpy, argb_vis, 32, ZPixmap, 0, NULL,
+	    (unsigned) src_w, (unsigned) src_h, 32, stride);
+	if (!img) {
+		XFreePixmap(drw->dpy, tmp_pm);
+		return;
+	}
+	img->data = (char *) data; /* point at Cairo's buffer; we own it */
+
+	/* Create a matching GC for the 32-bit pixmap */
+	{
+		GC gc32 = XCreateGC(drw->dpy, tmp_pm, 0, NULL);
+		XPutImage(drw->dpy, tmp_pm, gc32, img, 0, 0, 0, 0, (unsigned) src_w,
+		    (unsigned) src_h);
+		XFreeGC(drw->dpy, gc32);
+	}
+
+	/* Detach data pointer so XDestroyImage won't free Cairo's buffer */
+	img->data = NULL;
+	XDestroyImage(img);
+
+	src_pic = XRenderCreatePicture(drw->dpy, tmp_pm, argb_fmt, 0, NULL);
+
+	dst_fmt = XRenderFindVisualFormat(
+	    drw->dpy, DefaultVisual(drw->dpy, drw->screen));
+	dst_pic = XRenderCreatePicture(drw->dpy, drw->drawable, dst_fmt, 0, NULL);
+
+	if ((unsigned) src_w != w || (unsigned) src_h != h) {
+		XTransform xform = { { { XDoubleToFixed((double) src_w / w), 0, 0 },
+			{ 0, XDoubleToFixed((double) src_h / h), 0 },
+			{ 0, 0, XDoubleToFixed(1.0) } } };
+		XRenderSetPictureTransform(drw->dpy, src_pic, &xform);
+		XRenderSetPictureFilter(drw->dpy, src_pic, FilterBilinear, NULL, 0);
+	}
+
+	XRenderComposite(
+	    drw->dpy, PictOpOver, src_pic, None, dst_pic, 0, 0, 0, 0, x, y, w, h);
+
+	XRenderFreePicture(drw->dpy, src_pic);
+	XRenderFreePicture(drw->dpy, dst_pic);
+	XFreePixmap(drw->dpy, tmp_pm);
 }
