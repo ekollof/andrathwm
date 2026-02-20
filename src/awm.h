@@ -29,11 +29,11 @@
 #include <syslog.h>
 #include <unistd.h>
 #ifdef XINERAMA
-#include <X11/extensions/Xinerama.h>
+/* <X11/extensions/Xinerama.h> removed — xcb-xinerama used exclusively */
 #include <xcb/xinerama.h>
 #endif /* XINERAMA */
 #ifdef XRANDR
-#include <X11/extensions/Xrandr.h>
+/* <X11/extensions/Xrandr.h> removed — XCB randr used exclusively */
 #endif /* XRANDR */
 #ifdef XSS
 #include <X11/extensions/scrnsaver.h>

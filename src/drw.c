@@ -1,5 +1,6 @@
 /* See LICENSE file for copyright and license details. */
 #include <X11/extensions/Xrender.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <xcb/xcb.h>
@@ -196,21 +197,39 @@ drw_fontset_free(Fnt *font)
 void
 drw_clr_create(Drw *drw, Clr *dest, const char *clrname)
 {
-	XColor xc;
+	xcb_connection_t        *xc;
+	xcb_screen_iterator_t    si;
+	xcb_screen_t            *xs;
+	xcb_alloc_color_cookie_t ck;
+	xcb_alloc_color_reply_t *rep;
+	unsigned int             r8 = 0, g8 = 0, b8 = 0;
 
 	if (!drw || !dest || !clrname)
 		return;
 
-	if (!XParseColor(
-	        drw->dpy, DefaultColormap(drw->dpy, drw->screen), clrname, &xc))
+	/* Parse #rrggbb — the only format used in awm color configs. */
+	if (clrname[0] != '#' ||
+	    sscanf(clrname + 1, "%02x%02x%02x", &r8, &g8, &b8) != 3)
 		die("error, cannot parse color '%s'", clrname);
-	if (!XAllocColor(drw->dpy, DefaultColormap(drw->dpy, drw->screen), &xc))
+
+	/* Expand 8-bit to 16-bit channels (0x101 * 0xff == 0xffff). */
+	dest->r = (unsigned short) (r8 * 0x101);
+	dest->g = (unsigned short) (g8 * 0x101);
+	dest->b = (unsigned short) (b8 * 0x101);
+	dest->a = 0xffff;
+
+	/* Allocate pixel value in the server's colormap via XCB. */
+	xc = XGetXCBConnection(drw->dpy);
+	si = xcb_setup_roots_iterator(xcb_get_setup(xc));
+	for (int i = 0; i < drw->screen; i++)
+		xcb_screen_next(&si);
+	xs  = si.data;
+	ck  = xcb_alloc_color(xc, xs->default_colormap, dest->r, dest->g, dest->b);
+	rep = xcb_alloc_color_reply(xc, ck, NULL);
+	if (!rep)
 		die("error, cannot allocate color '%s'", clrname);
-	dest->pixel = xc.pixel;
-	dest->r     = xc.red;
-	dest->g     = xc.green;
-	dest->b     = xc.blue;
-	dest->a     = 0xffff;
+	dest->pixel = rep->pixel;
+	free(rep);
 }
 
 /* Wrapper to create color schemes. The caller has to call free(3) on the

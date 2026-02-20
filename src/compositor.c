@@ -215,35 +215,6 @@ static xcb_render_picture_t make_alpha_picture(double a);
  * Helpers
  * ---------------------------------------------------------------------- */
 
-/* Suppress X errors for a single call */
-static int
-comp_xerror_ignore(Display *d, XErrorEvent *e)
-{
-	(void) d;
-	(void) e;
-	return 0;
-}
-
-static int (*prev_xerror)(Display *, XErrorEvent *) = NULL;
-static int xerror_ignore_depth                      = 0;
-
-static void
-xerror_push_ignore(void)
-{
-	if (xerror_ignore_depth++ == 0)
-		prev_xerror = XSetErrorHandler(comp_xerror_ignore);
-}
-
-static void
-xerror_pop(void)
-{
-	XSync(dpy, False);
-	if (--xerror_ignore_depth == 0) {
-		XSetErrorHandler(prev_xerror);
-		prev_xerror = NULL;
-	}
-}
-
 /* -------------------------------------------------------------------------
  * XESetWireToEvent workaround (picom-derived)
  *
@@ -844,11 +815,9 @@ compositor_init(GMainContext *ctx)
 	/* --- Redirect all root children ---------------------------------------
 	 */
 
-	xerror_push_ignore();
 	xcb_composite_redirect_subwindows(
 	    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
-	XSync(dpy, False);
-	xerror_pop();
+	xcb_flush(xc);
 
 	/* --- Overlay window ---------------------------------------------------
 	 */
@@ -1227,22 +1196,26 @@ comp_free_win(CompWin *cw)
 	 * but prevents a leak when comp_free_win is called on live windows
 	 * (e.g. unmap of non-client override-redirect windows). */
 	if (comp.has_xshape) {
-		xcb_connection_t *xc = XGetXCBConnection(dpy);
-		xerror_push_ignore();
-		xcb_shape_select_input(xc, (xcb_window_t) cw->win, 0);
-		XSync(dpy, False);
-		xerror_pop();
+		xcb_connection_t    *xc = XGetXCBConnection(dpy);
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
+		ck  = xcb_shape_select_input_checked(xc, (xcb_window_t) cw->win, 0);
+		err = xcb_request_check(xc, ck);
+		free(err); /* error intentionally discarded — window may be gone */
 	}
 
 	/* Unsubscribe Present events (no-op on dead windows). */
 	comp_unsubscribe_present(cw);
 
 	if (cw->damage) {
-		xcb_connection_t *xc = XGetXCBConnection(dpy);
-		xerror_push_ignore();
-		xcb_damage_destroy(xc, cw->damage);
-		XSync(dpy, False);
-		xerror_pop();
+		xcb_connection_t    *xc = XGetXCBConnection(dpy);
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
+		ck  = xcb_damage_destroy_checked(xc, cw->damage);
+		err = xcb_request_check(xc, ck);
+		free(err); /* error intentionally discarded — damage may be gone */
 		cw->damage = 0;
 	}
 	if (cw->picture) {
@@ -1276,15 +1249,18 @@ comp_refresh_pixmap(CompWin *cw)
 	/* New pixmap — require a full dirty on its first damage notification. */
 	cw->ever_damaged = 0;
 
-	xerror_push_ignore();
 	{
-		xcb_pixmap_t pix = xcb_generate_id(xc);
-		xcb_composite_name_window_pixmap(xc, (xcb_window_t) cw->win, pix);
+		xcb_pixmap_t         pix = xcb_generate_id(xc);
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
+		ck = xcb_composite_name_window_pixmap_checked(
+		    xc, (xcb_window_t) cw->win, pix);
 		xcb_flush(xc);
+		err = xcb_request_check(xc, ck);
+		free(err); /* error intentionally discarded — window may be gone */
 		cw->pixmap = pix;
 	}
-	XSync(dpy, False);
-	xerror_pop();
 
 	if (!cw->pixmap)
 		return;
@@ -1313,8 +1289,9 @@ comp_refresh_pixmap(CompWin *cw)
 		xcb_render_pictformat_t        fmt;
 		uint32_t                       pmask;
 		uint32_t                       pval;
+		xcb_void_cookie_t              ck;
+		xcb_generic_error_t           *err;
 
-		xerror_push_ignore();
 		pv = xcb_render_util_find_visual_format(
 		    comp.render_formats, xcb_screen_root_visual(xc, screen));
 		fmt = pv ? pv->format : 0;
@@ -1327,11 +1304,11 @@ comp_refresh_pixmap(CompWin *cw)
 		pmask       = XCB_RENDER_CP_SUBWINDOW_MODE;
 		pval        = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;
 		cw->picture = xcb_generate_id(xc);
-		xcb_render_create_picture(
-		    xc, cw->picture, (xcb_drawable_t) cw->pixmap, fmt, pmask, &pval);
+		ck          = xcb_render_create_picture_checked(
+            xc, cw->picture, (xcb_drawable_t) cw->pixmap, fmt, pmask, &pval);
 		xcb_flush(xc);
-		XSync(dpy, False);
-		xerror_pop();
+		err = xcb_request_check(xc, ck);
+		free(err); /* error intentionally discarded — pixmap may be gone */
 		comp_apply_shape(cw);
 	}
 }
@@ -1441,13 +1418,17 @@ comp_update_wallpaper(void)
 		fmt   = pv ? pv->format : 0;
 		pmask = XCB_RENDER_CP_REPEAT;
 		pval  = XCB_RENDER_REPEAT_NORMAL;
-		xerror_push_ignore();
-		comp.wallpaper_pict = xcb_generate_id(xc2);
-		xcb_render_create_picture(xc2, comp.wallpaper_pict,
-		    (xcb_drawable_t) pmap, fmt, pmask, &pval);
-		xcb_flush(xc2);
-		XSync(dpy, False);
-		xerror_pop();
+		{
+			xcb_void_cookie_t    ck;
+			xcb_generic_error_t *err;
+
+			comp.wallpaper_pict = xcb_generate_id(xc2);
+			ck = xcb_render_create_picture_checked(xc2, comp.wallpaper_pict,
+			    (xcb_drawable_t) pmap, fmt, pmask, &pval);
+			xcb_flush(xc2);
+			err = xcb_request_check(xc2, ck);
+			free(err); /* error intentionally discarded */
+		}
 
 		if (comp.wallpaper_pict)
 			comp.wallpaper_pixmap = pmap;
@@ -1606,14 +1587,16 @@ comp_add_by_xid(Window w)
 	comp_refresh_pixmap(cw);
 
 	if (cw->pixmap) {
-		xcb_connection_t *xc2 = XGetXCBConnection(dpy);
-		xerror_push_ignore();
+		xcb_connection_t    *xc2 = XGetXCBConnection(dpy);
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
 		cw->damage = xcb_generate_id(xc2);
-		xcb_damage_create(xc2, cw->damage, (xcb_drawable_t) w,
+		ck = xcb_damage_create_checked(xc2, cw->damage, (xcb_drawable_t) w,
 		    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
 		xcb_flush(xc2);
-		XSync(dpy, False);
-		xerror_pop();
+		err = xcb_request_check(xc2, ck);
+		free(err); /* error intentionally discarded */
 	}
 
 	/* Subscribe to X Present CompleteNotify so DRI3/Present GPU frames
@@ -1774,18 +1757,28 @@ compositor_bypass_window(Client *c, int bypass)
 	if (bypass == !cw->redirected)
 		return;
 
-	xerror_push_ignore();
 	if (bypass) {
-		xcb_composite_unredirect_window(XGetXCBConnection(dpy),
-		    (xcb_window_t) c->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+		xcb_connection_t    *xc2 = XGetXCBConnection(dpy);
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
+		ck = xcb_composite_unredirect_window_checked(
+		    xc2, (xcb_window_t) c->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+		err = xcb_request_check(xc2, ck);
+		free(err); /* error intentionally discarded */
 		cw->redirected = 0;
 		if (comp.use_gl)
 			comp_release_tfp(cw);
 		comp_free_win(cw);
 	} else {
-		xcb_connection_t *xc2 = XGetXCBConnection(dpy);
-		xcb_composite_redirect_window(
+		xcb_connection_t    *xc2 = XGetXCBConnection(dpy);
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
+		ck = xcb_composite_redirect_window_checked(
 		    xc2, (xcb_window_t) c->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+		err = xcb_request_check(xc2, ck);
+		free(err); /* error intentionally discarded */
 		cw->redirected = 1;
 		comp_refresh_pixmap(cw);
 		if (cw->pixmap && !cw->damage) {
@@ -1795,8 +1788,6 @@ compositor_bypass_window(Client *c, int bypass)
 		}
 		comp_subscribe_present(cw);
 	}
-	XSync(dpy, False);
-	xerror_pop();
 
 	schedule_repaint();
 }
@@ -2006,12 +1997,14 @@ compositor_check_unredirect(void)
 			CompWin *cw;
 			for (cw = comp.windows; cw; cw = cw->next) {
 				if (cw->client && cw->client->isfullscreen && cw->redirected) {
-					xcb_connection_t *xc2 = XGetXCBConnection(dpy);
-					xerror_push_ignore();
-					xcb_composite_unredirect_window(xc2,
-					    (xcb_window_t) cw->win, XCB_COMPOSITE_REDIRECT_MANUAL);
-					XSync(dpy, False);
-					xerror_pop();
+					xcb_connection_t    *xc2 = XGetXCBConnection(dpy);
+					xcb_void_cookie_t    ck;
+					xcb_generic_error_t *err;
+
+					ck  = xcb_composite_unredirect_window_checked(xc2,
+					     (xcb_window_t) cw->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+					err = xcb_request_check(xc2, ck);
+					free(err); /* error intentionally discarded */
 					cw->redirected = 0;
 					/* Release TFP/pixmap — they'll be rebuilt on resume */
 					if (comp.use_gl)
@@ -2035,10 +2028,14 @@ compositor_check_unredirect(void)
 		CompWin *cw;
 		for (cw = comp.windows; cw; cw = cw->next) {
 			if (cw->client && cw->client->isfullscreen && !cw->redirected) {
-				xcb_connection_t *xc3 = XGetXCBConnection(dpy);
-				xerror_push_ignore();
-				xcb_composite_redirect_window(xc3, (xcb_window_t) cw->win,
-				    XCB_COMPOSITE_REDIRECT_MANUAL);
+				xcb_connection_t    *xc3 = XGetXCBConnection(dpy);
+				xcb_void_cookie_t    ck;
+				xcb_generic_error_t *err;
+
+				ck  = xcb_composite_redirect_window_checked(xc3,
+				     (xcb_window_t) cw->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+				err = xcb_request_check(xc3, ck);
+				free(err); /* error intentionally discarded */
 				cw->redirected = 1;
 				comp_refresh_pixmap(cw);
 				if (cw->pixmap && !cw->damage) {
@@ -2047,8 +2044,6 @@ compositor_check_unredirect(void)
 					    (xcb_drawable_t) cw->win,
 					    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
 				}
-				XSync(dpy, False);
-				xerror_pop();
 				/* Re-subscribe Present events — the eid was cleared by
 				 * comp_unsubscribe_present() when we unredirected earlier. */
 				comp_subscribe_present(cw);
@@ -2131,10 +2126,14 @@ compositor_handle_event(XEvent *ev)
 
 		if (!dcw) {
 			/* Unknown window — just ack the damage and ignore. */
-			xerror_push_ignore();
-			xcb_damage_subtract(
-			    XGetXCBConnection(dpy), dev->damage, XCB_NONE, XCB_NONE);
-			xerror_pop();
+			xcb_connection_t    *xc_dmg = XGetXCBConnection(dpy);
+			xcb_void_cookie_t    ck;
+			xcb_generic_error_t *err;
+
+			ck = xcb_damage_subtract_checked(
+			    xc_dmg, dev->damage, XCB_NONE, XCB_NONE);
+			err = xcb_request_check(xc_dmg, ck);
+			free(err); /* error intentionally discarded */
 			schedule_repaint();
 			return;
 		}
@@ -2143,11 +2142,15 @@ compositor_handle_event(XEvent *ev)
 			/* First damage since (re)map or pixmap refresh: dirty the
 			 * entire window rect rather than the (possibly partial) area
 			 * reported in the notify.  Ack by discarding the region. */
+			xcb_connection_t    *xc_fd = XGetXCBConnection(dpy);
+			xcb_void_cookie_t    ck;
+			xcb_generic_error_t *err;
+
 			dcw->ever_damaged = 1;
-			xerror_push_ignore();
-			xcb_damage_subtract(
-			    XGetXCBConnection(dpy), dev->damage, XCB_NONE, XCB_NONE);
-			xerror_pop();
+			ck                = xcb_damage_subtract_checked(
+                xc_fd, dev->damage, XCB_NONE, XCB_NONE);
+			err = xcb_request_check(xc_fd, ck);
+			free(err); /* error intentionally discarded */
 			{
 				xcb_connection_t   *xc = XGetXCBConnection(dpy);
 				xcb_rectangle_t     r;
@@ -2167,12 +2170,16 @@ compositor_handle_event(XEvent *ev)
 			 * changed. dev->area is only the bounding box of the event's
 			 * inline area, not the full accumulated server-side damage
 			 * region. */
-			xcb_connection_t   *xc         = XGetXCBConnection(dpy);
-			xcb_xfixes_region_t dmg_region = xcb_generate_id(xc);
+			xcb_connection_t    *xc         = XGetXCBConnection(dpy);
+			xcb_xfixes_region_t  dmg_region = xcb_generate_id(xc);
+			xcb_void_cookie_t    ck;
+			xcb_generic_error_t *err;
+
 			xcb_xfixes_create_region(xc, dmg_region, 0, NULL);
-			xerror_push_ignore();
-			xcb_damage_subtract(xc, dev->damage, XCB_NONE, dmg_region);
-			xerror_pop();
+			ck = xcb_damage_subtract_checked(
+			    xc, dev->damage, XCB_NONE, dmg_region);
+			err = xcb_request_check(xc, ck);
+			free(err); /* error intentionally discarded */
 			/* Translate from window-local to screen coordinates */
 			xcb_xfixes_translate_region(
 			    xc, dmg_region, (int16_t) dcw->x, (int16_t) dcw->y);
@@ -2660,8 +2667,6 @@ comp_do_repaint_gl(void)
 	/* Walk windows bottom-to-top using our internal list.
 	 * comp.windows is maintained in bottom-to-top order by comp_restack_above
 	 * and comp_add_by_xid, eliminating the per-frame XQueryTree round-trip. */
-	xerror_push_ignore();
-
 	glBindVertexArray(comp.vao);
 	glActiveTexture(GL_TEXTURE0);
 
@@ -2724,7 +2729,6 @@ comp_do_repaint_gl(void)
 	}
 
 	glBindVertexArray(0);
-	xerror_pop();
 
 	glUseProgram(0);
 
@@ -2772,8 +2776,6 @@ comp_do_repaint_xrender(void)
 	/* Walk windows bottom-to-top using our internal list.
 	 * comp.windows is maintained in bottom-to-top order by comp_restack_above
 	 * and comp_add_by_xid, eliminating the per-frame XQueryTree round-trip. */
-	xerror_push_ignore();
-
 	for (cw = comp.windows; cw; cw = cw->next) {
 		int                  alpha_idx;
 		xcb_render_picture_t mask;
@@ -2820,8 +2822,6 @@ comp_do_repaint_xrender(void)
 			    xc, XCB_RENDER_PICT_OP_SRC, comp.back, bc, 4, borders);
 		}
 	}
-
-	xerror_pop();
 
 	/* Blit full back-buffer to overlay — unconditional, no clip */
 	xcb_xfixes_set_picture_clip_region(xc, comp.target, XCB_NONE, 0, 0);

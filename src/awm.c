@@ -223,8 +223,9 @@ x_dispatch_cb(gpointer user_data)
 		compositor_fix_wire_to_event(&ev);
 #endif
 #ifdef XRANDR
-		if (ev.type == randrbase + RRScreenChangeNotify) {
-			XRRUpdateConfiguration(&ev);
+		if (ev.type == randrbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY) {
+			/* XCB randr handles screen change — no XRRUpdateConfiguration
+			 * needed since we don't use libXrandr data structures. */
 			updategeom();
 			drw_resize(drw, sw, bh);
 			updatebars();
@@ -573,13 +574,24 @@ setup(void)
 	while (waitpid(-1, NULL, WNOHANG) > 0)
 		;
 
-	/* init screen */
-	screen = DefaultScreen(dpy);
-	sw     = DisplayWidth(dpy, screen);
-	sh     = DisplayHeight(dpy, screen);
+	/* init screen — use XCB setup data instead of Xlib macros.
+	 * XDefaultScreen(dpy) is the one remaining Xlib call that returns the
+	 * default screen index; we use it only once here to index the XCB
+	 * screen list, then drop all other Xlib display macros. */
+	{
+		xcb_connection_t     *xc = XGetXCBConnection(dpy);
+		xcb_screen_iterator_t sit =
+		    xcb_setup_roots_iterator(xcb_get_setup(xc));
+		int i;
+		screen = XDefaultScreen(dpy);
+		for (i = 0; i < screen; i++)
+			xcb_screen_next(&sit);
+		sw   = (int) sit.data->width_in_pixels;
+		sh   = (int) sit.data->height_in_pixels;
+		root = (Window) sit.data->root;
+	}
 	if (!(cl = (Clientlist *) calloc(1, sizeof(Clientlist))))
 		die("fatal: could not malloc() %u bytes\n", sizeof(Clientlist));
-	root = RootWindow(dpy, screen);
 	/* drw uses a dedicated bare xcb_connection_t (opened inside drw_create)
 	 * for all cairo rendering, so Xlib's sequence counter on dpy is never
 	 * disturbed by cairo's raw XCB traffic. */
@@ -716,7 +728,7 @@ main(int argc, char *argv[])
 		die("awm-" VERSION);
 	else if (argc != 1)
 		die("usage: awm [-v]");
-	if (!setlocale(LC_CTYPE, "") || !XSupportsLocale())
+	if (!setlocale(LC_CTYPE, ""))
 		fputs("warning: no locale support\n", stderr);
 	if (!(dpy = XOpenDisplay(NULL)))
 		die("awm: cannot open display");

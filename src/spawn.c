@@ -106,7 +106,7 @@ spawn(const Arg *arg)
 		dmenumon[0] = '0' + selmon->num;
 	if (fork() == 0) {
 		if (dpy)
-			close(ConnectionNumber(dpy));
+			close(xcb_get_file_descriptor(XGetXCBConnection(dpy)));
 		setsid();
 
 		sigemptyset(&sa.sa_mask);
@@ -124,7 +124,7 @@ spawnscratch(const Arg *arg)
 {
 	if (fork() == 0) {
 		if (dpy)
-			close(ConnectionNumber(dpy));
+			close(xcb_get_file_descriptor(XGetXCBConnection(dpy)));
 		setsid();
 		execvp(((char **) arg->v)[1], ((char **) arg->v) + 1);
 		awm_error(

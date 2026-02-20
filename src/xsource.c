@@ -5,6 +5,8 @@
 #include "xsource.h"
 
 #include <X11/Xlib.h>
+#include <X11/Xlib-xcb.h>
+#include <xcb/xcb.h>
 #include <glib.h>
 
 /* GMainLoop to quit on X server death; set via xsource_set_quit_loop(). */
@@ -84,10 +86,7 @@ xsource_dispatch(GSource *src, GSourceFunc callback, gpointer user_data)
 }
 
 static GSourceFuncs xsource_funcs = {
-	xsource_prepare,
-	xsource_check,
-	xsource_dispatch,
-	NULL, /* finalize */
+	xsource_prepare, xsource_check, xsource_dispatch, NULL, /* finalize */
 	NULL, /* closure_callback */
 	NULL, /* closure_marshal */
 };
@@ -106,7 +105,7 @@ xsource_new(Display *dpy, GSourceFunc callback, gpointer user_data)
 	xs  = (XSource *) src;
 
 	xs->dpy            = dpy;
-	xs->pollfd.fd      = ConnectionNumber(dpy);
+	xs->pollfd.fd      = xcb_get_file_descriptor(XGetXCBConnection(dpy));
 	xs->pollfd.events  = G_IO_IN | G_IO_HUP | G_IO_ERR;
 	xs->pollfd.revents = 0;
 

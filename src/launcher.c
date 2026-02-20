@@ -9,6 +9,7 @@
 #include <X11/Xlib-xcb.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_keysyms.h>
+#include <xkbcommon/xkbcommon.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -794,7 +795,7 @@ launcher_launch_selected(Launcher *launcher)
 	if (pid == 0) {
 		signal(SIGCHLD, SIG_DFL); /* reset inherited SIG_IGN from WM */
 		if (launcher->dpy)
-			close(ConnectionNumber(launcher->dpy));
+			close(xcb_get_file_descriptor(XGetXCBConnection(launcher->dpy)));
 		setsid();
 		if (item->terminal) {
 			const char *term = launcher->terminal;
@@ -921,8 +922,7 @@ launcher_create(Display *dpy, Window root, Clr **scheme, const char **fonts,
 	launcher_calculate_size(launcher);
 
 	{
-		xcb_connection_t *xc  = XGetXCBConnection(dpy);
-		int               scr = DefaultScreen(dpy);
+		xcb_connection_t *xc = XGetXCBConnection(dpy);
 		xcb_screen_t  *xs  = xcb_setup_roots_iterator(xcb_get_setup(xc)).data;
 		uint32_t       vid = xs->root_visual;
 		xcb_colormap_t cmap;
@@ -946,7 +946,7 @@ launcher_create(Display *dpy, Window root, Clr **scheme, const char **fonts,
 		vals[4] = cmap;
 
 		launcher->win = xcb_generate_id(xc);
-		xcb_create_window(xc, (uint8_t) DefaultDepth(dpy, scr), launcher->win,
+		xcb_create_window(xc, (uint8_t) xs->root_depth, launcher->win,
 		    (xcb_window_t) root, 0, 0, (uint16_t) launcher->w,
 		    (uint16_t) launcher->h, 1, XCB_WINDOW_CLASS_INPUT_OUTPUT, vid,
 		    mask, vals);
@@ -1005,18 +1005,22 @@ launcher_show(Launcher *launcher, int x, int y)
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);
 
-	int scr   = DefaultScreen(launcher->dpy);
-	int mon_x = 0, mon_y = 0, mon_w = DisplayWidth(launcher->dpy, scr),
-	    mon_h = DisplayHeight(launcher->dpy, scr);
+	{
+		xcb_connection_t *xc2 = XGetXCBConnection(launcher->dpy);
+		xcb_screen_t *xs2 = xcb_setup_roots_iterator(xcb_get_setup(xc2)).data;
+		int           mon_x = 0, mon_y = 0;
+		int           mon_w = (int) xs2->width_in_pixels;
+		int           mon_h = (int) xs2->height_in_pixels;
 
-	if (launcher->x + launcher->w > mon_x + mon_w)
-		launcher->x = mon_x + mon_w - launcher->w;
-	if (launcher->y + launcher->h > mon_y + mon_h)
-		launcher->y = mon_y + mon_h - launcher->h;
-	if (launcher->x < mon_x)
-		launcher->x = mon_x;
-	if (launcher->y < mon_y)
-		launcher->y = mon_y;
+		if (launcher->x + launcher->w > mon_x + mon_w)
+			launcher->x = mon_x + mon_w - launcher->w;
+		if (launcher->y + launcher->h > mon_y + mon_h)
+			launcher->y = mon_y + mon_h - launcher->h;
+		if (launcher->x < mon_x)
+			launcher->x = mon_x;
+		if (launcher->y < mon_y)
+			launcher->y = mon_y;
+	}
 
 	{
 		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
@@ -1430,12 +1434,10 @@ launcher_handle_event(Launcher *launcher, XEvent *ev)
 
 		/* Handle character input */
 		{
-			XComposeStatus status;
-			char           buf[32];
-			int            len;
-			KeySym         ks;
+			char buf[32];
+			int  len;
 
-			len = XLookupString(&ev->xkey, buf, sizeof(buf), &ks, &status);
+			len = xkb_keysym_to_utf8((xkb_keysym_t) key, buf, sizeof(buf));
 			if (len > 0 &&
 			    (isprint((unsigned char) buf[0]) ||
 			        (unsigned char) buf[0] >= 0x80)) {
