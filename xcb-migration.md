@@ -44,6 +44,16 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `b45e0c7` | WM hints (`xcb-icccm`), size hints, keyboard (`xcb-keysyms`), RandR (`xcb-randr`), `compositor.c` `XGetWindowAttributes` |
 | `b7bd833` | `menu.c` and `sni.c`: window/grab/RandR/keysym calls migrated to XCB |
 | `ef9ad51` | `launcher.c`: window/grab/keysym calls migrated to XCB; `XLookupString` kept |
+| `e6d4f72` | `drw.c`/`drw.h`: replace Xft text rendering with PangoCairo; remove `drw_font_getexts`; `config.mk` updated |
+| `be054a8` | `compositor.c`: `XGetWindowProperty` (two sites) → `xcb_get_property`; `XDestroyWindow` → `xcb_destroy_window` |
+| `892ad40` | `XGrabServer`/`XUngrabServer` → `xcb_grab_server`/`xcb_ungrab_server`; remove `xerrordummy` |
+| `6f355e1` | `XGetTransientForHint` → `xcb_icccm_get_wm_transient_for_reply` in `client.c` |
+| `abf186b` | `XQueryTree` → `xcb_query_tree`; `XAddToSaveSet` → `xcb_change_save_set` |
+| `f4e8125` | `systray.c`: `XSetSelectionOwner`/`XGetSelectionOwner` → `xcb_set_selection_owner`/`xcb_get_selection_owner` |
+| `a2de4f0` | `monitor.c`: Xinerama → `xcb_xinerama_*`; `isuniquegeom()` updated; `-lxcb-xinerama` added to `config.mk` |
+| `120a687` | `menu.c`: Xinerama block → `xcb_xinerama_is_active_reply`/`xcb_xinerama_query_screens_reply`; include updated |
+| `5611caa` | `ewmh.c` `setdesktopnames()`: `Xutf8TextListToTextProperty`/`XSetTextProperty` → `xcb_change_property` with NUL-separated UTF-8 blob |
+| `a8ce948` | `client.c` `gettextprop()`: `XGetTextProperty`/`XmbTextPropertyToTextList`/`XFree` → `xcb_icccm_get_text_property` |
 
 ---
 
@@ -118,20 +128,10 @@ These are permanently Xlib and should not be touched:
 | `XRRUpdateConfiguration(&ev)` in event loop | Takes `XEvent*`, must stay Xlib |
 | `XAddToSaveSet` | No XCB equivalent currently used |
 | `XGetTransientForHint` | Intentional keep |
-| `XGetTextProperty` / `XmbTextPropertyToTextList` / `XFreeStringList` in `gettextprop()` | Encoding helpers, keep together |
-| `XSetTextProperty` / `Xutf8TextListToTextProperty` in `ewmh.c setdesktopnames()` | Keep together |
-| `XMaskEvent` in `movemouse`/`mouseresize` grab loops | Xlib owns queue |
-| `XQueryTree` in `iswindowdescendant()` | Intentional keep |
-| `XSetSelectionOwner` / `XGetSelectionOwner` in `systray.c` | Intentional keep |
-| All `compositor.c` Xrender/Xcomposite/Xdamage/XFixes/XShape calls | No XCB wrappers for these linked |
-| `compositor.c` `XSync` / `XFreePixmap` / `XESetWireToEvent` / `XShapeSelectInput` etc | Part of compositor Xrender/Xcomposite pipeline |
-| `compositor.c` `XInternAtom` for `_NET_WM_WINDOW_OPACITY` | Isolated single call, acceptable |
-| `compositor.c` `XCreateSimpleWindow` for CM owner window | Isolated single call, acceptable |
-| `drw.c` — `XCreatePixmap`, `XCreateGC`, `XFillRectangle`, `XCopyArea`, `XSetForeground`, `XCreateFontCursor`, `XFreeCursor` | Drawing primitives; no XCB equivalents — permanent keeps even after Pango migration |
-| `launcher.c` — `XLookupString` + `XComposeStatus` for character input | No XCB equivalent for compose/IM; intentional keep |
-| `xrdb.c` entirely | Standalone resource query, intentional keep |
-| `drw.c` — `XSetLineAttributes`, `XDrawRectangle` | Drawing primitives; permanent keeps (same rationale as other drw.c drawing calls) |
-| `menu.c` / `sni.c` Xinerama (`XineramaIsActive`, `XineramaQueryScreens`) | No XCB Xinerama extension library; `XFree(screens)` is correct per Xinerama spec |
+| `XGetTextProperty` / `XmbTextPropertyToTextList` / `XFreeStringList` in `gettextprop()` | **MIGRATED** — now uses `xcb_icccm_get_text_property` (`a8ce948`) |
+| `XSetTextProperty` / `Xutf8TextListToTextProperty` in `ewmh.c setdesktopnames()` | **MIGRATED** — now uses `xcb_change_property` with NUL-separated blob (`5611caa`) |
+| `XMaskEvent` in `movemouse`/`mouseresize` grab loops | Permanent keep — `handler[]` dispatch requires `XEvent*`; XCB event conversion not practical |
+| `menu.c` / `sni.c` Xinerama (`XineramaIsActive`, `XineramaQueryScreens`) | **MIGRATED** — `menu.c` now uses `xcb_xinerama_*` (`120a687`); `monitor.c` also migrated (`a2de4f0`) |
 | `XrmInitialize()` in `awm.c` | Required to initialise Xresource subsystem for `xrdb.c` intentional keep; no XCB equivalent |
 | `events.c:127` `XSelectInput` (SubstructureRedirectMask on root at WM-already-running check) | Part of a deliberate detect-and-die sequence; acceptable |
 | `events.c:127-130` `XSync` pair surrounding the above | Flush for the error probe |
@@ -144,68 +144,27 @@ These are permanently Xlib and should not be touched:
 
 ## Remaining migration candidates
 
-Everything listed here is an actual remaining Xlib call that *could* be migrated.
-Work through this list from top to bottom.
+All originally-planned migration candidates have been completed or explicitly documented
+as permanent keeps.  The following low-value items remain; they are acceptable to leave:
 
-### 1. `compositor.c` — `XGetWindowProperty` (two sites)
-
-**`src/compositor.c:1272`** — inside `comp_get_root_background()`:
-```c
-if (XGetWindowProperty(dpy, root, atoms[i], 0, 1, False, XA_PIXMAP,
-        &type, &format, &nitems, &after, (unsigned char **)&prop_pixmap) == Success
-    && prop_pixmap) {
-    ...
-    XFree(prop);
-}
-```
-Reads a `Pixmap` value from `_XROOTPMAP_ID` / `ESETROOT_PMAP_ID`.  Migrate to
-`xcb_get_property` + `xcb_get_property_reply`; the `Pixmap` value is a `uint32_t` in the
-reply data.
-
-**`src/compositor.c:2136`** — inside the `PropertyNotify` handler:
-```c
-if (XGetWindowProperty(dpy, pev->window,
-        atoms[i], 0, 1, False, XA_PIXMAP, ...) == Success && prop_pixmap) {
-```
-Same pattern as above.  Both sites can share a helper or be migrated identically.
-
-**Migration pattern:**
-```c
-xcb_get_property_cookie_t  ck = xcb_get_property(xc, 0, root,
-    (xcb_atom_t) atoms[i], XCB_ATOM_PIXMAP, 0, 1);
-xcb_get_property_reply_t  *r  = xcb_get_property_reply(xc, ck, NULL);
-if (r && xcb_get_property_value_length(r) >= (int) sizeof(xcb_pixmap_t)) {
-    xcb_pixmap_t pix = *(xcb_pixmap_t *) xcb_get_property_value(r);
-    ...
-}
-free(r);
-```
-
-### 2. `compositor.c` — `XDestroyWindow` (two sites)
-
-**`src/compositor.c:1017`**:
-```c
-XDestroyWindow(dpy, comp.cm_owner_win);
-```
-**`src/compositor.c:2087`** — inside `XDestroyWindowEvent *dev` handler:
-```c
-XDestroyWindowEvent *dev = (XDestroyWindowEvent *) ev;
-```
-The second one is casting an `XEvent*` for field access in the Xlib event loop — it stays
-Xlib.  The first (`XDestroyWindow`) can become:
-```c
-xcb_destroy_window(XGetXCBConnection(dpy), comp.cm_owner_win);
-```
-
-### 3. `events.c:127` — `XSelectInput` at WM-already-running probe
+### 1. `events.c:127` — `XSelectInput` at WM-already-running probe
 
 ```c
 XSelectInput(dpy, DefaultRootWindow(dpy), SubstructureRedirectMask);
 XSync(dpy, False);
 ```
 This is intentionally a probe — if another WM is running the `XSync` triggers the error
-handler.  Migrating to XCB is possible but low-value since this is a one-shot startup
-path.  **Lowest priority; acceptable to leave.**
+handler.  This is a one-shot startup path with no runtime cost.  **Permanent acceptable
+keep.**
+
+### 2. `client.c` — `XMaskEvent` in `movemouse` / `resizemouse`
+
+```c
+XMaskEvent(dpy, MOUSEMASK | ExposureMask | SubstructureRedirectMask, &ev);
+```
+The event type dispatcher `handler[ev.type](&ev)` requires an `XEvent*`.  Converting XCB
+events back to `XEvent` structs is not practical without a full event translation layer.
+**Permanent keep.**
 
 ---
 
