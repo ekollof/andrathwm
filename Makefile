@@ -30,9 +30,9 @@ config.h:
 awm: $(OBJ)
 	${CC} -o $@ ${OBJ} ${LDFLAGS}
 
-# Build xidle
+# Build xidle (XCB screensaver — no Xlib dependency)
 xidle: $(SRCDIR)/xidle.c
-	${CC} -o $@ $< -lX11 ${XSSLIBS}
+	${CC} -std=c11 -o $@ $< -lxcb -lxcb-screensaver
 
 compile_flags.txt: config.mk
 	printf '%s\n' $(INCS) $(CPPFLAGS) > $@
