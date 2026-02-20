@@ -59,13 +59,14 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `c42cf25` | Replace `XVisualIDFromVisual(DefaultVisual(dpy, screen))` with XCB screen setup walk at all sites: `xcb_screen_root_visual()` static inline helper added to `awm.h`; used in `compositor.c` (4×), `menu.c`, `launcher.c`; `drw.c` inlines the walk directly (no `awm.h` include) |
 | `9cf01d0` | `xidle`: replace all Xlib/XScreenSaver with `xcb-screensaver` — `xcb_connect`, `xcb_get_extension_data`, `xcb_screensaver_query_info`, `free`; `Makefile` xidle rule updated to `-lxcb -lxcb-screensaver` |
 | `3587a02` | `xrdb.c`: replace `XOpenDisplay`/`XResourceManagerString`/`XrmGetStringDatabase`/`XCloseDisplay` with `xcb_connect`/`xcb_intern_atom`/`xcb_get_property` on `RESOURCE_MANAGER` root property; `xrdb_lookup()` static helper for suffix key matching; `awm.c`: remove `XrmInitialize()`; `awm.h`: remove `<X11/Xresource.h>` and `XRDB_LOAD_COLOR` macro; `events.c`: `checkotherwm()` probe replaced with `xcb_change_window_attributes_checked`+`xcb_request_check`; `xerrorstart()` removed |
+| `ebfa6b6` | Phase 1 batch: `ConnectionNumber` → `xcb_get_file_descriptor(XGetXCBConnection())` in `spawn.c`, `xsource.c`, `launcher.c`; `XSupportsLocale` removed from `awm.c`; `XRRUpdateConfiguration` removed, `RRScreenChangeNotify` → `XCB_RANDR_SCREEN_CHANGE_NOTIFY`; `DefaultScreen`/`DisplayWidth`/`DisplayHeight`/`RootWindow` → XCB setup roots iterator in `awm.c`; `awm.h`: `Xrandr.h`/`Xinerama.h` removed; `launcher.c`: `DefaultDepth` → `xs->root_depth`, `DefaultScreen`/`DisplayWidth`/`DisplayHeight` → XCB screen walk, `XLookupString` → `xkb_keysym_to_utf8`; `drw.c`: `XParseColor`/`XAllocColor`/`DefaultColormap` → sscanf hex parser + `xcb_alloc_color`; `compositor.c`: all 15 `xerror_push_ignore`/`XSync`/`xerror_pop` triplets replaced with `_checked`+`xcb_request_check` or `xcb_flush`; push/pop infrastructure deleted; `config.mk`: add `-lxkbcommon` |
 
 ---
 
 ## New libraries added (`config.mk`)
 
 ```makefile
-XCBLIBS = $(shell pkg-config --libs xcb-icccm xcb-randr xcb-keysyms)
+XCBLIBS = $(shell pkg-config --libs xcb-icccm xcb-randr xcb-keysyms) -lxkbcommon
 XCBINC  = $(shell pkg-config --cflags xcb-icccm xcb-randr xcb-keysyms)
 ```
 
@@ -133,52 +134,57 @@ These are permanently Xlib and should not be touched:
 
 | Location | Reason |
 |----------|--------|
-| `XPending` / `XNextEvent` | Xlib owns the event queue |
-| `XGrabServer` / `XUngrabServer` | No XCB equivalent |
 | `XSetErrorHandler` / `XSetIOErrorHandler` / `xerror*` | No XCB equivalent |
-| `XRRUpdateConfiguration(&ev)` in event loop | Takes `XEvent*`, must stay Xlib |
-| `XAddToSaveSet` | No XCB equivalent currently used |
-| `XGetTransientForHint` | Intentional keep |
-| `XGetTextProperty` / `XmbTextPropertyToTextList` / `XFreeStringList` in `gettextprop()` | **MIGRATED** — now uses `xcb_icccm_get_text_property` (`a8ce948`) |
-| `XSetTextProperty` / `Xutf8TextListToTextProperty` in `ewmh.c setdesktopnames()` | **MIGRATED** — now uses `xcb_change_property` with NUL-separated blob (`5611caa`) |
-| `XMaskEvent` in `movemouse`/`mouseresize` grab loops | Permanent keep — `handler[]` dispatch requires `XEvent*`; XCB event conversion not practical |
-| `menu.c` / `sni.c` Xinerama (`XineramaIsActive`, `XineramaQueryScreens`) | **MIGRATED** — `menu.c` now uses `xcb_xinerama_*` (`120a687`); `monitor.c` also migrated (`a2de4f0`) |
-| `XrmInitialize()` in `awm.c` | **MIGRATED** — removed in `3587a02`; `xrdb.c` now uses `xcb_get_property` directly |
-| `events.c:127` `XSelectInput` (SubstructureRedirectMask on root at WM-already-running check) | **MIGRATED** — replaced with `xcb_change_window_attributes_checked`+`xcb_request_check` in `3587a02` |
-| `events.c:127-130` `XSync` pair surrounding the above | **MIGRATED** — removed in `3587a02` (XCB checked request is synchronous) |
-| `client.c:480` `XFree(name.value)` | Freeing result of `XGetTextProperty` (intentional keep) |
-| `events.c:419` / `compositor.c:913` `XFree(children)` | Freeing result of `XQueryTree` (intentional keep) |
-| `XPutBackEvent` (with `/* NOLINT */` cast) | Requeueing XCB events into Xlib queue for `XNextEvent` to pick up |
-| `XGetErrorText` in `xerror` handler | Error reporting only |
+| `XESetWireToEvent` in `compositor.c` | Mesa DRI3 hook — must stay Xlib |
+| `XGetEventData` / `XFreeEventData` in `compositor.c` | Tied to event loop — Phase 2 |
+| `XCheckTypedEvent` in `compositor.c:comp_repaint_idle` | Tied to event loop — Phase 2 |
+| `XOpenDisplay` / `XCloseDisplay` for `comp.gl_dpy` | EGL display — permanent keep |
+| `XDefaultScreen(dpy)` in `awm.c` setup | Used once to index XCB screen iterator; stays until `XOpenDisplay` is removed |
+| `DefaultScreen(dpy)` in `launcher.c:~861` | Passed to `drw_create(dpy, scr, …)` — Phase 3 |
+| `XMaskEvent` in `client.c movemouse`/`resizemouse` | Phase 2: event loop rewrite required first |
+| `XPutBackEvent` in `monitor.c` | Phase 2: event loop rewrite required first |
+| `XPending` / `XNextEvent` in `awm.c x_dispatch_cb` | Phase 2 target |
+| `XPending` ×2 in `xsource.c` | Phase 2 target |
+| `XSetErrorHandler` / `XGetErrorText` in `events.c` | Permanent keep |
 
 ---
 
 ## Remaining migration candidates
 
-All non-compositor migration candidates are complete.  `compositor.c` is also fully
-migrated as of `f349de2` — the only remaining Xlib there is the permanent-keep list.
-The only remaining Xlib in core WM files is the permanent-keep list above.
+**Phase 1 (easy wins) is complete as of `ebfa6b6`.**
+
+All non-compositor, non-event-loop, non-drawing migration candidates are done.
+
+### Phase 2 — Event loop rewrite (not yet started)
+
+The remaining Xlib in the event path:
+
+| File | Site | What |
+|------|------|------|
+| `src/awm.c` | `x_dispatch_cb()` | `XPending(dpy)` + `XNextEvent(dpy, &ev)` → `xcb_poll_for_event` |
+| `src/xsource.c` | two sites | `XPending(xs->dpy)` → `xcb_poll_for_queued_event` / fd check |
+| `src/client.c` | `movemouse`, `resizemouse` | `XMaskEvent` → XCB polling loop |
+| `src/monitor.c` | `restack` | `XPutBackEvent` → XCB equivalent |
+| `src/compositor.c` | `comp_repaint_idle` | `XCheckTypedEvent` → `xcb_poll_for_event` with type check |
+| `src/compositor.c` | all event handlers | `XGetEventData` / `XFreeEventData` — tied to event loop |
+
+Phase 2 also requires rewriting all 15 `handler[]` callbacks from `void(*)(XEvent*)` to
+`void(*)(xcb_generic_event_t*)` across `events.c`, `client.c`, `monitor.c`,
+`compositor.c`.
+
+### Phase 3 — Drawing primitives (lower priority)
+
+`src/drw.c` drawing calls with no XCB equivalent — out of scope for this branch unless
+the Pango migration (already designed below) is implemented first.
 
 ### Compositor permanent Xlib keeps (`compositor.c`)
 
 | Site | Why kept |
 |------|----------|
 | `XESetWireToEvent` | Mesa DRI3 hook — must stay Xlib |
-| `XGetEventData` / `XFreeEventData` | Event loop not yet migrated |
-| `XCheckTypedEvent` in `comp_repaint_idle` | Event loop not yet migrated |
-| `XSetErrorHandler` / `XSync` in `xerror_push_ignore` / `xerror_pop` | Tied to Xlib error handler — permanent keep |
+| `XGetEventData` / `XFreeEventData` | Event loop not yet migrated (Phase 2) |
+| `XCheckTypedEvent` in `comp_repaint_idle` | Event loop not yet migrated (Phase 2) |
 | `XOpenDisplay` / `XCloseDisplay` for `comp.gl_dpy` | EGL display — permanent keep |
-
-Two items from the general keep list are also documented below for clarity:
-
-### `client.c` — `XMaskEvent` in `movemouse` / `resizemouse`
-
-```c
-XMaskEvent(dpy, MOUSEMASK | ExposureMask | SubstructureRedirectMask, &ev);
-```
-The `handler[ev.type](&ev)` dispatcher requires `XEvent*`.  Converting XCB events back
-to `XEvent` structs is not practical without a full translation layer.
-**Permanent keep.**
 
 ---
 
@@ -550,11 +556,13 @@ Xft types directly (the `Clr` typedef will be the new struct, not `XftColor`).
 
 The migration is complete when:
 
-1. The three XCB remaining candidates above are resolved (or explicitly documented as
-   intentional keeps).
-2. The Pango migration is implemented: `drw.c` / `drw.h` rewritten, `config.mk` updated,
-   `config.h` + `config.def.h` font strings updated, `systray.c` `Clr` field accesses
-   updated, `awm.h` Xft include removed, `drw_font_getexts` deleted from `drw.c`/`drw.h`.
+1. **Phase 2** (event loop rewrite) is implemented: `XPending`/`XNextEvent` in `awm.c`
+   and `xsource.c` replaced with XCB polling; all 15 `handler[]` callbacks rewritten to
+   accept `xcb_generic_event_t*`; `XMaskEvent` in `client.c` and `XPutBackEvent` in
+   `monitor.c` replaced; `XCheckTypedEvent` in `compositor.c` replaced.
+2. **Phase 3 / Pango migration** is implemented: `drw.c` / `drw.h` rewritten,
+   `config.mk` updated, `config.h` + `config.def.h` font strings updated, `systray.c`
+   `Clr` field accesses updated, `awm.h` Xft include removed, `drw_font_getexts` deleted.
 3. `make clean && make` produces zero warnings and zero errors.
 4. The branch is rebased cleanly onto `main` (or merged) and pushed.
 
@@ -563,6 +571,6 @@ At that point:
 - `<X11/Xft/Xft.h>` will be gone from the build.
 - Text rendering will go through PangoCairo onto the existing `cairo_xcb_surface`.
 - The only remaining Xlib in `drw.c` will be `XCreatePixmap`, `XCreateGC`,
-  `XFillRectangle`, `XCopyArea`, `XSetForeground`, `XParseColor`, `XAllocColor`,
-  `XCreateFontCursor`, `XFreeCursor` — all drawing primitives with no XCB equivalents
-  that are out of scope for this branch.
+  `XSetLineAttributes`, `XFreePixmap`, `XFreeGC`, `XCopyArea`, `XSetForeground`,
+  `XFillRectangle`, `XDrawRectangle`, `XCreateFontCursor`, `XFreeCursor` — drawing
+  primitives without practical XCB equivalents, out of scope for this branch.
