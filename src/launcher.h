@@ -8,7 +8,6 @@
 #define LAUNCHER_H
 
 #include "drw.h"
-#include <X11/Xlib.h>
 #include <xcb/xcb.h>
 #include <cairo/cairo.h>
 #include <stddef.h>
@@ -27,10 +26,10 @@ typedef struct LauncherItem {
 } LauncherItem;
 
 typedef struct {
-	Display *dpy;
-	Window   win;
-	Drw     *drw;
-	Clr    **scheme;
+	xcb_connection_t *xc;
+	Window            win;
+	Drw              *drw;
+	Clr             **scheme;
 
 	char input[256]; /* User input text */
 	int  input_len;  /* Current input length */
@@ -52,7 +51,7 @@ typedef struct {
 	const char  *terminal; /* Terminal emulator binary for Terminal=true */
 } Launcher;
 
-Launcher *launcher_create(Display *dpy, Window root, Clr **scheme,
+Launcher *launcher_create(xcb_connection_t *xc, Window root, Clr **scheme,
     const char **fonts, size_t fontcount, const char *term);
 void      launcher_free(Launcher *launcher);
 void      launcher_show(Launcher *launcher, int x, int y);

@@ -82,7 +82,7 @@ Time               last_event_time = CurrentTime;
 static GMainLoop  *main_loop       = NULL;
 Cur               *cursor[CurLast];
 Clr              **scheme;
-Display           *dpy;
+xcb_connection_t  *xc;
 Drw               *drw;
 Monitor           *mons, *selmon;
 Window             root, wmcheckwin;
@@ -129,14 +129,14 @@ cleanup(void)
 		while (m->cl->stack)
 			unmanage(m->cl->stack, 0);
 	{
-		xcb_connection_t *xc = XGetXCBConnection(dpy);
+
 		xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
 	}
 	while (mons)
 		cleanupmon(mons);
 
 	if (showsystray) {
-		xcb_connection_t *xc = XGetXCBConnection(dpy);
+
 		xcb_unmap_window(xc, systray->win);
 		xcb_destroy_window(xc, systray->win);
 		free(systray);
@@ -152,15 +152,14 @@ cleanup(void)
 	for (i = 0; i < LENGTH(colors); i++)
 		free(scheme[i]);
 	free(scheme);
-	xcb_destroy_window(XGetXCBConnection(dpy), wmcheckwin);
+	xcb_destroy_window(xc, wmcheckwin);
 	drw_free(drw);
 	xcb_key_symbols_free(keysyms);
 	keysyms = NULL;
-	xflush(dpy);
-	xcb_set_input_focus(XGetXCBConnection(dpy), XCB_INPUT_FOCUS_POINTER_ROOT,
+	xflush();
+	xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT,
 	    XCB_INPUT_FOCUS_POINTER_ROOT, XCB_CURRENT_TIME);
-	xcb_delete_property(
-	    XGetXCBConnection(dpy), root, netatom[NetActiveWindow]);
+	xcb_delete_property(xc, root, netatom[NetActiveWindow]);
 	if (xsource_id > 0) {
 		g_source_remove(xsource_id);
 		xsource_id = 0;
@@ -213,7 +212,6 @@ launchermenu(const Arg *arg)
 static gboolean
 x_dispatch_cb(gpointer user_data)
 {
-	xcb_connection_t    *xc = XGetXCBConnection(dpy);
 	xcb_generic_event_t *ev;
 	(void) user_data;
 
@@ -368,12 +366,12 @@ run(void)
 {
 	GMainContext *ctx;
 
-	xflush(dpy);
+	xflush();
 
 	ctx = g_main_context_default();
 
 	/* X11 source — wakes the loop whenever X events are pending */
-	xsource_id = xsource_attach(dpy, ctx, x_dispatch_cb, NULL);
+	xsource_id = xsource_attach(xc, ctx, x_dispatch_cb, NULL);
 
 #ifdef STATUSNOTIFIER
 	/* D-Bus source — use helper so reconnect can re-attach cleanly */
@@ -395,7 +393,6 @@ scan(void)
 {
 	unsigned int i;
 
-	xcb_connection_t       *xc = XGetXCBConnection(dpy);
 	xcb_query_tree_cookie_t ck = xcb_query_tree(xc, root);
 	xcb_query_tree_reply_t *tr = xcb_query_tree_reply(xc, ck, NULL);
 	if (!tr)
@@ -531,7 +528,6 @@ intern_atoms(void)
 	};
 	static const int N = (int) (sizeof tbl / sizeof tbl[0]);
 
-	xcb_connection_t         *xcb = XGetXCBConnection(dpy);
 	xcb_intern_atom_cookie_t *cookies;
 	xcb_intern_atom_reply_t  *reply;
 	int                       i;
@@ -541,12 +537,12 @@ intern_atoms(void)
 	/* Fire all requests — no round-trip yet. */
 	for (i = 0; i < N; i++) {
 		uint16_t nlen = (uint16_t) strlen(tbl[i].name);
-		cookies[i]    = xcb_intern_atom(xcb, 0, nlen, tbl[i].name);
+		cookies[i]    = xcb_intern_atom(xc, 0, nlen, tbl[i].name);
 	}
 
 	/* Collect replies — one round-trip covers all. */
 	for (i = 0; i < N; i++) {
-		reply = xcb_intern_atom_reply(xcb, cookies[i], NULL);
+		reply = xcb_intern_atom_reply(xc, cookies[i], NULL);
 		if (reply) {
 			*tbl[i].dest = reply->atom;
 			free(reply);
@@ -572,16 +568,11 @@ setup(void)
 	while (waitpid(-1, NULL, WNOHANG) > 0)
 		;
 
-	/* init screen — use XCB setup data instead of Xlib macros.
-	 * XDefaultScreen(dpy) is the one remaining Xlib call that returns the
-	 * default screen index; we use it only once here to index the XCB
-	 * screen list, then drop all other Xlib display macros. */
+	/* init screen — screen number comes from xcb_connect() second arg */
 	{
-		xcb_connection_t     *xc = XGetXCBConnection(dpy);
 		xcb_screen_iterator_t sit =
 		    xcb_setup_roots_iterator(xcb_get_setup(xc));
 		int i;
-		screen = XDefaultScreen(dpy);
 		for (i = 0; i < screen; i++)
 			xcb_screen_next(&sit);
 		sw   = (int) sit.data->width_in_pixels;
@@ -591,9 +582,8 @@ setup(void)
 	if (!(cl = (Clientlist *) calloc(1, sizeof(Clientlist))))
 		die("fatal: could not malloc() %u bytes\n", sizeof(Clientlist));
 	/* drw uses a dedicated bare xcb_connection_t (opened inside drw_create)
-	 * for all cairo rendering, so Xlib's sequence counter on dpy is never
-	 * disturbed by cairo's raw XCB traffic. */
-	drw = drw_create(dpy, screen, root, sw, sh);
+	 * for all cairo rendering, keeping its XCB traffic off xc. */
+	drw = drw_create(xc, screen, root, sw, sh);
 	if (!drw_fontset_create(drw, fonts, LENGTH(fonts)))
 		die("no fonts could be loaded.");
 	lrpad = drw->fonts->h;
@@ -602,7 +592,6 @@ setup(void)
 	/* Enable RandR screen change notifications */
 #ifdef XRANDR
 	{
-		xcb_connection_t                  *xc = XGetXCBConnection(dpy);
 		const xcb_query_extension_reply_t *ext =
 		    xcb_get_extension_data(xc, &xcb_randr_id);
 		if (ext && ext->present) {
@@ -616,7 +605,7 @@ setup(void)
 	/* init atoms — all interned in a single async XCB batch */
 	intern_atoms();
 	/* init key symbols table */
-	keysyms = xcb_key_symbols_alloc(XGetXCBConnection(dpy));
+	keysyms = xcb_key_symbols_alloc(xc);
 	/* init cursors */
 	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
 	cursor[CurResize] = drw_cur_create(drw, XC_sizing);
@@ -633,21 +622,19 @@ setup(void)
 	updatestatus();
 	/* supporting window for NetWMCheck */
 	{
-		xcb_connection_t *xcb = XGetXCBConnection(dpy);
-		wmcheckwin            = xcb_generate_id(xcb);
-		xcb_create_window(xcb, XCB_COPY_FROM_PARENT, wmcheckwin, root, 0, 0, 1,
+		wmcheckwin = xcb_generate_id(xc);
+		xcb_create_window(xc, XCB_COPY_FROM_PARENT, wmcheckwin, root, 0, 0, 1,
 		    1, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, 0,
 		    NULL);
 	}
 	{
-		xcb_connection_t *xcb   = XGetXCBConnection(dpy);
-		uint32_t          win32 = (uint32_t) wmcheckwin;
+		uint32_t win32 = (uint32_t) wmcheckwin;
 
-		xcb_change_property(xcb, XCB_PROP_MODE_REPLACE, wmcheckwin,
+		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, wmcheckwin,
 		    netatom[NetWMCheck], XCB_ATOM_WINDOW, 32, 1, &win32);
-		xcb_change_property(xcb, XCB_PROP_MODE_REPLACE, wmcheckwin,
+		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, wmcheckwin,
 		    netatom[NetWMName], utf8string_atom, 8, 3, "awm");
-		xcb_change_property(xcb, XCB_PROP_MODE_REPLACE, root,
+		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
 		    netatom[NetWMCheck], XCB_ATOM_WINDOW, 32, 1, &win32);
 
 		/* EWMH support per view — netatom[] is Atom=unsigned long, need
@@ -657,11 +644,11 @@ setup(void)
 			int        k;
 			for (k = 0; k < NetLast; k++)
 				supported[k] = (xcb_atom_t) netatom[k];
-			xcb_change_property(xcb, XCB_PROP_MODE_REPLACE, root,
+			xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
 			    netatom[NetSupported], XCB_ATOM_ATOM, 32, NetLast, supported);
 		}
 
-		xcb_delete_property(xcb, root, netatom[NetClientList]);
+		xcb_delete_property(xc, root, netatom[NetClientList]);
 	}
 	setnumdesktops();
 	setcurrentdesktop();
@@ -675,7 +662,7 @@ setup(void)
 	}
 	/* select events */
 	{
-		xcb_connection_t *xc = XGetXCBConnection(dpy);
+
 		uint32_t evmask = SubstructureRedirectMask | SubstructureNotifyMask |
 		    ButtonPressMask | PointerMotionMask | EnterWindowMask |
 		    LeaveWindowMask | StructureNotifyMask | PropertyChangeMask;
@@ -689,31 +676,17 @@ setup(void)
 	icon_init();
 #ifdef STATUSNOTIFIER
 	/* Initialize StatusNotifier support */
-	if (!sni_init(dpy, drw->cairo_xcb, drw->xcb_visual, root, drw, scheme,
+	if (!sni_init(xc, drw->cairo_xcb, drw->xcb_visual, root, drw, scheme,
 	        sniconsize))
 		awm_warn("Failed to initialize StatusNotifier support");
 #endif
 	/* Initialize launcher */
 	launcher =
-	    launcher_create(dpy, root, scheme, fonts, LENGTH(fonts), termcmd[0]);
+	    launcher_create(xc, root, scheme, fonts, LENGTH(fonts), termcmd[0]);
 #ifdef COMPOSITOR
 	if (compositor_init(g_main_context_default()) < 0)
 		awm_warn("compositor: init failed, running without compositing");
 #endif
-}
-
-static int
-xioerror(Display *d)
-{
-	(void) d;
-	/* _XIOError: the X server closed the connection (or the socket died).
-	 * This fires when the server forcibly drops our connection, e.g. due to
-	 * a fatal GLX protocol error.  Log it before libc calls exit(). */
-	awm_error("X IO error: X server connection lost (fatal GLX/X protocol "
-	          "error likely); awm is exiting");
-	/* Xlib requires this handler to not return — call exit directly. */
-	exit(1);
-	return 0; /* unreachable, silences -Werror=return-type */
 }
 
 int
@@ -728,9 +701,9 @@ main(int argc, char *argv[])
 		die("usage: awm [-v]");
 	if (!setlocale(LC_CTYPE, ""))
 		fputs("warning: no locale support\n", stderr);
-	if (!(dpy = XOpenDisplay(NULL)))
-		die("awm: cannot open display");
-	XSetIOErrorHandler(xioerror);
+	xc = xcb_connect(NULL, &screen);
+	if (!xc || xcb_connection_has_error(xc))
+		die("awm: cannot open X display");
 	checkotherwm();
 	loadxrdb();
 	setup();
@@ -771,6 +744,6 @@ main(int argc, char *argv[])
 	}
 	cleanup();
 	log_cleanup();
-	XCloseDisplay(dpy);
+	xcb_disconnect(xc);
 	return EXIT_SUCCESS;
 }

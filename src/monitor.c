@@ -42,7 +42,6 @@ arrange(Monitor *m)
 		 * layout change.  Non-EnterNotify events are dispatched
 		 * through the normal handler. */
 		{
-			xcb_connection_t    *xc = XGetXCBConnection(dpy);
 			xcb_generic_event_t *xe;
 			xcb_flush(xc);
 			while ((xe = xcb_poll_for_event(xc))) {
@@ -76,7 +75,7 @@ cleanupmon(Monitor *mon)
 			;
 		m->next = mon->next;
 	}
-	xcb_connection_t *xc = XGetXCBConnection(dpy);
+
 	xcb_unmap_window(xc, mon->barwin);
 	xcb_destroy_window(xc, mon->barwin);
 	free(mon->pertag->nmasters);
@@ -340,8 +339,8 @@ monocle(Monitor *m)
 			compositor_set_hidden(c, 1);
 			uint32_t xy[2] = { (uint32_t) (int32_t) (WIDTH(c) * -2),
 				(uint32_t) (int32_t) c->y };
-			xcb_configure_window(XGetXCBConnection(dpy), c->win,
-			    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, xy);
+			xcb_configure_window(
+			    xc, c->win, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, xy);
 		}
 }
 
@@ -367,7 +366,7 @@ resizebarwin(Monitor *m)
 		w -= getsystraywidth();
 	uint32_t xywh[4] = { (uint32_t) (int32_t) m->wx,
 		(uint32_t) (int32_t) m->by, w, (uint32_t) bh };
-	xcb_configure_window(XGetXCBConnection(dpy), m->barwin,
+	xcb_configure_window(xc, m->barwin,
 	    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_WIDTH |
 	        XCB_CONFIG_WINDOW_HEIGHT,
 	    xywh);
@@ -376,8 +375,7 @@ resizebarwin(Monitor *m)
 void
 restack(Monitor *m)
 {
-	Client           *c;
-	xcb_connection_t *xc = XGetXCBConnection(dpy);
+	Client *c;
 
 	drawbar(m);
 	if (!m->sel)
@@ -500,8 +498,7 @@ togglebar(const Arg *arg)
 				newy = selmon->mh - bh;
 		}
 		y = (uint32_t) newy;
-		xcb_configure_window(
-		    XGetXCBConnection(dpy), systray->win, XCB_CONFIG_WINDOW_Y, &y);
+		xcb_configure_window(xc, systray->win, XCB_CONFIG_WINDOW_Y, &y);
 	}
 	updateworkarea(selmon);
 	arrange(selmon);
@@ -510,10 +507,9 @@ togglebar(const Arg *arg)
 void
 updatebars(void)
 {
-	unsigned int      w;
-	Monitor          *m;
-	xcb_connection_t *xc    = XGetXCBConnection(dpy);
-	int               depth = DefaultDepth(dpy, screen);
+	unsigned int w;
+	Monitor     *m;
+	int          depth = xcb_screen_root_depth(xc, screen);
 
 	/* WM_CLASS value: "awm\0awm" (instance NUL class) */
 	static const char wm_class[] = "awm\0awm";
@@ -599,7 +595,6 @@ updategeom(void)
 
 #ifdef XRANDR
 	{
-		xcb_connection_t                  *xc = XGetXCBConnection(dpy);
 		const xcb_query_extension_reply_t *ext =
 		    xcb_get_extension_data(xc, &xcb_randr_id);
 		if (ext && ext->present) {
@@ -702,7 +697,6 @@ xinerama_fallback:
 #endif /* XRANDR */
 #ifdef XINERAMA
 {
-	xcb_connection_t               *xc = XGetXCBConnection(dpy);
 	xcb_xinerama_is_active_reply_t *ia =
 	    xcb_xinerama_is_active_reply(xc, xcb_xinerama_is_active(xc), NULL);
 	int xin_active = ia && ia->state;

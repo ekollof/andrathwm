@@ -105,8 +105,8 @@ spawn(const Arg *arg)
 	if (arg->v == dmenucmd)
 		dmenumon[0] = '0' + selmon->num;
 	if (fork() == 0) {
-		if (dpy)
-			close(xcb_get_file_descriptor(XGetXCBConnection(dpy)));
+		if (xc)
+			close(xcb_get_file_descriptor(xc));
 		setsid();
 
 		sigemptyset(&sa.sa_mask);
@@ -123,8 +123,8 @@ void
 spawnscratch(const Arg *arg)
 {
 	if (fork() == 0) {
-		if (dpy)
-			close(xcb_get_file_descriptor(XGetXCBConnection(dpy)));
+		if (xc)
+			close(xcb_get_file_descriptor(xc));
 		setsid();
 		execvp(((char **) arg->v)[1], ((char **) arg->v) + 1);
 		awm_error(

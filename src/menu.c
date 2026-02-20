@@ -3,9 +3,6 @@
  * Reusable menu system for awm
  */
 
-#include <X11/Xlib.h>
-#include <X11/Xlib-xcb.h>
-#include <X11/Xutil.h>
 #include <X11/keysym.h>
 #ifdef XINERAMA
 #include <xcb/xinerama.h>
@@ -195,22 +192,27 @@ menu_render(Menu *menu)
 
 /* Create menu */
 Menu *
-menu_create(Display *dpy, Window root, Drw *drw, Clr **scheme)
+menu_create(xcb_connection_t *xc, Window root, Drw *drw, Clr **scheme)
 {
-	Menu             *menu;
-	xcb_connection_t *xc = XGetXCBConnection(dpy);
-	uint32_t          mask;
-	uint32_t          vals[5];
-	xcb_colormap_t    cmap =
-	    (xcb_colormap_t) DefaultColormap(dpy, DefaultScreen(dpy));
-	xcb_visualid_t vid   = xcb_screen_root_visual(xc, DefaultScreen(dpy));
-	int            depth = DefaultDepth(dpy, DefaultScreen(dpy));
+	Menu          *menu;
+	uint32_t       mask;
+	uint32_t       vals[5];
+	xcb_colormap_t cmap;
+	xcb_visualid_t vid   = xcb_screen_root_visual(xc, screen);
+	int            depth = xcb_screen_root_depth(xc, screen);
+
+	/* Create a colormap for the root visual */
+	{
+		xcb_screen_t *xs = xcb_setup_roots_iterator(xcb_get_setup(xc)).data;
+		cmap             = xcb_generate_id(xc);
+		xcb_create_colormap(xc, XCB_COLORMAP_ALLOC_NONE, cmap, xs->root, vid);
+	}
 
 	menu = calloc(1, sizeof(Menu));
 	if (!menu)
 		return NULL;
 
-	menu->dpy                 = dpy;
+	menu->xc                  = xc;
 	menu->drw                 = drw;
 	menu->scheme              = scheme;
 	menu->items               = NULL;
@@ -257,7 +259,7 @@ menu_free(Menu *menu)
 		menu_items_free(menu->items);
 
 	if (menu->win)
-		xcb_destroy_window(XGetXCBConnection(menu->dpy), menu->win);
+		xcb_destroy_window(menu->xc, menu->win);
 
 	free(menu);
 }
@@ -279,18 +281,24 @@ menu_set_items(Menu *menu, MenuItem *items)
 
 /* Get monitor geometry containing point (x, y) */
 static void
-menu_get_monitor_geometry(
-    Display *dpy, int x, int y, int *mon_x, int *mon_y, int *mon_w, int *mon_h)
+menu_get_monitor_geometry(xcb_connection_t *xc, int x, int y, int *mon_x,
+    int *mon_y, int *mon_w, int *mon_h)
 {
-	/* Default to full display */
-	*mon_x = 0;
-	*mon_y = 0;
-	*mon_w = DisplayWidth(dpy, DefaultScreen(dpy));
-	*mon_h = DisplayHeight(dpy, DefaultScreen(dpy));
+	/* Default to full display dimensions from XCB screen data */
+	{
+		xcb_screen_iterator_t sit =
+		    xcb_setup_roots_iterator(xcb_get_setup(xc));
+		int s = screen;
+		for (; s > 0; s--)
+			xcb_screen_next(&sit);
+		*mon_x = 0;
+		*mon_y = 0;
+		*mon_w = (int) sit.data->width_in_pixels;
+		*mon_h = (int) sit.data->height_in_pixels;
+	}
 
 #ifdef XRANDR
 	{
-		xcb_connection_t                  *xc = XGetXCBConnection(dpy);
 		const xcb_query_extension_reply_t *ext =
 		    xcb_get_extension_data(xc, &xcb_randr_id);
 
@@ -299,9 +307,9 @@ menu_get_monitor_geometry(
 			xcb_randr_get_screen_resources_reply_t *sr;
 			xcb_randr_crtc_t                       *crtcs;
 			int                                     ncrtc, i, found = 0;
-			xcb_window_t root = (xcb_window_t) DefaultRootWindow(dpy);
+			xcb_window_t randr_root = (xcb_window_t) root;
 
-			src = xcb_randr_get_screen_resources(xc, root);
+			src = xcb_randr_get_screen_resources(xc, randr_root);
 			sr  = xcb_randr_get_screen_resources_reply(xc, src, NULL);
 			if (sr) {
 				ncrtc = xcb_randr_get_screen_resources_crtcs_length(sr);
@@ -357,7 +365,6 @@ menu_get_monitor_geometry(
 
 #ifdef XINERAMA
 	{
-		xcb_connection_t               *xc = XGetXCBConnection(dpy);
 		xcb_xinerama_is_active_reply_t *ia =
 		    xcb_xinerama_is_active_reply(xc, xcb_xinerama_is_active(xc), NULL);
 		int xin_active = ia && ia->state;
@@ -417,7 +424,7 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
 	menu_calculate_size(menu);
 
 	/* Get monitor geometry containing the click point */
-	menu_get_monitor_geometry(menu->dpy, x, y, &mon_x, &mon_y, &mon_w, &mon_h);
+	menu_get_monitor_geometry(menu->xc, x, y, &mon_x, &mon_y, &mon_w, &mon_h);
 
 	/* Store monitor bounds for submenu positioning */
 	menu->mon_x = mon_x;
@@ -445,7 +452,7 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
 
 	/* Position and show window */
 	{
-		xcb_connection_t *xc = XGetXCBConnection(menu->dpy);
+		xcb_connection_t *xc = menu->xc;
 		uint32_t          cfg[4];
 
 		cfg[0] = (uint32_t) menu->x;
@@ -462,7 +469,7 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
 	}
 
 	/* Process expose to render before grab */
-	xcb_flush(XGetXCBConnection(menu->dpy));
+	xcb_flush(menu->xc);
 
 	menu->visible             = 1;
 	menu->ignore_next_release = 1; /* Ignore the pending ButtonRelease */
@@ -477,7 +484,7 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
 	 * AlreadyGrabbed because X11 rejects a grab that pre-dates the
 	 * existing one. */
 	{
-		xcb_connection_t          *xc = XGetXCBConnection(menu->dpy);
+		xcb_connection_t          *xc = menu->xc;
 		xcb_grab_pointer_cookie_t  gpc;
 		xcb_grab_pointer_reply_t  *gpr;
 		xcb_grab_keyboard_cookie_t gkc;
@@ -525,8 +532,7 @@ menu_show_submenu(Menu *parent, MenuItem *item, int item_y)
 	}
 
 	/* Create new submenu */
-	submenu = menu_create(parent->dpy, DefaultRootWindow(parent->dpy),
-	    parent->drw, parent->scheme);
+	submenu = menu_create(parent->xc, root, parent->drw, parent->scheme);
 	if (!submenu)
 		return;
 
@@ -565,7 +571,7 @@ menu_show_submenu(Menu *parent, MenuItem *item, int item_y)
 	submenu->callback_data = parent->callback_data;
 
 	{
-		xcb_connection_t *xc = XGetXCBConnection(submenu->dpy);
+		xcb_connection_t *xc = submenu->xc;
 		uint32_t          cfg[4];
 
 		cfg[0] = (uint32_t) submenu->x;
@@ -601,7 +607,7 @@ menu_hide(Menu *menu)
 	}
 
 	{
-		xcb_connection_t *xc = XGetXCBConnection(menu->dpy);
+		xcb_connection_t *xc = menu->xc;
 		xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
 		xcb_ungrab_keyboard(xc, XCB_CURRENT_TIME);
 		xcb_unmap_window(xc, menu->win);

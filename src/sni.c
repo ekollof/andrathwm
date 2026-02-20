@@ -7,9 +7,6 @@
 
 #ifdef STATUSNOTIFIER
 
-#include <X11/Xlib.h>
-#include <X11/Xlib-xcb.h>
-#include <X11/Xutil.h>
 #include <cairo/cairo-xcb.h>
 #include <xcb/xcb.h>
 #include <xcb/render.h>
@@ -23,6 +20,17 @@
 #include "log.h"
 #include "menu.h"
 #include "sni.h"
+
+/* globals from awm.c needed here */
+extern int screen;
+static inline uint8_t
+xcb_screen_root_depth_sni(xcb_connection_t *conn, int scr_num)
+{
+	xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(conn));
+	for (int i = 0; i < scr_num; i++)
+		xcb_screen_next(&it);
+	return it.data->root_depth;
+}
 
 /* Forward declaration for awm integration */
 extern void addsniiconsystray(Window w, int width, int height);
@@ -53,7 +61,7 @@ SNIWatcher            *sni_watcher    = NULL;
 static DBusDispatcher *sni_dispatcher = NULL;
 
 /* awm globals - set during sni_init() */
-static Display          *sni_dpy = NULL; /* WM connection: window management */
+static xcb_connection_t *sni_xc = NULL; /* WM connection: window management */
 static xcb_connection_t *sni_cairo_xcb =
     NULL; /* dedicated XCB conn for cairo */
 static xcb_visualtype_t *sni_xcb_visual =
@@ -105,16 +113,16 @@ static void sni_fetch_item_properties(SNIItem *item);
  */
 
 int
-sni_init(Display *display, xcb_connection_t *cairo_xcb,
+sni_init(xcb_connection_t *xc_in, xcb_connection_t *cairo_xcb,
     xcb_visualtype_t *xcb_visual, Window rootwin, Drw *drw, Clr **scheme,
     unsigned int icon_size)
 {
 	DBusError err;
 
-	if (!display)
+	if (!xc_in)
 		return 0;
 
-	sni_dpy        = display;
+	sni_xc         = xc_in;
 	sni_cairo_xcb  = cairo_xcb;
 	sni_xcb_visual = xcb_visual;
 	sni_root       = rootwin;
@@ -190,7 +198,7 @@ sni_init(Display *display, xcb_connection_t *cairo_xcb,
 	icon_init();
 
 	/* Create menu instance */
-	sni_menu = menu_create(sni_dpy, sni_root, sni_drw, sni_scheme);
+	sni_menu = menu_create(sni_xc, sni_root, sni_drw, sni_scheme);
 	if (!sni_menu)
 		awm_warn("SNI: Failed to create menu");
 
@@ -255,7 +263,7 @@ sni_cleanup(void)
 int
 sni_reconnect(void)
 {
-	Display          *dpy        = sni_dpy;
+	xcb_connection_t *xc_saved   = sni_xc;
 	xcb_connection_t *cairo_xcb  = sni_cairo_xcb;
 	xcb_visualtype_t *xcb_visual = sni_xcb_visual;
 	Window            root       = sni_root;
@@ -263,11 +271,11 @@ sni_reconnect(void)
 	Clr             **scheme     = sni_scheme;
 	unsigned int      sz         = sniconsize;
 
-	if (!dpy)
+	if (!xc_saved)
 		return 0; /* never successfully initialised — cannot reconnect */
 
 	sni_cleanup();
-	return sni_init(dpy, cairo_xcb, xcb_visual, root, drw, scheme, sz);
+	return sni_init(xc_saved, cairo_xcb, xcb_visual, root, drw, scheme, sz);
 }
 
 int
@@ -630,7 +638,7 @@ sni_remove_item(SNIItem *item)
 
 	if (item->win) {
 		removesniiconsystray(item->win);
-		xcb_destroy_window(XGetXCBConnection(sni_dpy), item->win);
+		xcb_destroy_window(sni_xc, item->win);
 	}
 
 	item->generation++; /* invalidate any in-flight async ctx */
@@ -996,7 +1004,7 @@ sni_icon_render(SNIItem *item, int icon_size, cairo_surface_t *icon_surface)
 	Pixmap           pixmap;
 	cairo_surface_t *pixmap_surface;
 
-	if (!item || !item->win || !sni_dpy) {
+	if (!item || !item->win || !sni_xc) {
 		awm_debug("SNI: Icon loaded but item/window invalid");
 		if (icon_surface)
 			cairo_surface_destroy(icon_surface);
@@ -1013,7 +1021,7 @@ sni_icon_render(SNIItem *item, int icon_size, cairo_surface_t *icon_surface)
 	/* Render the icon to window.
 	 * Use a dedicated xcb_connection_t (sni_cairo_xcb) for all cairo/pixmap
 	 * operations so that libcairo's raw XCB requests never touch the Xlib
-	 * sequence counter on the primary WM connection (sni_dpy). */
+	 * sequence counter on the primary WM connection (sni_xc). */
 	if (!sni_cairo_xcb || !sni_xcb_visual) {
 		awm_error("SNI: No XCB cairo connection for %s", item->service);
 		cairo_surface_destroy(icon_surface);
@@ -1022,8 +1030,7 @@ sni_icon_render(SNIItem *item, int icon_size, cairo_surface_t *icon_surface)
 
 	{
 		xcb_pixmap_t xcb_pm = xcb_generate_id(sni_cairo_xcb);
-		uint8_t      depth =
-		    (uint8_t) DefaultDepth(sni_dpy, DefaultScreen(sni_dpy));
+		uint8_t      depth  = (uint8_t) xcb_screen_root_depth_sni(sni_xc, screen);
 		xcb_create_pixmap(sni_cairo_xcb, depth, xcb_pm,
 		    (xcb_drawable_t) item->win, (uint16_t) icon_size,
 		    (uint16_t) icon_size);
@@ -1061,7 +1068,7 @@ sni_icon_render(SNIItem *item, int icon_size, cairo_surface_t *icon_surface)
 	/* Set as window background entirely over sni_cairo_xcb so that all
 	 * pixmap writes and the background-set request travel on the same
 	 * connection.  Using Xlib's XSetWindowBackgroundPixmap on a different
-	 * connection (sni_dpy) would create a cross-connection ordering hazard:
+	 * connection (sni_xc) would create a cross-connection ordering hazard:
 	 * the X server could process the background-set before the pixmap fill
 	 * commands, producing wrong/blank icons. */
 	{
@@ -1192,7 +1199,7 @@ sni_render_item(SNIItem *item)
 	Pixmap           pixmap;
 	cairo_surface_t *pixmap_surface;
 
-	if (!item || !sni_dpy)
+	if (!item || !sni_xc)
 		return;
 
 	awm_debug("SNI: Rendering item %s (icon_name=%s)", item->service,
@@ -1200,7 +1207,7 @@ sni_render_item(SNIItem *item)
 
 	/* Create window if needed */
 	if (!item->win) {
-		xcb_connection_t *xc   = XGetXCBConnection(sni_dpy);
+		xcb_connection_t *xc   = sni_xc;
 		xcb_window_t      win  = xcb_generate_id(xc);
 		uint32_t          mask = XCB_CW_BACK_PIXMAP | XCB_CW_BORDER_PIXEL |
 		    XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK;
@@ -1245,8 +1252,7 @@ sni_render_item(SNIItem *item)
 
 	{
 		xcb_pixmap_t xcb_pm = xcb_generate_id(sni_cairo_xcb);
-		uint8_t      depth =
-		    (uint8_t) DefaultDepth(sni_dpy, DefaultScreen(sni_dpy));
+		uint8_t      depth  = (uint8_t) xcb_screen_root_depth_sni(sni_xc, screen);
 		xcb_create_pixmap(sni_cairo_xcb, depth, xcb_pm,
 		    (xcb_drawable_t) item->win, (uint16_t) sniconsize,
 		    (uint16_t) sniconsize);

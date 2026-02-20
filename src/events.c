@@ -95,7 +95,7 @@ buttonpress(xcb_generic_event_t *e)
 	} else if ((c = wintoclient(ev->event))) {
 		focus(c);
 		restack(selmon);
-		xcb_allow_events(XGetXCBConnection(dpy), XCB_ALLOW_REPLAY_POINTER,
+		xcb_allow_events(xc, XCB_ALLOW_REPLAY_POINTER,
 		    XCB_CURRENT_TIME);
 		click = ClkClientWin;
 	}
@@ -123,7 +123,6 @@ buttonpress(xcb_generic_event_t *e)
 void
 checkotherwm(void)
 {
-	xcb_connection_t    *xc   = XGetXCBConnection(dpy);
 	uint32_t             mask = XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT;
 	xcb_void_cookie_t    ck;
 	xcb_generic_error_t *err;
@@ -163,9 +162,9 @@ clientmessage(xcb_generic_event_t *e)
 			systray->icons = c;
 			{
 				xcb_get_geometry_cookie_t ck =
-				    xcb_get_geometry(XGetXCBConnection(dpy), c->win);
+				    xcb_get_geometry(xc, c->win);
 				xcb_get_geometry_reply_t *gr =
-				    xcb_get_geometry_reply(XGetXCBConnection(dpy), ck, NULL);
+				    xcb_get_geometry_reply(xc, ck, NULL);
 				if (gr) {
 					c->w = c->oldw = gr->width;
 					c->h = c->oldh = gr->height;
@@ -185,27 +184,27 @@ clientmessage(xcb_generic_event_t *e)
 			updatesizehints(c);
 			updatesystrayicongeom(c, c->w, c->h);
 			xcb_change_save_set(
-			    XGetXCBConnection(dpy), XCB_SET_MODE_INSERT, c->win);
+			    xc, XCB_SET_MODE_INSERT, c->win);
 			{
 				uint32_t mask = StructureNotifyMask | PropertyChangeMask |
 				    ResizeRedirectMask;
 				xcb_change_window_attributes(
-				    XGetXCBConnection(dpy), c->win, XCB_CW_EVENT_MASK, &mask);
+				    xc, c->win, XCB_CW_EVENT_MASK, &mask);
 			}
 			xcb_reparent_window(
-			    XGetXCBConnection(dpy), c->win, systray->win, 0, 0);
+			    xc, c->win, systray->win, 0, 0);
 			/* use bar background so icon blends with the bar */
 			{
 				uint32_t bg = clr_to_argb(&scheme[SchemeNorm][ColBg]);
 				xcb_change_window_attributes(
-				    XGetXCBConnection(dpy), c->win, XCB_CW_BACK_PIXEL, &bg);
+				    xc, c->win, XCB_CW_BACK_PIXEL, &bg);
 			}
 			/* Send XEMBED_EMBEDDED_NOTIFY to complete embedding per spec.
 			 * data1 = embedder window, data2 = protocol version */
 			sendevent(c->win, netatom[Xembed], StructureNotifyMask,
 			    CurrentTime, XEMBED_EMBEDDED_NOTIFY, 0, systray->win,
 			    XEMBED_VERSION);
-			xflush(dpy);
+			xflush();
 			resizebarwin(selmon);
 			updatesystray();
 			setclientstate(c, NormalState);
@@ -236,12 +235,12 @@ clientmessage(xcb_generic_event_t *e)
 		/* _NET_CLOSE_WINDOW client message */
 		if (!sendevent(c->win, wmatom[WMDelete], NoEventMask, wmatom[WMDelete],
 		        CurrentTime, 0, 0, 0)) {
-			xcb_connection_t *xc = XGetXCBConnection(dpy);
+			
 			xcb_grab_server(xc);
 			xcb_set_close_down_mode(xc, XCB_CLOSE_DOWN_DESTROY_ALL);
 			xcb_kill_client(xc, c->win);
 			xcb_ungrab_server(xc);
-			xflush(dpy);
+			xflush();
 		}
 	} else if (cme->type == netatom[NetMoveResizeWindow]) {
 		/* _NET_MOVERESIZE_WINDOW client message */
@@ -333,7 +332,7 @@ configurerequest(xcb_generic_event_t *e)
 					(uint32_t) c->w,
 					(uint32_t) c->h,
 				};
-				xcb_configure_window(XGetXCBConnection(dpy), c->win,
+				xcb_configure_window(xc, c->win,
 				    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
 				        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
 				    xywh);
@@ -361,9 +360,9 @@ configurerequest(xcb_generic_event_t *e)
 			vals[n++] = (uint32_t) ev->stack_mode;
 		if (n > 0)
 			xcb_configure_window(
-			    XGetXCBConnection(dpy), ev->window, ev->value_mask, vals);
+			    xc, ev->window, ev->value_mask, vals);
 	}
-	xflush(dpy);
+	xflush();
 }
 
 void
@@ -422,7 +421,7 @@ expose(xcb_generic_event_t *e)
 static int
 iswindowdescendant(Window w, Window ancestor)
 {
-	xcb_connection_t *xc = XGetXCBConnection(dpy);
+	
 
 	while (w && w != ancestor && w != root) {
 		xcb_query_tree_reply_t *r =
@@ -462,7 +461,6 @@ grabkeys(void)
 		unsigned int       i, j, k;
 		unsigned int       modifiers[] = { 0, LockMask, numlockmask,
 			      numlockmask | LockMask };
-		xcb_connection_t  *xc          = XGetXCBConnection(dpy);
 		const xcb_setup_t *setup       = xcb_get_setup(xc);
 		xcb_keycode_t      kmin        = setup->min_keycode;
 		xcb_keycode_t      kmax        = setup->max_keycode;
@@ -577,9 +575,9 @@ maprequest(xcb_generic_event_t *e)
 
 	{
 		xcb_get_window_attributes_cookie_t ck =
-		    xcb_get_window_attributes(XGetXCBConnection(dpy), ev->window);
+		    xcb_get_window_attributes(xc, ev->window);
 		xcb_get_window_attributes_reply_t *r =
-		    xcb_get_window_attributes_reply(XGetXCBConnection(dpy), ck, NULL);
+		    xcb_get_window_attributes_reply(xc, ck, NULL);
 		if (!r)
 			return;
 		int override = r->override_redirect;
@@ -589,9 +587,9 @@ maprequest(xcb_generic_event_t *e)
 	}
 	if (!wintoclient(ev->window)) {
 		xcb_get_geometry_cookie_t gck =
-		    xcb_get_geometry(XGetXCBConnection(dpy), ev->window);
+		    xcb_get_geometry(xc, ev->window);
 		xcb_get_geometry_reply_t *gr =
-		    xcb_get_geometry_reply(XGetXCBConnection(dpy), gck, NULL);
+		    xcb_get_geometry_reply(xc, gck, NULL);
 		if (gr) {
 			XWindowAttributes wa;
 			wa.x            = gr->x;
@@ -650,9 +648,9 @@ propertynotify(xcb_generic_event_t *e)
 			break;
 		case XA_WM_TRANSIENT_FOR:
 			if (!c->isfloating &&
-			    xcb_icccm_get_wm_transient_for_reply(XGetXCBConnection(dpy),
+			    xcb_icccm_get_wm_transient_for_reply(xc,
 			        xcb_icccm_get_wm_transient_for(
-			            XGetXCBConnection(dpy), c->win),
+			            xc, c->win),
 			        (xcb_window_t *) (void *) &trans, NULL) &&
 			    (c->isfloating = (wintoclient(trans)) != NULL))
 				arrange(c->mon);
@@ -710,7 +708,6 @@ unmapnotify(xcb_generic_event_t *e)
 		/* KLUDGE! sometimes icons occasionally unmap their windows, but do
 		 * _not_ destroy them. We map those windows back */
 		{
-			xcb_connection_t *xc    = XGetXCBConnection(dpy);
 			uint32_t          above = XCB_STACK_MODE_ABOVE;
 			xcb_map_window(xc, c->win);
 			xcb_configure_window(
@@ -724,7 +721,6 @@ void
 updatenumlockmask(void)
 {
 	unsigned int                      i, j;
-	xcb_connection_t                 *xc = XGetXCBConnection(dpy);
 	xcb_get_modifier_mapping_cookie_t ck = xcb_get_modifier_mapping(xc);
 	xcb_get_modifier_mapping_reply_t *mr;
 	xcb_keycode_t                    *nlcodes;

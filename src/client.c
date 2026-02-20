@@ -37,11 +37,9 @@ applyrules(Client *c)
 	char cls_buf[256]  = { 0 };
 	char inst_buf[256] = { 0 };
 	{
-		xcb_get_property_cookie_t pck =
-		    xcb_get_property(XGetXCBConnection(dpy), 0, c->win,
-		        XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 0, 512);
-		xcb_get_property_reply_t *pr =
-		    xcb_get_property_reply(XGetXCBConnection(dpy), pck, NULL);
+		xcb_get_property_cookie_t pck = xcb_get_property(
+		    xc, 0, c->win, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 0, 512);
+		xcb_get_property_reply_t *pr = xcb_get_property_reply(xc, pck, NULL);
 		if (pr && xcb_get_property_value_length(pr) > 0) {
 			const char *val = (const char *) xcb_get_property_value(pr);
 			int         len = xcb_get_property_value_length(pr);
@@ -223,8 +221,8 @@ configure(Client *c)
 	ce.border_width      = (uint16_t) c->bw;
 	ce.override_redirect = 0;
 	ce.pad1              = 0;
-	xcb_send_event(XGetXCBConnection(dpy), 0, c->win,
-	    XCB_EVENT_MASK_STRUCTURE_NOTIFY, (const char *) &ce);
+	xcb_send_event(
+	    xc, 0, c->win, XCB_EVENT_MASK_STRUCTURE_NOTIFY, (const char *) &ce);
 }
 
 void
@@ -270,26 +268,24 @@ focus(Client *c)
 		attachstack(c);
 		grabbuttons(c, 1);
 		{
-			xcb_connection_t *xcb = XGetXCBConnection(dpy);
-			uint32_t          pix = scheme[SchemeSel][ColBorder].pixel;
+			uint32_t pix = scheme[SchemeSel][ColBorder].pixel;
 			xcb_change_window_attributes(
-			    xcb, c->win, XCB_CW_BORDER_PIXEL, &pix);
+			    xc, c->win, XCB_CW_BORDER_PIXEL, &pix);
 			if (!selmon->pertag->drawwithgaps[selmon->pertag->curtag] &&
 			    !c->isfloating) {
 				uint32_t vals[2];
 				vals[0] = (uint32_t) selmon->barwin;
 				vals[1] = XCB_STACK_MODE_BELOW;
-				xcb_configure_window(xcb, c->win,
+				xcb_configure_window(xc, c->win,
 				    XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE,
 				    vals);
 			}
 		}
 		setfocus(c);
 	} else {
-		xcb_set_input_focus(XGetXCBConnection(dpy),
-		    XCB_INPUT_FOCUS_POINTER_ROOT, selmon->barwin, XCB_CURRENT_TIME);
-		xcb_delete_property(
-		    XGetXCBConnection(dpy), root, netatom[NetActiveWindow]);
+		xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT, selmon->barwin,
+		    XCB_CURRENT_TIME);
+		xcb_delete_property(xc, root, netatom[NetActiveWindow]);
 	}
 	selmon->sel = c;
 	if (selmon->lt[selmon->sellt]->arrange == monocle)
@@ -411,7 +407,6 @@ freeicon(Client *c)
 Atom
 getatomprop(Client *c, Atom prop)
 {
-	xcb_connection_t         *xc  = XGetXCBConnection(dpy);
 	xcb_atom_t                req = (prop == (Atom) xatom[XembedInfo])
 	                   ? (xcb_atom_t) xatom[XembedInfo]
 	                   : XCB_ATOM_ATOM;
@@ -430,10 +425,8 @@ getatomprop(Client *c, Atom prop)
 int
 getrootptr(int *x, int *y)
 {
-	xcb_query_pointer_cookie_t ck =
-	    xcb_query_pointer(XGetXCBConnection(dpy), root);
-	xcb_query_pointer_reply_t *r =
-	    xcb_query_pointer_reply(XGetXCBConnection(dpy), ck, NULL);
+	xcb_query_pointer_cookie_t ck = xcb_query_pointer(xc, root);
+	xcb_query_pointer_reply_t *r  = xcb_query_pointer_reply(xc, ck, NULL);
 	if (!r)
 		return 0;
 	*x = r->root_x;
@@ -445,7 +438,6 @@ getrootptr(int *x, int *y)
 long
 getstate(Window w)
 {
-	xcb_connection_t         *xc = XGetXCBConnection(dpy);
 	xcb_get_property_cookie_t ck = xcb_get_property(xc, 0, (xcb_window_t) w,
 	    (xcb_atom_t) wmatom[WMState], (xcb_atom_t) wmatom[WMState], 0, 2);
 	xcb_get_property_reply_t *r  = xcb_get_property_reply(xc, ck, NULL);
@@ -461,7 +453,6 @@ getstate(Window w)
 int
 gettextprop(Window w, Atom atom, char *text, unsigned int size)
 {
-	xcb_connection_t                   *xc;
 	xcb_get_property_cookie_t           ck;
 	xcb_icccm_get_text_property_reply_t prop;
 	unsigned int                        len;
@@ -469,7 +460,6 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size)
 	if (!text || size == 0)
 		return 0;
 	text[0] = '\0';
-	xc      = XGetXCBConnection(dpy);
 	ck = xcb_icccm_get_text_property(xc, (xcb_window_t) w, (xcb_atom_t) atom);
 	if (!xcb_icccm_get_text_property_reply(xc, ck, &prop, NULL))
 		return 0;
@@ -485,7 +475,6 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size)
 cairo_surface_t *
 getwmicon(Window w, int size)
 {
-	xcb_connection_t         *xc = XGetXCBConnection(dpy);
 	xcb_get_property_cookie_t ck = xcb_get_property(xc, 0, (xcb_window_t) w,
 	    (xcb_atom_t) netatom[NetWMIcon], XCB_ATOM_ANY, 0, UINT32_MAX / 4);
 	xcb_get_property_reply_t *r  = xcb_get_property_reply(xc, ck, NULL);
@@ -594,10 +583,9 @@ grabbuttons(Client *c, int focused)
 {
 	updatenumlockmask();
 	{
-		unsigned int      i, j;
-		unsigned int      modifiers[] = { 0, LockMask, numlockmask,
-			     numlockmask | LockMask };
-		xcb_connection_t *xc          = XGetXCBConnection(dpy);
+		unsigned int i, j;
+		unsigned int modifiers[] = { 0, LockMask, numlockmask,
+			numlockmask | LockMask };
 
 		xcb_ungrab_button(xc, XCB_BUTTON_INDEX_ANY, c->win, XCB_MOD_MASK_ANY);
 		if (!focused)
@@ -624,8 +612,7 @@ hide(Client *c)
 	if (!c || c->ishidden)
 		return;
 
-	Window            w  = c->win;
-	xcb_connection_t *xc = XGetXCBConnection(dpy);
+	Window w = c->win;
 
 	xcb_grab_server(xc);
 	{
@@ -680,7 +667,7 @@ show(Client *c)
 	if (!c || !c->ishidden)
 		return;
 
-	xcb_map_window(XGetXCBConnection(dpy), c->win);
+	xcb_map_window(xc, c->win);
 	setclientstate(c, NormalState);
 	c->ishidden = 0;
 	focus(c);
@@ -726,12 +713,12 @@ killclient(const Arg *arg)
 
 	if (!sendevent(selmon->sel->win, wmatom[WMDelete], NoEventMask,
 	        wmatom[WMDelete], CurrentTime, 0, 0, 0)) {
-		xcb_connection_t *xc = XGetXCBConnection(dpy);
+
 		xcb_grab_server(xc);
 		xcb_set_close_down_mode(xc, XCB_CLOSE_DOWN_DESTROY_ALL);
 		xcb_kill_client(xc, selmon->sel->win);
 		xcb_ungrab_server(xc);
-		xflush(dpy);
+		xflush();
 	}
 }
 
@@ -753,8 +740,8 @@ manage(Window w, XWindowAttributes *wa)
 
 	updatetitle(c);
 	c->icon = getwmicon(w, 16);
-	if (xcb_icccm_get_wm_transient_for_reply(XGetXCBConnection(dpy),
-	        xcb_icccm_get_wm_transient_for(XGetXCBConnection(dpy), w),
+	if (xcb_icccm_get_wm_transient_for_reply(xc,
+	        xcb_icccm_get_wm_transient_for(xc, w),
 	        (xcb_window_t *) (void *) &trans, NULL) &&
 	    (t = wintoclient(trans))) {
 		c->mon  = t->mon;
@@ -784,11 +771,10 @@ manage(Window w, XWindowAttributes *wa)
 	c->bw = borderpx;
 
 	{
-		xcb_connection_t *xcb = XGetXCBConnection(dpy);
-		uint32_t          bw  = (uint32_t) c->bw;
-		xcb_configure_window(xcb, w, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
+		uint32_t bw = (uint32_t) c->bw;
+		xcb_configure_window(xc, w, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
 		uint32_t pix = scheme[SchemeNorm][ColBorder].pixel;
-		xcb_change_window_attributes(xcb, w, XCB_CW_BORDER_PIXEL, &pix);
+		xcb_change_window_attributes(xc, w, XCB_CW_BORDER_PIXEL, &pix);
 	}
 	configure(c);
 	updatewindowtype(c);
@@ -801,23 +787,20 @@ manage(Window w, XWindowAttributes *wa)
 	{
 		uint32_t mask = EnterWindowMask | FocusChangeMask |
 		    PropertyChangeMask | StructureNotifyMask;
-		xcb_change_window_attributes(
-		    XGetXCBConnection(dpy), w, XCB_CW_EVENT_MASK, &mask);
+		xcb_change_window_attributes(xc, w, XCB_CW_EVENT_MASK, &mask);
 	}
 	grabbuttons(c, 0);
 	if (!c->isfloating)
 		c->isfloating = c->oldstate = t != NULL || c->isfixed;
 	if (c->isfloating) {
 		uint32_t stack = XCB_STACK_MODE_ABOVE;
-		xcb_configure_window(XGetXCBConnection(dpy), c->win,
-		    XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		xcb_configure_window(xc, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 	}
 	attach(c);
 	attachstack(c);
 	{
-		xcb_connection_t *xcb    = XGetXCBConnection(dpy);
-		xcb_atom_t        winxid = (xcb_atom_t) c->win;
-		xcb_change_property(xcb, XCB_PROP_MODE_APPEND, root,
+		xcb_atom_t winxid = (xcb_atom_t) c->win;
+		xcb_change_property(xc, XCB_PROP_MODE_APPEND, root,
 		    netatom[NetClientList], XCB_ATOM_WINDOW, 32, 1, &winxid);
 	}
 
@@ -827,15 +810,14 @@ manage(Window w, XWindowAttributes *wa)
 	{
 		uint32_t extents[4] = { (uint32_t) c->bw, (uint32_t) c->bw,
 			(uint32_t) c->bw, (uint32_t) c->bw };
-		xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE,
-		    c->win, netatom[NetFrameExtents], XCB_ATOM_CARDINAL, 32, 4,
-		    extents);
+		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, c->win,
+		    netatom[NetFrameExtents], XCB_ATOM_CARDINAL, 32, 4, extents);
 	}
 
 	{
 		uint32_t vals[4] = { (uint32_t) (c->x + 2 * sw), (uint32_t) c->y,
 			(uint32_t) c->w, (uint32_t) c->h };
-		xcb_configure_window(XGetXCBConnection(dpy), c->win,
+		xcb_configure_window(xc, c->win,
 		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
 		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
 		    vals);
@@ -847,7 +829,7 @@ manage(Window w, XWindowAttributes *wa)
 	if (!c->scratchkey)
 		c->mon->sel = c;
 	arrange(c->mon);
-	xcb_map_window(XGetXCBConnection(dpy), c->win);
+	xcb_map_window(xc, c->win);
 #ifdef COMPOSITOR
 	compositor_add_window(c);
 	/* Force-sync the CompWin geometry to the client struct.  During a
@@ -871,7 +853,6 @@ movemouse(const Arg *arg)
 	Client              *c;
 	Monitor             *m;
 	xcb_generic_event_t *xe;
-	xcb_connection_t    *xc       = XGetXCBConnection(dpy);
 	Time                 lasttime = 0;
 
 	if (!(c = selmon->sel))
@@ -1009,14 +990,14 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	{
 		uint32_t vals[5] = { (uint32_t) x, (uint32_t) y, (uint32_t) w,
 			(uint32_t) h, (uint32_t) bw };
-		xcb_configure_window(XGetXCBConnection(dpy), c->win,
+		xcb_configure_window(xc, c->win,
 		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
 		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
 		        XCB_CONFIG_WINDOW_BORDER_WIDTH,
 		    vals);
 	}
 	configure(c);
-	xflush(dpy);
+	xflush();
 #ifdef COMPOSITOR
 	compositor_configure_window(c, bw);
 #endif
@@ -1029,7 +1010,6 @@ resizemouse(const Arg *arg)
 	Client              *c;
 	Monitor             *m;
 	xcb_generic_event_t *xe;
-	xcb_connection_t    *xc       = XGetXCBConnection(dpy);
 	xcb_timestamp_t      lasttime = 0;
 
 	if (!(c = selmon->sel))
@@ -1141,8 +1121,8 @@ setclientstate(Client *c, long state)
 {
 	uint32_t data[2] = { (uint32_t) state, XCB_ATOM_NONE };
 
-	xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE, c->win,
-	    wmatom[WMState], wmatom[WMState], 32, 2, data);
+	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, c->win, wmatom[WMState],
+	    wmatom[WMState], 32, 2, data);
 }
 
 void
@@ -1161,8 +1141,8 @@ setfullscreen(Client *c, int fullscreen)
 		resizeclient(c, c->mon->mx, c->mon->my, c->mon->mw, c->mon->mh);
 		{
 			uint32_t stack = XCB_STACK_MODE_ABOVE;
-			xcb_configure_window(XGetXCBConnection(dpy), c->win,
-			    XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+			xcb_configure_window(
+			    xc, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 		}
 #ifdef COMPOSITOR
 		compositor_check_unredirect();
@@ -1249,7 +1229,6 @@ seturgent(Client *c, int urg)
 {
 	c->isurgent = urg;
 	{
-		xcb_connection_t         *xc = XGetXCBConnection(dpy);
 		xcb_get_property_cookie_t ck = xcb_icccm_get_wm_hints(xc, c->win);
 		xcb_icccm_wm_hints_t      wmh;
 		if (xcb_icccm_get_wm_hints_reply(xc, ck, &wmh, NULL)) {
@@ -1272,8 +1251,8 @@ showhide(Client *c)
 		compositor_set_hidden(c, 0);
 		{
 			uint32_t vals[2] = { (uint32_t) c->x, (uint32_t) c->y };
-			xcb_configure_window(XGetXCBConnection(dpy), c->win,
-			    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
+			xcb_configure_window(
+			    xc, c->win, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
 		}
 		if ((!c->mon->lt[c->mon->sellt]->arrange || c->isfloating) &&
 		    !c->isfullscreen)
@@ -1284,8 +1263,8 @@ showhide(Client *c)
 		compositor_set_hidden(c, 1);
 		{
 			uint32_t vals[2] = { (uint32_t) (WIDTH(c) * -2), (uint32_t) c->y };
-			xcb_configure_window(XGetXCBConnection(dpy), c->win,
-			    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
+			xcb_configure_window(
+			    xc, c->win, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
 		}
 	}
 }
@@ -1528,17 +1507,15 @@ unfocus(Client *c, int setfocus)
 	grabbuttons(c, 0);
 	{
 		uint32_t pix = scheme[SchemeNorm][ColBorder].pixel;
-		xcb_change_window_attributes(
-		    XGetXCBConnection(dpy), c->win, XCB_CW_BORDER_PIXEL, &pix);
+		xcb_change_window_attributes(xc, c->win, XCB_CW_BORDER_PIXEL, &pix);
 	}
 #ifdef COMPOSITOR
 	compositor_focus_window(c);
 #endif
 	if (setfocus) {
-		xcb_set_input_focus(XGetXCBConnection(dpy),
-		    XCB_INPUT_FOCUS_POINTER_ROOT, root, XCB_CURRENT_TIME);
-		xcb_delete_property(
-		    XGetXCBConnection(dpy), root, netatom[NetActiveWindow]);
+		xcb_set_input_focus(
+		    xc, XCB_INPUT_FOCUS_POINTER_ROOT, root, XCB_CURRENT_TIME);
+		xcb_delete_property(xc, root, netatom[NetActiveWindow]);
 	}
 }
 
@@ -1550,7 +1527,7 @@ unmanage(Client *c, int destroyed)
 	detach(c);
 	detachstack(c);
 	if (!destroyed) {
-		xcb_connection_t *xc = XGetXCBConnection(dpy);
+
 		xcb_grab_server(xc);
 		{
 			uint32_t no_events = XCB_EVENT_MASK_NO_EVENT;
@@ -1565,7 +1542,7 @@ unmanage(Client *c, int destroyed)
 		xcb_ungrab_button(xc, XCB_BUTTON_INDEX_ANY, c->win, XCB_MOD_MASK_ANY);
 		setclientstate(c, WithdrawnState);
 		xcb_ungrab_server(xc);
-		xflush(dpy);
+		xflush();
 	}
 	freeicon(c);
 #ifdef COMPOSITOR
@@ -1580,7 +1557,6 @@ unmanage(Client *c, int destroyed)
 void
 updatesizehints(Client *c)
 {
-	xcb_connection_t         *xc = XGetXCBConnection(dpy);
 	xcb_get_property_cookie_t ck = xcb_icccm_get_wm_normal_hints(xc, c->win);
 	xcb_size_hints_t          size;
 
@@ -1648,7 +1624,6 @@ updatewindowtype(Client *c)
 void
 updatewmhints(Client *c)
 {
-	xcb_connection_t         *xc = XGetXCBConnection(dpy);
 	xcb_get_property_cookie_t ck = xcb_icccm_get_wm_hints(xc, c->win);
 	xcb_icccm_wm_hints_t      wmh;
 
@@ -1803,8 +1778,8 @@ warp(const Client *c)
 	int x, y;
 
 	if (!c) {
-		xcb_warp_pointer(XGetXCBConnection(dpy), XCB_WINDOW_NONE, root, 0, 0,
-		    0, 0, (int16_t) (selmon->wx + selmon->ww / 2),
+		xcb_warp_pointer(xc, XCB_WINDOW_NONE, root, 0, 0, 0, 0,
+		    (int16_t) (selmon->wx + selmon->ww / 2),
 		    (int16_t) (selmon->wy + selmon->wh / 2));
 		return;
 	}
@@ -1815,8 +1790,8 @@ warp(const Client *c)
 	    (y > c->mon->by && y < c->mon->by + bh) || (c->mon->topbar && !y))
 		return;
 
-	xcb_warp_pointer(XGetXCBConnection(dpy), XCB_WINDOW_NONE, c->win, 0, 0, 0,
-	    0, (int16_t) (c->w / 2), (int16_t) (c->h / 2));
+	xcb_warp_pointer(xc, XCB_WINDOW_NONE, c->win, 0, 0, 0, 0,
+	    (int16_t) (c->w / 2), (int16_t) (c->h / 2));
 }
 
 Client *

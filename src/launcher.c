@@ -4,9 +4,7 @@
  * rofi-style launcher that reads .desktop files and falls back to PATH
  */
 
-#include <X11/Xlib.h>
 #include <X11/keysym.h>
-#include <X11/Xlib-xcb.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_keysyms.h>
 #include <xkbcommon/xkbcommon.h>
@@ -710,7 +708,7 @@ launcher_render(Launcher *launcher)
 		drw_text(launcher->drw, x, y, launcher->w - LAUNCHER_PADDING * 2,
 		    LAUNCHER_ITEM_HEIGHT, 0, "(no matches)", 0);
 		drw_map(launcher->drw, launcher->win, 0, 0, launcher->w, launcher->h);
-		xflush(launcher->dpy);
+		xflush();
 		return;
 	}
 
@@ -768,7 +766,7 @@ launcher_render(Launcher *launcher)
 	}
 
 	drw_map(launcher->drw, launcher->win, 0, 0, launcher->w, launcher->h);
-	xflush(launcher->dpy);
+	xflush();
 }
 
 void
@@ -794,8 +792,8 @@ launcher_launch_selected(Launcher *launcher)
 	}
 	if (pid == 0) {
 		signal(SIGCHLD, SIG_DFL); /* reset inherited SIG_IGN from WM */
-		if (launcher->dpy)
-			close(xcb_get_file_descriptor(XGetXCBConnection(launcher->dpy)));
+		if (launcher->xc)
+			close(xcb_get_file_descriptor(launcher->xc));
 		setsid();
 		if (item->terminal) {
 			const char *term = launcher->terminal;
@@ -837,8 +835,8 @@ launcher_append_items(Launcher *launcher, LauncherItem *new_items)
 }
 
 Launcher *
-launcher_create(Display *dpy, Window root, Clr **scheme, const char **fonts,
-    size_t fontcount, const char *term)
+launcher_create(xcb_connection_t *xc, Window root, Clr **scheme,
+    const char **fonts, size_t fontcount, const char *term)
 {
 	Launcher *launcher;
 	char     *home;
@@ -846,7 +844,7 @@ launcher_create(Display *dpy, Window root, Clr **scheme, const char **fonts,
 	int       i;
 
 	launcher            = ecalloc(1, sizeof(Launcher));
-	launcher->dpy       = dpy;
+	launcher->xc        = xc;
 	launcher->scheme    = scheme;
 	launcher->selected  = -1;
 	launcher->w         = LAUNCHER_MIN_WIDTH;
@@ -859,11 +857,19 @@ launcher_create(Display *dpy, Window root, Clr **scheme, const char **fonts,
 	 * its own pixmap and Cairo surface so drw_resize() never touches the
 	 * bar's drawable or Cairo surface. */
 	{
-		int scr = DefaultScreen(dpy);
-
+		xcb_screen_t *xs = xcb_setup_roots_iterator(xcb_get_setup(xc)).data;
+		/* walk to the correct screen */
+		{
+			xcb_screen_iterator_t sit =
+			    xcb_setup_roots_iterator(xcb_get_setup(xc));
+			int s = screen;
+			for (; s > 0; s--)
+				xcb_screen_next(&sit);
+			xs = sit.data;
+		}
 		launcher->drw =
-		    drw_create(dpy, scr, root, (unsigned int) DisplayWidth(dpy, scr),
-		        (unsigned int) DisplayHeight(dpy, scr));
+		    drw_create(xc, screen, root, (unsigned int) xs->width_in_pixels,
+		        (unsigned int) xs->height_in_pixels);
 	}
 	if (!launcher->drw)
 		die("launcher: drw_create failed");
@@ -922,7 +928,6 @@ launcher_create(Display *dpy, Window root, Clr **scheme, const char **fonts,
 	launcher_calculate_size(launcher);
 
 	{
-		xcb_connection_t *xc = XGetXCBConnection(dpy);
 		xcb_screen_t  *xs  = xcb_setup_roots_iterator(xcb_get_setup(xc)).data;
 		uint32_t       vid = xs->root_visual;
 		xcb_colormap_t cmap;
@@ -968,7 +973,7 @@ launcher_free(Launcher *launcher)
 		launcher_hide(launcher);
 
 	if (launcher->win)
-		xcb_destroy_window(XGetXCBConnection(launcher->dpy), launcher->win);
+		xcb_destroy_window(launcher->xc, launcher->win);
 
 	if (launcher->drw)
 		drw_free(launcher->drw);
@@ -1006,7 +1011,7 @@ launcher_show(Launcher *launcher, int x, int y)
 	launcher_calculate_size(launcher);
 
 	{
-		xcb_connection_t *xc2 = XGetXCBConnection(launcher->dpy);
+		xcb_connection_t *xc2 = launcher->xc;
 		xcb_screen_t *xs2 = xcb_setup_roots_iterator(xcb_get_setup(xc2)).data;
 		int           mon_x = 0, mon_y = 0;
 		int           mon_w = (int) xs2->width_in_pixels;
@@ -1023,7 +1028,7 @@ launcher_show(Launcher *launcher, int x, int y)
 	}
 
 	{
-		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		xcb_connection_t *xc = launcher->xc;
 		uint32_t          cv[4];
 		uint32_t          sv[1];
 
@@ -1040,7 +1045,7 @@ launcher_show(Launcher *launcher, int x, int y)
 		xcb_configure_window(
 		    xc, launcher->win, XCB_CONFIG_WINDOW_STACK_MODE, sv);
 	}
-	xflush(launcher->dpy);
+	xflush();
 
 	launcher->visible = 1;
 	launcher_render(launcher);
@@ -1051,11 +1056,11 @@ launcher_show(Launcher *launcher, int x, int y)
 	 * the keypress that triggered us) is fully released before we try to
 	 * establish the active keyboard grab. */
 	{
-		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		xcb_connection_t *xc = launcher->xc;
 
 		xcb_ungrab_pointer(xc, (xcb_timestamp_t) last_event_time);
 		xcb_ungrab_keyboard(xc, (xcb_timestamp_t) last_event_time);
-		xflush(launcher->dpy);
+		xflush();
 		{
 			xcb_grab_pointer_cookie_t pc;
 			xcb_grab_pointer_reply_t *pr;
@@ -1092,7 +1097,7 @@ launcher_hide(Launcher *launcher)
 		return;
 
 	{
-		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		xcb_connection_t *xc = launcher->xc;
 
 		xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
 		xcb_ungrab_keyboard(xc, XCB_CURRENT_TIME);
@@ -1128,7 +1133,7 @@ launcher_insert_text(Launcher *launcher, const char *s, int len)
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);
 	{
-		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		xcb_connection_t *xc = launcher->xc;
 		uint32_t          rv[2];
 
 		rv[0] = (uint32_t) launcher->w;
@@ -1164,7 +1169,7 @@ launcher_delete_char(Launcher *launcher)
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);
 	{
-		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		xcb_connection_t *xc = launcher->xc;
 		uint32_t          rv[2];
 
 		rv[0] = (uint32_t) launcher->w;
@@ -1200,7 +1205,7 @@ launcher_delete_char_forward(Launcher *launcher)
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);
 	{
-		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		xcb_connection_t *xc = launcher->xc;
 		uint32_t          rv[2];
 
 		rv[0] = (uint32_t) launcher->w;
@@ -1237,7 +1242,7 @@ launcher_delete_word(Launcher *launcher)
 	launcher_filter_items(launcher);
 	launcher_calculate_size(launcher);
 	{
-		xcb_connection_t *xc = XGetXCBConnection(launcher->dpy);
+		xcb_connection_t *xc = launcher->xc;
 		uint32_t          rv[2];
 
 		rv[0] = (uint32_t) launcher->w;

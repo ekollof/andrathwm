@@ -82,8 +82,7 @@ updatesystrayiconstate(Client *i, xcb_property_notify_event_t *ev)
 	if (flags & XEMBED_MAPPED && !i->tags) {
 		i->tags = 1;
 		{
-			xcb_connection_t *xc    = XGetXCBConnection(dpy);
-			uint32_t          above = XCB_STACK_MODE_ABOVE;
+			uint32_t above = XCB_STACK_MODE_ABOVE;
 			xcb_map_window(xc, i->win);
 			xcb_configure_window(
 			    xc, i->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
@@ -91,7 +90,7 @@ updatesystrayiconstate(Client *i, xcb_property_notify_event_t *ev)
 		setclientstate(i, NormalState);
 	} else if (!(flags & XEMBED_MAPPED) && i->tags) {
 		i->tags = 0;
-		xcb_unmap_window(XGetXCBConnection(dpy), i->win);
+		xcb_unmap_window(xc, i->win);
 		setclientstate(i, WithdrawnState);
 	}
 }
@@ -118,9 +117,9 @@ updatesystrayiconcolors(void)
 	colors[3] = colors[6] = colors[9] = r;
 	colors[4] = colors[7] = colors[10] = g;
 	colors[5] = colors[8] = colors[11] = b;
-	xcb_change_property(XGetXCBConnection(dpy), XCB_PROP_MODE_REPLACE,
-	    systray->win, (xcb_atom_t) netatom[NetSystemTrayColors],
-	    XCB_ATOM_CARDINAL, 32, 12, colors);
+	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, systray->win,
+	    (xcb_atom_t) netatom[NetSystemTrayColors], XCB_ATOM_CARDINAL, 32, 12,
+	    colors);
 }
 
 void
@@ -147,11 +146,10 @@ updatesystray(void)
 		 * find a 32-bit TrueColor visual; fall back to the default
 		 * screen visual if none is available. */
 		{
-			xcb_connection_t     *xc    = XGetXCBConnection(dpy);
 			const xcb_setup_t    *setup = xcb_get_setup(xc);
 			xcb_screen_iterator_t si    = xcb_setup_roots_iterator(setup);
 			/* Advance to our screen number */
-			for (int s = DefaultScreen(dpy); s > 0; s--)
+			for (int s = screen; s > 0; s--)
 				xcb_screen_next(&si);
 			xcb_screen_t *scr = si.data;
 
@@ -182,8 +180,8 @@ updatesystray(void)
 		}
 
 		{
-			xcb_connection_t *xc = XGetXCBConnection(dpy);
-			uint32_t          bgpix =
+
+			uint32_t bgpix =
 			    (uint32_t) clr_to_argb(&scheme[SchemeNorm][ColBg]);
 			uint32_t evmask = ButtonPressMask | ExposureMask;
 			uint32_t one    = 1; /* override_redirect */
@@ -237,20 +235,20 @@ updatesystray(void)
 			}
 		}
 		{
-			xcb_connection_t *xcs = XGetXCBConnection(dpy);
-			xcb_set_selection_owner(xcs, systray->win,
+
+			xcb_set_selection_owner(xc, systray->win,
 			    (xcb_atom_t) netatom[NetSystemTray], XCB_CURRENT_TIME);
 			xcb_get_selection_owner_reply_t *sor =
-			    xcb_get_selection_owner_reply(xcs,
+			    xcb_get_selection_owner_reply(xc,
 			        xcb_get_selection_owner(
-			            xcs, (xcb_atom_t) netatom[NetSystemTray]),
+			            xc, (xcb_atom_t) netatom[NetSystemTray]),
 			        NULL);
 			int owns = sor && sor->owner == systray->win;
 			free(sor);
 			if (owns) {
 				sendevent(root, xatom[Manager], StructureNotifyMask,
 				    CurrentTime, netatom[NetSystemTray], systray->win, 0, 0);
-				xflush(dpy);
+				xflush();
 			} else {
 				awm_error("Unable to obtain system tray window");
 				free(systray);
@@ -260,7 +258,7 @@ updatesystray(void)
 		}
 	}
 	{
-		xcb_connection_t *xc = XGetXCBConnection(dpy);
+
 		for (w = 0, i = systray->icons; i; i = i->next) {
 			if (!i->issni) {
 				uint32_t bg =
@@ -326,7 +324,7 @@ updatesystray(void)
 	 * The window background is filled automatically from background_pixel set
 	 * at creation time whenever the server exposes previously-hidden areas,
 	 * so no explicit XClearWindow call is needed here. */
-	xflush(dpy);
+	xflush();
 }
 
 Client *
@@ -370,7 +368,7 @@ addsniiconsystray(Window w, int width, int height)
 	awm_debug("SNI icon geometry after geom update: %dx%d", i->w, i->h);
 
 	/* Reparent to systray container */
-	xcb_reparent_window(XGetXCBConnection(dpy), i->win, systray->win, 0, 0);
+	xcb_reparent_window(xc, i->win, systray->win, 0, 0);
 
 	/* Update systray layout */
 	updatesystray();

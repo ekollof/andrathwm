@@ -36,10 +36,21 @@ xcb_find_visualtype(xcb_connection_t *conn, int screen_num, xcb_visualid_t vid)
 }
 
 Drw *
-drw_create(
-    Display *dpy, int screen, Window root, unsigned int w, unsigned int h)
+drw_create(xcb_connection_t *xc, int screen, Window root, unsigned int w,
+    unsigned int h)
 {
-	Drw *drw = ecalloc(1, sizeof(Drw));
+	Drw     *drw = ecalloc(1, sizeof(Drw));
+	Display *dpy;
+
+	(void) xc; /* xcb_connection_t parameter reserved for Phase 3c */
+
+	/* Open a private Xlib Display for the drawing operations below.
+	 * This is temporary scaffolding: Phase 3c will replace all XCreatePixmap,
+	 * XCreateGC, XFillRectangle etc. with pure XCB calls at which point the
+	 * Display* will be removed entirely. */
+	dpy = XOpenDisplay(NULL);
+	if (!dpy)
+		die("drw_create: cannot open X display");
 
 	drw->dpy      = dpy;
 	drw->screen   = screen;
@@ -114,6 +125,7 @@ drw_free(Drw *drw)
 	XFreePixmap(drw->dpy, drw->drawable);
 	XFreeGC(drw->dpy, drw->gc);
 	drw_fontset_free(drw->fonts);
+	XCloseDisplay(drw->dpy);
 	free(drw);
 }
 

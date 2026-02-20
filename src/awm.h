@@ -73,7 +73,7 @@
 
 /* Flush the X request buffer without a round-trip.
  * Prefer this over XSync(dpy, False) wherever error-draining is not needed. */
-#define xflush(d) xcb_flush(XGetXCBConnection(d))
+#define xflush() xcb_flush(xc)
 
 #define STATUS_TEXT_LEN 512
 
@@ -268,23 +268,23 @@ struct Systray {
 };
 
 /* extern globals — defined in awm.c */
-extern Display     *dpy;
-extern Window       root, wmcheckwin;
-extern int          screen;
-extern int          sw, sh;
-extern int          bh;
-extern int          lrpad;
-extern Drw         *drw;
-extern Clr        **scheme;
-extern Cur         *cursor[CurLast];
-extern Monitor     *mons, *selmon;
-extern Clientlist  *cl;
-extern Systray     *systray;
-extern Atom         wmatom[WMLast], netatom[NetLast], xatom[XLast];
-extern char         stext[STATUS_TEXT_LEN];
-extern int          restart;
-extern int          barsdirty;
-extern unsigned int numlockmask;
+extern xcb_connection_t *xc;
+extern Window            root, wmcheckwin;
+extern int               screen;
+extern int               sw, sh;
+extern int               bh;
+extern int               lrpad;
+extern Drw              *drw;
+extern Clr             **scheme;
+extern Cur              *cursor[CurLast];
+extern Monitor          *mons, *selmon;
+extern Clientlist       *cl;
+extern Systray          *systray;
+extern Atom              wmatom[WMLast], netatom[NetLast], xatom[XLast];
+extern char              stext[STATUS_TEXT_LEN];
+extern int               restart;
+extern int               barsdirty;
+extern unsigned int      numlockmask;
 extern int (*xerrorxlib)(Display *, XErrorEvent *);
 extern Time last_event_time; /* timestamp of the most recent user event */
 extern xcb_key_symbols_t *keysyms;

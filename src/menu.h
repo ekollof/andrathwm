@@ -8,7 +8,6 @@
 #define MENU_H
 
 #include "drw.h"
-#include <X11/Xlib.h>
 #include <xcb/xcb.h>
 
 /* Toggle types for DBusMenu checkbox/radio items */
@@ -35,10 +34,10 @@ typedef void (*MenuCallback)(int item_id, void *data);
 
 /* Menu structure */
 typedef struct Menu {
-	Display *dpy;
-	Window   win;
-	Drw     *drw;
-	Clr    **scheme;
+	xcb_connection_t *xc;
+	Window            win;
+	Drw              *drw;
+	Clr             **scheme;
 
 	MenuItem *items;
 	int       item_count;
@@ -59,7 +58,7 @@ typedef struct Menu {
 } Menu;
 
 /* Menu API */
-Menu *menu_create(Display *dpy, Window root, Drw *drw, Clr **scheme);
+Menu *menu_create(xcb_connection_t *xc, Window root, Drw *drw, Clr **scheme);
 void  menu_free(Menu *menu);
 void  menu_set_items(Menu *menu, MenuItem *items);
 void  menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
