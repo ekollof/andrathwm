@@ -236,17 +236,27 @@ updatesystray(void)
 				    xc, systray->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
 			}
 		}
-		XSetSelectionOwner(
-		    dpy, netatom[NetSystemTray], systray->win, CurrentTime);
-		if (XGetSelectionOwner(dpy, netatom[NetSystemTray]) == systray->win) {
-			sendevent(root, xatom[Manager], StructureNotifyMask, CurrentTime,
-			    netatom[NetSystemTray], systray->win, 0, 0);
-			xflush(dpy);
-		} else {
-			awm_error("Unable to obtain system tray window");
-			free(systray);
-			systray = NULL;
-			return;
+		{
+			xcb_connection_t *xcs = XGetXCBConnection(dpy);
+			xcb_set_selection_owner(xcs, systray->win,
+			    (xcb_atom_t) netatom[NetSystemTray], XCB_CURRENT_TIME);
+			xcb_get_selection_owner_reply_t *sor =
+			    xcb_get_selection_owner_reply(xcs,
+			        xcb_get_selection_owner(
+			            xcs, (xcb_atom_t) netatom[NetSystemTray]),
+			        NULL);
+			int owns = sor && sor->owner == systray->win;
+			free(sor);
+			if (owns) {
+				sendevent(root, xatom[Manager], StructureNotifyMask,
+				    CurrentTime, netatom[NetSystemTray], systray->win, 0, 0);
+				xflush(dpy);
+			} else {
+				awm_error("Unable to obtain system tray window");
+				free(systray);
+				systray = NULL;
+				return;
+			}
 		}
 	}
 	{
