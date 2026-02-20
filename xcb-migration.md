@@ -56,6 +56,8 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `a8ce948` | `client.c` `gettextprop()`: `XGetTextProperty`/`XmbTextPropertyToTextList`/`XFree` → `xcb_icccm_get_text_property` |
 | `032ee8a` | `compositor.c`: `XInternAtom` (4×) → `xcb_intern_atom`; `XSetSelectionOwner`/`XGetSelectionOwner` → xcb; `XQueryTree` → `xcb_query_tree`; `XGetGeometry` → `xcb_get_geometry`; `XQueryExtension` → `xcb_get_extension_data` |
 | `f349de2` | `compositor.c`: complete XCB migration — all XComposite/XDamage/XFixes/XRender/XShape calls replaced; `damage_ring[]` / `dirty_get_bbox` types changed to `xcb_rectangle_t`; `config.mk` COMPOSITORLIBS updated |
+| `c42cf25` | Replace `XVisualIDFromVisual(DefaultVisual(dpy, screen))` with XCB screen setup walk at all sites: `xcb_screen_root_visual()` static inline helper added to `awm.h`; used in `compositor.c` (4×), `menu.c`, `launcher.c`; `drw.c` inlines the walk directly (no `awm.h` include) |
+| `9cf01d0` | `xidle`: replace all Xlib/XScreenSaver with `xcb-screensaver` — `xcb_connect`, `xcb_get_extension_data`, `xcb_screensaver_query_info`, `free`; `Makefile` xidle rule updated to `-lxcb -lxcb-screensaver` |
 
 ---
 
@@ -165,7 +167,6 @@ The only remaining Xlib in core WM files is the permanent-keep list above.
 | `XCheckTypedEvent` in `comp_repaint_idle` | Event loop not yet migrated |
 | `XSetErrorHandler` / `XSync` in `xerror_push_ignore` / `xerror_pop` | Tied to Xlib error handler — permanent keep |
 | `XOpenDisplay` / `XCloseDisplay` for `comp.gl_dpy` | EGL display — permanent keep |
-| `XVisualIDFromVisual` | Bridge call to look up XCB visual format |
 
 Two items from the general keep list are also documented below for clarity:
 
