@@ -11,15 +11,16 @@ X11INC = /usr/X11R6/include
 X11LIB = /usr/X11R6/lib
 
 # Xinerama, comment if you don't want it
-XINERAMALIBS  = -lXinerama
+XINERAMALIBS  =
 XINERAMAFLAGS = -DXINERAMA
 
 # RandR (modern multi-monitor support), comment if you don't want it
-RANDRLIBS  = -lXrandr
+RANDRLIBS  =
 RANDRFLAGS = -DXRANDR
 
 # XScreenSaver extension (idle detection), comment if you don't want it
-XSSLIBS  = -lXss
+# xidle uses xcb-screensaver directly; no Xss link needed for awm itself
+XSSLIBS  =
 XSSFLAGS = -DXSS
 
 # StatusNotifier/AppIndicator support (D-Bus based system tray), comment if you don't want it
@@ -32,7 +33,8 @@ XCBLIBS  = $(shell pkg-config --libs xcb-icccm xcb-randr xcb-keysyms xcb-xineram
 XCBINC   = $(shell pkg-config --cflags xcb-icccm xcb-randr xcb-keysyms xcb-xinerama xcb-cursor xcb-renderutil)
 
 # Built-in XRender compositor, comment if you don't want it
-COMPOSITORLIBS  = -lXcomposite -lXdamage -lXrender -lXfixes -lXext -lGL -lEGL -l:libX11-xcb.so.1 -lxcb -lxcb-render -lxcb-present -lxcb-composite -lxcb-damage -lxcb-xfixes -lxcb-shape -lxcb-render-util
+# All compositor I/O goes through XCB — no Xlib compositor libs needed
+COMPOSITORLIBS  = -lGL -lEGL -lxcb -lxcb-render -lxcb-present -lxcb-composite -lxcb-damage -lxcb-xfixes -lxcb-shape -lxcb-render-util
 COMPOSITORFLAGS = -DCOMPOSITOR
 
 # PangoCairo (replaces Xft/freetype for text rendering)
@@ -42,7 +44,7 @@ MANPREFIX = ${PREFIX}/man
 
 # includes and libs
 INCS = -I. -Isrc -Ithird_party -I${X11INC} ${PANGOINC} ${SNIINC} ${XCBINC}
-LIBS = -L${X11LIB} -lX11 ${XINERAMALIBS} ${RANDRLIBS} ${XSSLIBS} ${PANGOLIBS} ${SNILIBS} ${COMPOSITORLIBS} ${XCBLIBS}
+LIBS = -L${X11LIB} ${XINERAMALIBS} ${RANDRLIBS} ${XSSLIBS} ${PANGOLIBS} ${SNILIBS} ${COMPOSITORLIBS} ${XCBLIBS}
 
 # flags
 CPPFLAGS = -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_XOPEN_SOURCE=700L -DVERSION=\"${VERSION}\" ${XINERAMAFLAGS} ${RANDRFLAGS} ${XSSFLAGS} ${SNIFLAGS} ${COMPOSITORFLAGS}

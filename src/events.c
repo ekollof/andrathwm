@@ -136,7 +136,8 @@ checkotherwm(void)
 		free(err);
 		die("awm: another window manager is already running");
 	}
-	xerrorxlib = XSetErrorHandler(xerror);
+	/* XCB error handler is wired in x_dispatch_cb — nothing to register here
+	 */
 }
 
 void
@@ -731,69 +732,101 @@ updatenumlockmask(void)
 	free(mr);
 }
 
-int
-xerror(Display *dpy, XErrorEvent *ee)
+/* Return a human-readable string for a base X11 error code (1-17).
+ * Extension errors (codes > 127) are labelled generically. */
+static const char *
+xcb_error_text(uint8_t error_code)
 {
-	if (ee->error_code == BadWindow ||
-	    (ee->request_code == X_SetInputFocus && ee->error_code == BadMatch) ||
-	    (ee->request_code == X_PolyText8 && ee->error_code == BadDrawable) ||
-	    (ee->request_code == X_PolyFillRectangle &&
-	        ee->error_code == BadDrawable) ||
-	    (ee->request_code == X_PolySegment && ee->error_code == BadDrawable) ||
-	    (ee->request_code == X_ConfigureWindow &&
-	        ee->error_code == BadMatch) ||
-	    (ee->request_code == X_GrabButton && ee->error_code == BadAccess) ||
-	    (ee->request_code == X_GrabKey && ee->error_code == BadAccess) ||
-	    (ee->request_code == X_CopyArea && ee->error_code == BadDrawable))
+	/* X11 core error codes — xproto.h §XCB_REQUEST … XCB_IMPLEMENTATION */
+	static const char *names[] = {
+		/* 0 */ "Success",
+		/* 1 */ "BadRequest",
+		/* 2 */ "BadValue",
+		/* 3 */ "BadWindow",
+		/* 4 */ "BadPixmap",
+		/* 5 */ "BadAtom",
+		/* 6 */ "BadCursor",
+		/* 7 */ "BadFont",
+		/* 8 */ "BadMatch",
+		/* 9 */ "BadDrawable",
+		/* 10 */ "BadAccess",
+		/* 11 */ "BadAlloc",
+		/* 12 */ "BadColor",
+		/* 13 */ "BadGC",
+		/* 14 */ "BadIDChoice",
+		/* 15 */ "BadName",
+		/* 16 */ "BadLength",
+		/* 17 */ "BadImplementation",
+	};
+	if (error_code < (sizeof names / sizeof names[0]))
+		return names[error_code];
+	return "ExtensionError";
+}
+
+/* XCB async error handler — called from x_dispatch_cb() when the event
+ * response_type is 0 (error packet).  Mirrors the old Xlib xerror() logic
+ * but operates entirely on xcb_generic_error_t fields.
+ *
+ * Return values:  0 = benign, silently ignored.
+ *                 1 = unexpected; logged via awm_error but execution
+ * continues.
+ *
+ * Unlike the old Xlib handler we do NOT call exit() on unexpected errors —
+ * the async nature of XCB means some races are unavoidable and a WM must
+ * survive them.  Truly fatal conditions (X server death) are caught via the
+ * HUP/ERR path in xsource_dispatch(). */
+int
+xcb_error_handler(xcb_generic_error_t *e)
+{
+	uint8_t req = e->major_code;
+	uint8_t err = e->error_code;
+
+	/* Whitelist benign async errors that arise routinely in a WM:
+	 * - BadWindow:   window destroyed between our request and the reply
+	 * - SetInputFocus + BadMatch:   window became unviewable/unmapped
+	 * - PolyText8/PolyFillRectangle/PolySegment/CopyArea + BadDrawable:
+	 *     drawable destroyed while we were drawing
+	 * - ConfigureWindow + BadMatch: sibling ordering race
+	 * - GrabButton/GrabKey + BadAccess: another client owns the grab */
+	if (err == XCB_WINDOW || (req == X_SetInputFocus && err == XCB_MATCH) ||
+	    (req == X_PolyText8 && err == XCB_DRAWABLE) ||
+	    (req == X_PolyFillRectangle && err == XCB_DRAWABLE) ||
+	    (req == X_PolySegment && err == XCB_DRAWABLE) ||
+	    (req == X_ConfigureWindow && err == XCB_MATCH) ||
+	    (req == X_GrabButton && err == XCB_ACCESS) ||
+	    (req == X_GrabKey && err == XCB_ACCESS) ||
+	    (req == X_CopyArea && err == XCB_DRAWABLE))
 		return 0;
 #ifdef COMPOSITOR
 	/* Transient XRender errors (BadPicture, BadPictFormat) arise when a GL
-	 * window (e.g. alacritty) exits while a compositor repaint is in flight.
-	 * The compositor uses xerror_push_ignore() around individual calls, but
-	 * asynchronous errors can still slip through.  Whitelist them here so
-	 * the WM does not exit. */
+	 * window exits while a compositor repaint is in flight. */
 	{
 		int render_req, render_err;
 		compositor_xrender_errors(&render_req, &render_err);
-		if (render_req > 0 && ee->request_code == render_req &&
-		    (ee->error_code == render_err           /* BadPicture    */
-		        || ee->error_code == render_err + 1 /* BadPictFormat */
-		        || ee->error_code == BadDrawable ||
-		        ee->error_code == BadPixmap))
+		if (render_req > 0 && req == (uint8_t) render_req &&
+		    (err == (uint8_t) render_err             /* BadPicture    */
+		        || err == (uint8_t) (render_err + 1) /* BadPictFormat */
+		        || err == XCB_DRAWABLE || err == XCB_PIXMAP))
 			return 0;
 	}
-	/* Transient XDamage errors (BadDamage) arise when a window is destroyed
-	 * while we are calling XDamageDestroy on its Damage handle. */
+	/* Transient XDamage errors (BadDamage) when a window is destroyed
+	 * while we call xcb_damage_destroy on its damage handle. */
 	{
 		int damage_err;
 		compositor_damage_errors(&damage_err);
-		if (damage_err >= 0 && ee->error_code == damage_err) /* BadDamage */
+		if (damage_err >= 0 && err == (uint8_t) damage_err)
 			return 0;
 	}
-	/* Transient GLX errors arise when glXDestroyPixmap / glXReleaseTexImageEXT
-	 * is called on a pixmap that the X server has already invalidated — this
-	 * happens routinely when a fullscreen window bypasses the compositor and
-	 * its TFP pixmap is released mid-frame.  These are harmless; ignore them
-	 * rather than letting the default Xlib handler call exit(). */
+	/* GLX errors are stubs — compositor_glx_errors always returns -1 */
 	{
 		int glx_req, glx_err;
 		compositor_glx_errors(&glx_req, &glx_err);
-		if (glx_req > 0 && ee->request_code == glx_req) {
-			awm_debug("xerror: ignoring GLX error: "
-			          "request_code=%d error_code=%d",
-			    (int) ee->request_code, (int) ee->error_code);
-			return 0;
-		}
+		(void) glx_req;
 		(void) glx_err;
 	}
 #endif
-	{
-		char desc[128];
-		XGetErrorText(dpy, ee->error_code, desc, sizeof(desc));
-		awm_error("fatal X11 error: %s (request_code=%d error_code=%d "
-		          "resourceid=0x%lx)",
-		    desc, (int) ee->request_code, (int) ee->error_code,
-		    (unsigned long) ee->resourceid);
-	}
-	return xerrorxlib(dpy, ee); /* may call exit */
+	awm_error("X11 async error: %s (major=%d minor=%d error=%d resource=0x%x)",
+	    xcb_error_text(err), (int) req, (int) e->minor_code, (int) err,
+	    (unsigned) e->resource_id);
+	return 1;
 }

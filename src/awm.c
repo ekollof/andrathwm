@@ -40,14 +40,13 @@
 #include "config.h"
 
 /* variables */
-Systray  *systray  = NULL;
-Launcher *launcher = NULL;
-char      stext[STATUS_TEXT_LEN];
-int       screen;
-int       sw, sh; /* X display screen geometry width, height */
-int       bh;     /* bar height */
-int       lrpad;  /* sum of left and right padding for text */
-int (*xerrorxlib)(Display *, XErrorEvent *);
+Systray     *systray  = NULL;
+Launcher    *launcher = NULL;
+char         stext[STATUS_TEXT_LEN];
+int          screen;
+int          sw, sh; /* X display screen geometry width, height */
+int          bh;     /* bar height */
+int          lrpad;  /* sum of left and right padding for text */
 unsigned int numlockmask = 0;
 static guint xsource_id  = 0; /* GLib source ID for the X11 event source */
 #ifdef STATUSNOTIFIER
@@ -211,6 +210,14 @@ x_dispatch_cb(gpointer user_data)
 
 	while ((ev = xcb_poll_for_event(xc))) {
 		uint8_t type = ev->response_type & ~0x80;
+
+		/* XCB delivers async errors as packets with response_type == 0 */
+		if (ev->response_type == 0) {
+			xcb_error_handler((xcb_generic_error_t *) ev);
+			free(ev);
+			continue;
+		}
+
 #ifdef XRANDR
 		if (type == (uint8_t) (randrbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY)) {
 			/* XCB randr handles screen change — no XRRUpdateConfiguration

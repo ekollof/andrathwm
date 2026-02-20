@@ -31,7 +31,7 @@ int fake_signal(void);
 void grabkeys(void);
 void updatenumlockmask(void);
 
-/* X error handlers */
-int xerror(Display *dpy, XErrorEvent *ee);
+/* XCB async error handler — called from x_dispatch_cb() on response_type==0 */
+int xcb_error_handler(xcb_generic_error_t *e);
 
 #endif /* EVENTS_H */

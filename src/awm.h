@@ -4,7 +4,7 @@
 #ifndef AWM_H
 #define AWM_H
 
-#include <X11/Xlib.h>
+#include <X11/X.h>
 #include <X11/Xproto.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include <xcb/randr.h>
@@ -277,7 +277,6 @@ extern char              stext[STATUS_TEXT_LEN];
 extern int               restart;
 extern int               barsdirty;
 extern unsigned int      numlockmask;
-extern int (*xerrorxlib)(Display *, XErrorEvent *);
 extern xcb_timestamp_t
     last_event_time; /* timestamp of the most recent user event */
 extern xcb_key_symbols_t *keysyms;
