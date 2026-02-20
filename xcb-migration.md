@@ -135,19 +135,19 @@ New includes in `src/awm.h` (after `<X11/keysym.h>`):
 
 ---
 
-## Intentional Xlib keeps — do NOT migrate these
+## Intentional keeps — do NOT migrate these
 
-These are permanently Xlib and should not be touched:
+All Xlib has been removed.  The following things have no XCB equivalent and are
+implemented using inline protocol constants in `src/x11_constants.h` or are simply gone:
 
-| Location | Reason |
-|----------|--------|
-| `XSetErrorHandler` / `XSetIOErrorHandler` / `xerror*` | No XCB equivalent |
-| `XESetWireToEvent` in `compositor.c` | Mesa DRI3 hook — must stay Xlib |
-| `XOpenDisplay` / `XCloseDisplay` for `comp.gl_dpy` | EGL display — permanent keep |
-| `XDefaultScreen(dpy)` in `awm.c` setup | Used once to index XCB screen iterator; stays until `XOpenDisplay` is removed |
-| `DefaultScreen(dpy)` in `launcher.c` | Passed to `drw_create(dpy, scr, …)` — Phase 3 |
-| `XSetErrorHandler` / `XGetErrorText` in `events.c` | Permanent keep |
-| `compositor_fix_wire_to_event` keeps `XEvent*` signature | Calls `XESetWireToEvent` (Xlib API); call sites cast: `(XEvent *)(void *)ev` |
+| What | How it was handled |
+|------|--------------------|
+| `XSetErrorHandler` / `xerror()` | Replaced by `xcb_error_handler()` in `events.c`, wired into `x_dispatch_cb()` |
+| X11 error code names | Inline string table in `xcb_error_text()` (`events.c`) |
+| `LASTEvent` | Defined in `src/x11_constants.h` as `36` |
+| `KeySym` type | `typedef uint32_t KeySym` in `src/x11_constants.h` |
+| `X_ConfigureWindow` / `X_GrabButton` etc. | Eight `X_` request opcodes in `src/x11_constants.h` — XCB has no names for these |
+| `XESetWireToEvent` / `comp.gl_dpy` (EGL) | Removed — compositor is now pure XCB; `EGL_PLATFORM_XCB_EXT` used directly |
 
 ---
 
@@ -169,31 +169,23 @@ These are permanently Xlib and should not be touched:
 
 **Phase 6b (replace `<X11/X.h>` and `<X11/Xproto.h>` with XCB names + `src/x11_constants.h`) is complete as of `7d8e76d`.**
 
-The only X11 header remaining in the build is `<X11/Xlib.h>` (via `compositor.c`'s permanent Xlib keeps) and `<xcb/xproto.h>` (via `<xcb/xcb.h>`).  `src/x11_constants.h` covers the three things XCB has no name for: `KeySym`, `LASTEvent`, and the `X_` request opcodes.
+No X11 headers remain anywhere in `src/`.  `<xcb/xproto.h>` is pulled in transitively
+via `<xcb/xcb.h>` (XCB itself, not Xlib).  `src/x11_constants.h` covers the three things
+XCB has no name for: `KeySym`, `LASTEvent`, and the `X_` request opcodes.
 
 All Xlib event-dispatch APIs (`XMaskEvent`, `XNextEvent`, `XPending`, `XCheckTypedEvent`,
 `XPutBackEvent`) have been replaced with XCB equivalents.  All `handler[]` callbacks are
 now `void(*)(xcb_generic_event_t*)`.  The global `dpy` is gone; all TUs now reference
 the global `xcb_connection_t *xc` declared in `awm.h`.
 
-### Phase 3 — Drawing primitives (lower priority)
-
-`src/drw.c` drawing calls with no XCB equivalent — out of scope for this branch unless
-the Pango migration (already designed below) is implemented first.
-
-### Compositor permanent Xlib keeps (`compositor.c`)
-
-| Site | Why kept |
-|------|----------|
-| `XESetWireToEvent` | Mesa DRI3 hook — must stay Xlib |
-| `XOpenDisplay` / `XCloseDisplay` for `comp.gl_dpy` | EGL display — permanent keep |
+**The migration is complete.  There are no remaining candidates.**
 
 ---
 
 ## Constraints (always apply)
 
 - `-std=c11 -pedantic -Werror` — zero warnings, no VLAs, no implicit function declarations
-- `XGetXCBConnection(dpy)` is available in every file via `src/awm.h`
+- `xcb_connection_t *xc` is the global connection, declared `extern` in `src/awm.h`
 - All XCB reply memory freed with `free()` not `XFree()`
 - `XCB_CONFIG_WINDOW_*` value arrays must be in ascending bit-position order
 - `xcb_icccm_wm_hints_t.flags` is `int32_t`; `xcb_size_hints_t.flags` is `uint32_t`
@@ -208,366 +200,42 @@ the Pango migration (already designed below) is implemented first.
 
 ## Pango migration (`src/drw.c` / `src/drw.h`)
 
-**Goal:** Replace the Xft text-rendering path in `drw.c` with PangoCairo.  The Cairo
-surface (`drw->cairo_surface`) already exists and is used for icon rendering — Pango can
-render directly onto it, eliminating `XftDraw`, `XftFont`, `XftColor`, and every
-`XftFontMatch`/`XftTextExtentsUtf8`/`XftDrawStringUtf8` call.
-
-Benefits:
-- Font fallback becomes automatic (Pango handles Unicode coverage internally).
-- Font description strings become `"Family Size"` (Pango format) instead of
-  `"family:size=N"` (Xft/fontconfig pattern) — simpler and more familiar.
-- The manual per-codepoint `XftCharExists` loop and the `nomatches` ring-buffer cache are
-  completely eliminated.
-- `FcPattern` / `FcCharSet` / `FcConfigSubstitute` calls disappear.
-- `<X11/Xft/Xft.h>` is removed from the include tree.
-
-### Build system changes (`config.mk`)
-
-`pangocairo` is already available on this machine (version 1.57.0) and `cairo` is already
-linked via `SNILIBS` (`gtk+-3.0` pulls it in).  Add `pangocairo` explicitly and remove
-`FREETYPELIBS`:
-
-```makefile
-# Remove this line:
-FREETYPELIBS = -lfontconfig -lXft
-
-# Add this line:
-PANGOLIBS = $(shell pkg-config --libs pangocairo)
-PANGOINC  = $(shell pkg-config --cflags pangocairo)
-```
-
-In the `INCS` and `LIBS` lines, replace `${FREETYPEINC}` / `${FREETYPELIBS}` with
-`${PANGOINC}` / `${PANGOLIBS}`:
-
-```makefile
-INCS = -I. -Isrc -Ithird_party -I${X11INC} ${PANGOINC} ${SNIINC} ${XCBINC}
-LIBS = -L${X11LIB} -lX11 ${XINERAMALIBS} ${RANDRLIBS} ${XSSLIBS} ${PANGOLIBS} ${SNILIBS} ${COMPOSITORLIBS} ${XCBLIBS}
-```
-
-Note: `pkg-config pangocairo` already brings in `pango`, `cairo`, `glib-2.0`, and
-`fontconfig` transitively, so nothing else needs to be added.
-
-### `config.h` and `config.def.h` — font string format
-
-Both files define the `fonts[]` array.  Change the font string from Xft/fontconfig
-pattern format to Pango description format in **both files**:
-
-```c
-// Before (Xft format):
-static const char *fonts[] = {
-    "BerkeleyMono Nerd Font:size=12",
-};
-
-// After (Pango format):
-static const char *fonts[] = {
-    "BerkeleyMono Nerd Font 12",
-};
-```
-
-Pango description format: `"Family Style Size"` — the size is the last token, style words
-(Bold, Italic, etc.) go between family and size.  There is no `:size=` syntax.
-
-The `fonts[]` array is passed to `drw_fontset_create()`.  With Pango the first entry is
-the primary font description; additional entries are no longer needed for fallback (Pango
-handles that automatically), but the array can be kept for forward compat.
-
-### `src/drw.h` — struct and type changes
-
-```c
-// Remove:
-#include <X11/Xft/Xft.h>
-
-// Add:
-#include <pango/pangocairo.h>
-```
-
-Replace the `Fnt` struct:
-
-```c
-// Before:
-typedef struct Fnt {
-    Display     *dpy;
-    unsigned int h;
-    XftFont     *xfont;
-    FcPattern   *pattern;
-    struct Fnt  *next;
-} Fnt;
-
-// After:
-typedef struct Fnt {
-    unsigned int          h;       // line height in pixels (ascent + descent)
-    PangoFontDescription *desc;    // owned; freed in xfont_free()
-    struct Fnt           *next;    // kept for API compat; only head is used
-} Fnt;
-```
-
-Replace the `Clr` typedef.  `XftColor` was used because it carries both the X11 pixel
-value (for `XSetForeground`) and the `XRenderColor` channels (for `clr_to_argb` in
-`systray.c`).  The replacement must preserve both:
-
-```c
-// Before:
-typedef XftColor Clr;
-
-// After:
-typedef struct {
-    unsigned long  pixel;  // X11 pixel value — used by drw_rect via XSetForeground
-    unsigned short r, g, b, a;  // 16-bit channels — used by clr_to_argb() in systray.c
-} Clr;
-```
-
-In `drw_clr_create()` populate these by parsing the hex color string manually or via
-`XAllocNamedColor` / `XParseColor` (both Xlib, no round-trip cost on allocation):
-
-```c
-void
-drw_clr_create(Drw *drw, Clr *dest, const char *clrname)
-{
-    XColor xc;
-    if (!XParseColor(drw->dpy, DefaultColormap(drw->dpy, drw->screen),
-            clrname, &xc))
-        die("error, cannot parse color '%s'", clrname);
-    if (!XAllocColor(drw->dpy, DefaultColormap(drw->dpy, drw->screen), &xc))
-        die("error, cannot allocate color '%s'", clrname);
-    dest->pixel = xc.pixel;
-    dest->r     = xc.red;
-    dest->g     = xc.green;
-    dest->b     = xc.blue;
-    dest->a     = 0xffff;
-}
-```
-
-The `Drw` struct does not need new fields — `drw->cairo_surface` is already the surface
-Pango will render onto.
-
-### `src/drw.c` — implementation changes
-
-#### Remove all Xft headers / variables
-
-Remove from `drw_text()`:
-```c
-// Remove these declarations:
-XftDraw  *d = NULL;
-XftResult result;
-FcCharSet *fccharset;
-FcPattern *fcpattern, *match;
-// And the entire nomatches ring-buffer struct
-```
-
-Remove from `drw_font_getexts()`:
-```c
-XGlyphInfo ext;
-XftTextExtentsUtf8(font->dpy, font->xfont, (XftChar8 *) text, len, &ext);
-```
-
-#### `xfont_create()` — replace with Pango
-
-```c
-static Fnt *
-xfont_create(Drw *drw, const char *fontname)
-{
-    Fnt                  *font;
-    PangoFontDescription *desc;
-    PangoContext         *ctx;
-    PangoFontMetrics     *metrics;
-
-    desc = pango_font_description_from_string(fontname);
-    if (!desc) {
-        awm_error("cannot load font: '%s'", fontname);
-        return NULL;
-    }
-
-    font       = ecalloc(1, sizeof(Fnt));
-    font->desc = desc;
-
-    /* Measure line height using a temporary PangoContext on the Cairo surface */
-    {
-        cairo_t *tmp_cr = cairo_create(drw->cairo_surface);
-        ctx     = pango_cairo_create_context(tmp_cr);
-        cairo_destroy(tmp_cr);
-    }
-    metrics = pango_context_get_metrics(ctx, desc, NULL);
-    font->h = (pango_font_metrics_get_ascent(metrics) +
-               pango_font_metrics_get_descent(metrics)) / PANGO_SCALE;
-    pango_font_metrics_unref(metrics);
-    g_object_unref(ctx);
-
-    return font;
-}
-```
-
-#### `xfont_free()` — replace with Pango
-
-```c
-static void
-xfont_free(Fnt *font)
-{
-    if (!font)
-        return;
-    pango_font_description_free(font->desc);
-    free(font);
-}
-```
-
-#### `drw_text()` — replace rendering loop
-
-The entire per-codepoint `XftCharExists` loop, `XftFontMatch` fallback, `nomatches`
-cache, and `XftDrawStringUtf8` call are replaced with a single `PangoLayout` render:
-
-```c
-int
-drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h,
-    unsigned int lpad, const char *text, int invert)
-{
-    int          render = x || y || w || h;
-    PangoLayout *layout;
-    cairo_t     *cr;
-    int          tw, th;
-
-    if (!drw || (render && (!drw->scheme || !w)) || !text || !drw->fonts)
-        return 0;
-
-    if (!render) {
-        /* measurement-only mode */
-        cr     = cairo_create(drw->cairo_surface);
-        layout = pango_cairo_create_layout(cr);
-        pango_layout_set_font_description(layout, drw->fonts->desc);
-        pango_layout_set_text(layout, text, -1);
-        pango_layout_get_pixel_size(layout, &tw, NULL);
-        g_object_unref(layout);
-        cairo_destroy(cr);
-        return tw;
-    }
-
-    /* Fill background */
-    XSetForeground(drw->dpy, drw->gc,
-        drw->scheme[invert ? ColFg : ColBg].pixel);
-    XFillRectangle(drw->dpy, drw->drawable, drw->gc, x, y, w, h);
-    if (drw->cairo_surface)
-        cairo_surface_mark_dirty_rectangle(drw->cairo_surface, x, y, w, h);
-
-    /* Render text via PangoCairo */
-    cr     = cairo_create(drw->cairo_surface);
-    layout = pango_cairo_create_layout(cr);
-    pango_layout_set_font_description(layout, drw->fonts->desc);
-    pango_layout_set_text(layout, text, -1);
-
-    /* Ellipsize if needed */
-    pango_layout_set_width(layout, (int)(w - lpad) * PANGO_SCALE);
-    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
-
-    pango_layout_get_pixel_size(layout, &tw, &th);
-
-    /* Set foreground colour */
-    {
-        Clr *fg = &drw->scheme[invert ? ColBg : ColFg];
-        cairo_set_source_rgba(cr,
-            fg->r / 65535.0, fg->g / 65535.0, fg->b / 65535.0,
-            fg->a / 65535.0);
-    }
-
-    /* Vertically centre */
-    cairo_move_to(cr, x + lpad, y + (int)(h - th) / 2);
-    pango_cairo_show_layout(cr, layout);
-
-    g_object_unref(layout);
-    cairo_destroy(cr);
-
-    return x + w;
-}
-```
-
-#### `drw_font_getexts()` — remove entirely
-
-`drw_font_getexts` is only ever called from within `drw.c` itself (confirmed by audit).
-It is not part of the external API used by any other file.  After the migration:
-
-- Delete the implementation from `drw.c`.
-- Remove the declaration from `drw.h`.
-- The `drw.c` call site disappears because the per-segment measurement loop is gone.
-
-```c
-// DELETE from drw.c and drw.h — no longer needed
-void drw_font_getexts(Fnt *font, const char *text, unsigned int len,
-    unsigned int *w, unsigned int *h);
-```
-
-### `src/systray.c` — `clr_to_argb()` update
-
-`clr_to_argb` currently reads `clr->color.red`, `clr->color.green`, `clr->color.blue`
-which are `XftColor` fields.  After the `Clr` typedef change those become `clr->r`,
-`clr->g`, `clr->b`:
-
-```c
-// Before:
-return 0xFF000000UL | ((unsigned long) (clr->color.red   >> 8) << 16) |
-                      ((unsigned long) (clr->color.green  >> 8) <<  8) |
-                      ((unsigned long) (clr->color.blue   >> 8));
-
-// After:
-return 0xFF000000UL | ((unsigned long) (clr->r >> 8) << 16) |
-                      ((unsigned long) (clr->g >> 8) <<  8) |
-                      ((unsigned long) (clr->b >> 8));
-```
-
-Same fix applies to the three `scheme[SchemeNorm][ColFg].color.{red,green,blue}` field
-accesses at `systray.c:112-114`.
-
-### `src/awm.h` — include cleanup
-
-Remove:
-```c
-#include <X11/Xft/Xft.h>
-```
-
-This is currently at `awm.h:9`.  After the migration nothing outside `drw.c` references
-Xft types directly (the `Clr` typedef will be the new struct, not `XftColor`).
-
-### Invariants to preserve
-
-| Invariant | Why |
-|-----------|-----|
-| `Clr.pixel` field must remain | `drw_rect()` passes it to `XSetForeground` (`drw.c:294-295`) |
-| `Fnt.h` field must remain | Used as `bh` and `lrpad` throughout `awm.c`, `monitor.c`, `launcher.c`, `menu.c` |
-| `drw_text()` return value semantics | Returns new x position after text; callers rely on this |
-| `drw_fontset_getwidth()` unchanged | Calls `drw_text(drw, 0,0,0,0,0, text, 0)` — measurement mode must still return pixel width |
-| `drw_fontset_getwidth_clamp()` unchanged | Same |
-| `drw->cairo_surface` must be valid before `xfont_create` is called | `xfont_create` needs a `cairo_t` to build a `PangoContext` for metrics |
-| `drw_fontset_create` called after `drw_create` | Already the case in `awm.c:582` |
-| Font fallback | Handled automatically by Pango — no code needed |
-| `drw->fonts->next` chain | Can be preserved structurally for API compat, but Pango ignores it; the primary font's `PangoFontDescription` drives everything including fallback |
-
-### Files that do NOT need changes
-
-- `src/monitor.c` — uses `drw_text`, `drw_rect`, `drw_map`, `drw_setscheme` — all
-  unchanged externally
-- `src/launcher.c` — same
-- `src/menu.c` — same
-- `src/awm.c` — calls `drw_fontset_create`, `drw_scm_create`, `drw_free` — all unchanged
-  externally
-- `src/xrdb.c` — calls `drw_scm_create` with hex color strings — compatible with new
-  `drw_clr_create`
-- `src/compositor.c` — no drw usage at all
+**Done as of `e6d4f72`.**
+
+The Xft text-rendering path in `drw.c` was replaced with PangoCairo.  Summary of what
+changed:
+
+- `config.mk`: `FREETYPELIBS` (`-lfontconfig -lXft`) removed; `PANGOLIBS`/`PANGOINC`
+  added via `pkg-config pangocairo`.
+- `config.h` / `config.def.h`: font strings converted from Xft/fontconfig pattern format
+  (`"Family:size=N"`) to Pango description format (`"Family Size"`), e.g.
+  `"BerkeleyMono Nerd Font 12"`.
+- `src/drw.h`: `<X11/Xft/Xft.h>` removed; `<pango/pangocairo.h>` added.
+  `Fnt` struct now holds `PangoFontDescription *desc` + `unsigned int h`.
+  `Clr` typedef changed from `XftColor` to `struct { unsigned long pixel; unsigned short r, g, b, a; }`.
+- `src/drw.c`: `xfont_create` uses `pango_font_description_from_string` + `PangoFontMetrics`
+  for line height; `drw_text` replaced per-codepoint `XftCharExists`/`XftFontMatch` loop
+  with a single `PangoLayout` render via `pango_cairo_show_layout`; `drw_font_getexts`
+  deleted (was internal-only, now superseded by `pango_layout_get_pixel_size`).
+- `src/systray.c`: `clr_to_argb()` updated from `clr->color.red/green/blue` (XftColor
+  fields) to `clr->r/g/b` (new Clr struct fields).
+- **Bug fix** (`drw_fontset_getwidth_clamp`): the `n` argument (pixel-width clamp, `unsigned
+  int`) was incorrectly passed as the `invert` parameter to `drw_text`.  Fixed to pass `0`.
+  The function has no callers and is dead code inherited from dwm.
 
 ---
 
-## What "done" looks like
+## Migration complete
 
-The migration is complete when:
+`make clean && make` produces **zero warnings, zero errors** on clang with
+`-std=c11 -pedantic -Werror -Wall`.
 
-1. ~~**Phase 2** (event loop rewrite) is implemented~~ — **Done as of `beaeb24`.**
-2. ~~**Phase 3b** (global `Display *dpy` → `xcb_connection_t *xc`) is implemented~~ — **Done as of `615729e`.**
-3. ~~**Phase 3c** (`drw.c`/`drw.h` rewritten to pure XCB; Xlib types purged from all headers)~~ — **Done as of `23cf5a7`.**
-4. ~~**Phase 4** (migrate remaining `Window`/`Atom`/`Pixmap`/`Time` Xlib types to XCB equivalents)~~ — **Done as of `016c377`.**
-5. ~~**Phase 5** (eliminate all remaining Xlib symbolic constants, dead headers, `Bool`/`True`/`False`)~~ — **Done as of `875085b`.**
-6. `make clean && make` produces zero warnings and zero errors.
+Final state:
 
-At that point:
-- `XGetWindowProperty` will be fully eliminated from the core WM files.
-- `<X11/Xft/Xft.h>` will be gone from the build.
-- Text rendering will go through PangoCairo onto the existing `cairo_xcb_surface`.
-- The only remaining Xlib in `drw.c` will be `XCreatePixmap`, `XCreateGC`,
-  `XSetLineAttributes`, `XFreePixmap`, `XFreeGC`, `XCopyArea`, `XSetForeground`,
-  `XFillRectangle`, `XDrawRectangle`, `XCreateFontCursor`, `XFreeCursor` — drawing
-  primitives without practical XCB equivalents, out of scope for this branch.
+- Zero `#include <X11/...>` in `src/` — no Xlib headers anywhere.
+- Zero Xlib API calls in `src/` — verified by audit.
+- `libX11` is not in `awm`'s direct `NEEDED` list (`readelf -d awm`); it appears only
+  transitively via GTK (pulled in by the SNI/D-Bus system tray feature).
+- All event handlers are `void(*)(xcb_generic_event_t*)`.
+- Global connection is `xcb_connection_t *xc`, declared `extern` in `src/awm.h`.
+- Text rendering uses PangoCairo; font strings are Pango description format.

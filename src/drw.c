@@ -422,7 +422,7 @@ drw_fontset_getwidth_clamp(Drw *drw, const char *text, unsigned int n)
 {
 	unsigned int tmp = 0;
 	if (drw && drw->fonts && text && n)
-		tmp = drw_text(drw, 0, 0, 0, 0, 0, text, n);
+		tmp = drw_text(drw, 0, 0, 0, 0, 0, text, 0);
 	return MIN(n, tmp);
 }
 
