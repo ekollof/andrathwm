@@ -4,9 +4,9 @@
 #define DRW_H
 
 #include <X11/Xlib.h>
-#include <X11/Xft/Xft.h>
 #include <cairo/cairo.h>
 #include <cairo/cairo-xcb.h>
+#include <pango/pangocairo.h>
 #include <xcb/xcb.h>
 #include <xcb/render.h>
 
@@ -15,15 +15,18 @@ typedef struct {
 } Cur;
 
 typedef struct Fnt {
-	Display     *dpy;
-	unsigned int h;
-	XftFont     *xfont;
-	FcPattern   *pattern;
-	struct Fnt  *next;
+	unsigned int          h;    /* line height in pixels (ascent + descent) */
+	PangoFontDescription *desc; /* owned; freed in xfont_free() */
+	struct Fnt           *next; /* kept for API compat; only head is used */
 } Fnt;
 
 enum { ColFg, ColBg, ColBorder }; /* Clr scheme index */
-typedef XftColor Clr;
+typedef struct {
+	unsigned long
+	    pixel; /* X11 pixel value — used by drw_rect via XSetForeground */
+	unsigned short r, g, b,
+	    a; /* 16-bit channels — used by clr_to_argb() in systray.c */
+} Clr;
 
 typedef struct {
 	unsigned int w, h;
@@ -52,8 +55,6 @@ void drw_fontset_free(Fnt *set);
 unsigned int drw_fontset_getwidth(Drw *drw, const char *text);
 unsigned int drw_fontset_getwidth_clamp(
     Drw *drw, const char *text, unsigned int n);
-void drw_font_getexts(Fnt *font, const char *text, unsigned int len,
-    unsigned int *w, unsigned int *h);
 
 /* Colorscheme abstraction */
 void drw_clr_create(Drw *drw, Clr *dest, const char *clrname);

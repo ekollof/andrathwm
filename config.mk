@@ -35,16 +35,14 @@ XCBINC   = $(shell pkg-config --cflags xcb-icccm xcb-randr xcb-keysyms)
 COMPOSITORLIBS  = -lXcomposite -lXdamage -lXrender -lXfixes -lXext -lGL -lEGL -l:libX11-xcb.so.1 -lxcb -lxcb-render -lxcb-present
 COMPOSITORFLAGS = -DCOMPOSITOR
 
-# freetype
-FREETYPELIBS = -lfontconfig -lXft
-FREETYPEINC = /usr/include/freetype2
-# OpenBSD (uncomment)
-#FREETYPEINC = ${X11INC}/freetype2
+# PangoCairo (replaces Xft/freetype for text rendering)
+PANGOLIBS = $(shell pkg-config --libs pangocairo)
+PANGOINC  = $(shell pkg-config --cflags pangocairo)
 MANPREFIX = ${PREFIX}/man
 
 # includes and libs
-INCS = -I. -Isrc -Ithird_party -I${X11INC} -I${FREETYPEINC} ${SNIINC} ${XCBINC}
-LIBS = -L${X11LIB} -lX11 ${XINERAMALIBS} ${RANDRLIBS} ${XSSLIBS} ${FREETYPELIBS} ${SNILIBS} ${COMPOSITORLIBS} ${XCBLIBS}
+INCS = -I. -Isrc -Ithird_party -I${X11INC} ${PANGOINC} ${SNIINC} ${XCBINC}
+LIBS = -L${X11LIB} -lX11 ${XINERAMALIBS} ${RANDRLIBS} ${XSSLIBS} ${PANGOLIBS} ${SNILIBS} ${COMPOSITORLIBS} ${XCBLIBS}
 
 # flags
 CPPFLAGS = -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_XOPEN_SOURCE=700L -DVERSION=\"${VERSION}\" ${XINERAMAFLAGS} ${RANDRFLAGS} ${XSSFLAGS} ${SNIFLAGS} ${COMPOSITORFLAGS}

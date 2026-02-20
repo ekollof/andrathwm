@@ -39,7 +39,7 @@ const unsigned int iconcachemaxentries = 128; /* max cached icons (LRU) */
 const unsigned int dbustimeout         = 100; /* D-Bus timeout (ms) */
 #endif
 static const char *fonts[] = {
-	"BerkeleyMono Nerd Font:size=12",
+	"BerkeleyMono Nerd Font 12",
 };
 static char  normbgcolor[]     = "#222222";
 static char  normbordercolor[] = "#444444";

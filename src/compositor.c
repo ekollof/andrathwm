@@ -2477,12 +2477,11 @@ comp_do_repaint_gl(void)
 		/* Draw borders for managed clients */
 		if (cw->client && cw->bw > 0) {
 			int          sel = (selmon && cw->client == selmon->sel);
-			XRenderColor xrc =
-			    scheme[sel ? SchemeSel : SchemeNorm][ColBorder].color;
-			float        r  = (float) xrc.red / 65535.0f;
-			float        g  = (float) xrc.green / 65535.0f;
-			float        b  = (float) xrc.blue / 65535.0f;
-			float        a  = (float) xrc.alpha / 65535.0f;
+			Clr         *bc = &scheme[sel ? SchemeSel : SchemeNorm][ColBorder];
+			float        r  = (float) bc->r / 65535.0f;
+			float        g  = (float) bc->g / 65535.0f;
+			float        b  = (float) bc->b / 65535.0f;
+			float        a  = (float) bc->a / 65535.0f;
 			unsigned int bw = (unsigned int) cw->bw;
 			unsigned int ow = (unsigned int) cw->w + 2 * bw;
 			unsigned int oh = (unsigned int) cw->h + 2 * bw;
@@ -2588,9 +2587,9 @@ comp_do_repaint_xrender(void)
 		}
 
 		if (cw->client && cw->bw > 0) {
-			int          sel = (selmon && cw->client == selmon->sel);
-			XRenderColor bc =
-			    scheme[sel ? SchemeSel : SchemeNorm][ColBorder].color;
+			int  sel        = (selmon && cw->client == selmon->sel);
+			Clr *clr        = &scheme[sel ? SchemeSel : SchemeNorm][ColBorder];
+			XRenderColor bc = { clr->r, clr->g, clr->b, clr->a };
 			unsigned int bw = (unsigned int) cw->bw;
 			unsigned int ow = (unsigned int) cw->w + 2 * bw;
 			unsigned int oh = (unsigned int) cw->h + 2 * bw;

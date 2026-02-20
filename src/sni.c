@@ -1037,8 +1037,8 @@ sni_icon_render(SNIItem *item, int icon_size, cairo_surface_t *icon_surface)
 	 * channel) so a transparent clear would just produce opaque black. */
 	if (sni_scheme) {
 		Clr bg = sni_scheme[0][ColBg]; /* sni_scheme[SchemeNorm][ColBg] */
-		cairo_set_source_rgb(cr, bg.color.red / 65535.0,
-		    bg.color.green / 65535.0, bg.color.blue / 65535.0);
+		cairo_set_source_rgb(
+		    cr, bg.r / 65535.0, bg.g / 65535.0, bg.b / 65535.0);
 	} else {
 		cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
 	}
@@ -1254,8 +1254,8 @@ sni_render_item(SNIItem *item)
 	 * 24-bit pixmap so a semi-transparent paint would become opaque black. */
 	if (sni_scheme) {
 		Clr bg = sni_scheme[0][ColBg]; /* sni_scheme[SchemeNorm][ColBg] */
-		cairo_set_source_rgb(cr, bg.color.red / 65535.0,
-		    bg.color.green / 65535.0, bg.color.blue / 65535.0);
+		cairo_set_source_rgb(
+		    cr, bg.r / 65535.0, bg.g / 65535.0, bg.b / 65535.0);
 	} else {
 		cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
 	}

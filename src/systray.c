@@ -10,17 +10,14 @@
 #include "xrdb.h"
 #include "config.h"
 
-/* Convert a Clr (XftColor) to a 32-bit ARGB pixel suitable for use with
- * the systray's ARGB visual and colormap.  XftColor already carries the
- * pre-multiplied XRenderColor channels populated by XftColorAllocName /
- * XftColorAllocValue — no X roundtrip needed. */
+/* Convert a Clr to a 32-bit ARGB pixel suitable for use with
+ * the systray's ARGB visual and colormap. */
 unsigned long
 clr_to_argb(Clr *clr)
 {
-	/* XRenderColor channels are 16-bit (0–65535); shift to 8-bit and pack. */
-	return 0xFF000000UL | ((unsigned long) (clr->color.red >> 8) << 16) |
-	    ((unsigned long) (clr->color.green >> 8) << 8) |
-	    ((unsigned long) (clr->color.blue >> 8));
+	/* Clr channels are 16-bit (0–65535); shift to 8-bit and pack. */
+	return 0xFF000000UL | ((unsigned long) (clr->r >> 8) << 16) |
+	    ((unsigned long) (clr->g >> 8) << 8) | ((unsigned long) (clr->b >> 8));
 }
 
 unsigned int
@@ -108,10 +105,10 @@ updatesystrayiconcolors(void)
 	if (!showsystray || !systray)
 		return;
 
-	/* XftColor already carries XRenderColor channels — no X roundtrip. */
-	r = (uint32_t) scheme[SchemeNorm][ColFg].color.red;
-	g = (uint32_t) scheme[SchemeNorm][ColFg].color.green;
-	b = (uint32_t) scheme[SchemeNorm][ColFg].color.blue;
+	/* Clr carries r/g/b channels directly. */
+	r = (uint32_t) scheme[SchemeNorm][ColFg].r;
+	g = (uint32_t) scheme[SchemeNorm][ColFg].g;
+	b = (uint32_t) scheme[SchemeNorm][ColFg].b;
 
 	/* foreground color from bar scheme */
 	colors[0] = r;
