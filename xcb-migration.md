@@ -58,6 +58,7 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `f349de2` | `compositor.c`: complete XCB migration — all XComposite/XDamage/XFixes/XRender/XShape calls replaced; `damage_ring[]` / `dirty_get_bbox` types changed to `xcb_rectangle_t`; `config.mk` COMPOSITORLIBS updated |
 | `c42cf25` | Replace `XVisualIDFromVisual(DefaultVisual(dpy, screen))` with XCB screen setup walk at all sites: `xcb_screen_root_visual()` static inline helper added to `awm.h`; used in `compositor.c` (4×), `menu.c`, `launcher.c`; `drw.c` inlines the walk directly (no `awm.h` include) |
 | `9cf01d0` | `xidle`: replace all Xlib/XScreenSaver with `xcb-screensaver` — `xcb_connect`, `xcb_get_extension_data`, `xcb_screensaver_query_info`, `free`; `Makefile` xidle rule updated to `-lxcb -lxcb-screensaver` |
+| `3587a02` | `xrdb.c`: replace `XOpenDisplay`/`XResourceManagerString`/`XrmGetStringDatabase`/`XCloseDisplay` with `xcb_connect`/`xcb_intern_atom`/`xcb_get_property` on `RESOURCE_MANAGER` root property; `xrdb_lookup()` static helper for suffix key matching; `awm.c`: remove `XrmInitialize()`; `awm.h`: remove `<X11/Xresource.h>` and `XRDB_LOAD_COLOR` macro; `events.c`: `checkotherwm()` probe replaced with `xcb_change_window_attributes_checked`+`xcb_request_check`; `xerrorstart()` removed |
 
 ---
 
@@ -142,9 +143,9 @@ These are permanently Xlib and should not be touched:
 | `XSetTextProperty` / `Xutf8TextListToTextProperty` in `ewmh.c setdesktopnames()` | **MIGRATED** — now uses `xcb_change_property` with NUL-separated blob (`5611caa`) |
 | `XMaskEvent` in `movemouse`/`mouseresize` grab loops | Permanent keep — `handler[]` dispatch requires `XEvent*`; XCB event conversion not practical |
 | `menu.c` / `sni.c` Xinerama (`XineramaIsActive`, `XineramaQueryScreens`) | **MIGRATED** — `menu.c` now uses `xcb_xinerama_*` (`120a687`); `monitor.c` also migrated (`a2de4f0`) |
-| `XrmInitialize()` in `awm.c` | Required to initialise Xresource subsystem for `xrdb.c` intentional keep; no XCB equivalent |
-| `events.c:127` `XSelectInput` (SubstructureRedirectMask on root at WM-already-running check) | Part of a deliberate detect-and-die sequence; acceptable |
-| `events.c:127-130` `XSync` pair surrounding the above | Flush for the error probe |
+| `XrmInitialize()` in `awm.c` | **MIGRATED** — removed in `3587a02`; `xrdb.c` now uses `xcb_get_property` directly |
+| `events.c:127` `XSelectInput` (SubstructureRedirectMask on root at WM-already-running check) | **MIGRATED** — replaced with `xcb_change_window_attributes_checked`+`xcb_request_check` in `3587a02` |
+| `events.c:127-130` `XSync` pair surrounding the above | **MIGRATED** — removed in `3587a02` (XCB checked request is synchronous) |
 | `client.c:480` `XFree(name.value)` | Freeing result of `XGetTextProperty` (intentional keep) |
 | `events.c:419` / `compositor.c:913` `XFree(children)` | Freeing result of `XQueryTree` (intentional keep) |
 | `XPutBackEvent` (with `/* NOLINT */` cast) | Requeueing XCB events into Xlib queue for `XNextEvent` to pick up |
@@ -170,16 +171,7 @@ The only remaining Xlib in core WM files is the permanent-keep list above.
 
 Two items from the general keep list are also documented below for clarity:
 
-### 1. `events.c:127` — `XSelectInput` at WM-already-running probe
-
-```c
-XSelectInput(dpy, DefaultRootWindow(dpy), SubstructureRedirectMask);
-XSync(dpy, False);
-```
-Intentionally a probe — `XSync` triggers the error handler if another WM is running.
-One-shot startup path.  **Permanent acceptable keep.**
-
-### 2. `client.c` — `XMaskEvent` in `movemouse` / `resizemouse`
+### `client.c` — `XMaskEvent` in `movemouse` / `resizemouse`
 
 ```c
 XMaskEvent(dpy, MOUSEMASK | ExposureMask | SubstructureRedirectMask, &ev);
