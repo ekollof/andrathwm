@@ -33,6 +33,5 @@ void updatenumlockmask(void);
 
 /* X error handlers */
 int xerror(Display *dpy, XErrorEvent *ee);
-int xerrorstart(Display *dpy, XErrorEvent *ee);
 
 #endif /* EVENTS_H */

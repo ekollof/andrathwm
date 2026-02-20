@@ -122,12 +122,22 @@ buttonpress(XEvent *e)
 void
 checkotherwm(void)
 {
-	xerrorxlib = XSetErrorHandler(xerrorstart);
-	/* this causes an error if some other window manager is running */
-	XSelectInput(dpy, DefaultRootWindow(dpy), SubstructureRedirectMask);
-	XSync(dpy, False);
-	XSetErrorHandler(xerror);
-	XSync(dpy, False);
+	xcb_connection_t    *xc   = XGetXCBConnection(dpy);
+	uint32_t             mask = XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT;
+	xcb_void_cookie_t    ck;
+	xcb_generic_error_t *err;
+
+	/* Probe for another WM by requesting SubstructureRedirect on root.
+	 * Only one client may hold this mask; xcb_request_check returns an
+	 * error synchronously if another WM is already running. */
+	ck = xcb_change_window_attributes_checked(
+	    xc, root, XCB_CW_EVENT_MASK, &mask);
+	err = xcb_request_check(xc, ck);
+	if (err) {
+		free(err);
+		die("awm: another window manager is already running");
+	}
+	xerrorxlib = XSetErrorHandler(xerror);
 }
 
 void
@@ -805,13 +815,4 @@ xerror(Display *dpy, XErrorEvent *ee)
 		    (unsigned long) ee->resourceid);
 	}
 	return xerrorxlib(dpy, ee); /* may call exit */
-}
-
-/* Startup Error handler to check if another window manager
- * is already running. */
-int
-xerrorstart(Display *dpy, XErrorEvent *ee)
-{
-	die("awm: another window manager is already running");
-	return -1;
 }

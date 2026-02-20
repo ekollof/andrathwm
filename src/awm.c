@@ -722,7 +722,6 @@ main(int argc, char *argv[])
 		die("awm: cannot open display");
 	XSetIOErrorHandler(xioerror);
 	checkotherwm();
-	XrmInitialize();
 	loadxrdb();
 	setup();
 #ifdef __OpenBSD__

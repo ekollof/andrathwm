@@ -9,7 +9,6 @@
 #include <X11/Xlib.h>
 #include <X11/Xlib-xcb.h>
 #include <X11/Xproto.h>
-#include <X11/Xresource.h>
 #include <X11/Xutil.h>
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
@@ -86,29 +85,6 @@
 #define XEMBED_EMBEDDED_NOTIFY 0
 #define XEMBED_MAPPED (1 << 0)
 #define XEMBED_VERSION 0
-
-/* XRDB color loading helper */
-#define XRDB_LOAD_COLOR(R, V)                                    \
-	if (XrmGetResource(xrdb, R, NULL, &type, &value) == True) {  \
-		if (value.addr != NULL && strnlen(value.addr, 8) == 7 && \
-		    value.addr[0] == '#') {                              \
-			int i = 1;                                           \
-			for (; i <= 6; i++) {                                \
-				if (value.addr[i] < 48)                          \
-					break;                                       \
-				if (value.addr[i] > 57 && value.addr[i] < 65)    \
-					break;                                       \
-				if (value.addr[i] > 70 && value.addr[i] < 97)    \
-					break;                                       \
-				if (value.addr[i] > 102)                         \
-					break;                                       \
-			}                                                    \
-			if (i == 7) {                                        \
-				strncpy(V, value.addr, 7);                       \
-				V[7] = '\0';                                     \
-			}                                                    \
-		}                                                        \
-	}
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
