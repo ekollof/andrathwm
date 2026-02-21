@@ -183,8 +183,8 @@ updatesystray(void)
 
 			uint32_t bgpix =
 			    (uint32_t) clr_to_argb(&scheme[SchemeNorm][ColBg]);
-			uint32_t evmask =
-			    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE;
+			uint32_t evmask = XCB_EVENT_MASK_BUTTON_PRESS |
+			    XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
 			uint32_t one    = 1; /* override_redirect */
 			uint32_t cmap   = (uint32_t) systray->colormap;
 			uint32_t border = 0;
@@ -205,12 +205,6 @@ updatesystray(void)
 			        XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK |
 			        XCB_CW_COLORMAP,
 			    cw_vals);
-			/* XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY for icon embed events */
-			{
-				uint32_t mask = XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
-				xcb_change_window_attributes(
-				    xc, systray->win, XCB_CW_EVENT_MASK, &mask);
-			}
 			/* _NET_SYSTEM_TRAY_ORIENTATION */
 			{
 				uint32_t horz =

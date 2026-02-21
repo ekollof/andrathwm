@@ -210,7 +210,7 @@ clientmessage(xcb_generic_event_t *e)
 			}
 			/* Send XEMBED_EMBEDDED_NOTIFY to complete embedding per spec.
 			 * data1 = embedder window, data2 = protocol version */
-			sendevent(c->win, netatom[Xembed], XCB_EVENT_MASK_STRUCTURE_NOTIFY,
+			sendevent(c->win, xatom[Xembed], XCB_EVENT_MASK_STRUCTURE_NOTIFY,
 			    XCB_CURRENT_TIME, XEMBED_EMBEDDED_NOTIFY, 0, systray->win,
 			    XEMBED_VERSION);
 			xflush();
