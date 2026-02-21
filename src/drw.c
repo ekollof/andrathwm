@@ -164,6 +164,13 @@ xfont_create(Drw *drw, const char *fontname)
 
 	/* Measure line height using a temporary PangoContext on the Cairo surface
 	 */
+	if (!drw->cairo_surface) {
+		awm_error(
+		    "xfont_create: cairo surface not available for '%s'", fontname);
+		pango_font_description_free(font->desc);
+		free(font);
+		return NULL;
+	}
 	{
 		cairo_t *tmp_cr = cairo_create(drw->cairo_surface);
 		ctx             = pango_cairo_create_context(tmp_cr);
@@ -360,7 +367,10 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 	pango_layout_set_text(layout, text, -1);
 
 	/* Ellipsize if text exceeds available width */
-	pango_layout_set_width(layout, (int) (w - lpad) * PANGO_SCALE);
+	{
+		int avail = (lpad < w) ? (int) (w - lpad) : 0;
+		pango_layout_set_width(layout, avail * PANGO_SCALE);
+	}
 	pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
 
 	pango_layout_get_pixel_size(layout, &tw, &th);
@@ -485,6 +495,9 @@ drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 	if (!drw || !surface)
 		return;
 
+	if (!w || !h)
+		return;
+
 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
 		return;
 
@@ -577,7 +590,7 @@ drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 		xcb_create_gc(drw->xc, gc32, tmp_pm, 0, NULL);
 		xcb_put_image(drw->xc, XCB_IMAGE_FORMAT_Z_PIXMAP, tmp_pm, gc32,
 		    (uint16_t) src_w, (uint16_t) src_h, 0, 0, 0, 32,
-		    (uint32_t) (stride * src_h), data);
+		    (uint32_t) ((size_t) stride * (size_t) src_h), data);
 		xcb_free_gc(drw->xc, gc32);
 	}
 

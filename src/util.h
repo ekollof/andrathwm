@@ -3,6 +3,7 @@
 #ifndef UTIL_H
 #define UTIL_H
 
+#include <stdnoreturn.h>
 #include <unistd.h>
 
 #ifndef MAX
@@ -13,8 +14,8 @@
 #endif
 #define BETWEEN(X, A, B) ((A) <= (X) && (X) <= (B))
 
-void  die(const char *fmt, ...);
-void *ecalloc(size_t nmemb, size_t size);
+noreturn void die(const char *fmt, ...);
+void         *ecalloc(size_t nmemb, size_t size);
 
 /* Signal-safe logging - uses write() syscall, safe in signal handlers
  * NOTE: Only use string literals for prefix and msg (no formatting)

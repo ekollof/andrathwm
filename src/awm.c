@@ -74,7 +74,7 @@ void (*handler[LASTEvent])(xcb_generic_event_t *) = {
 	[XCB_UNMAP_NOTIFY]      = unmapnotify,
 };
 xcb_atom_t         wmatom[WMLast], netatom[NetLast], xatom[XLast];
-static xcb_atom_t  utf8string_atom; /* UTF8_STRING — used in setup() */
+xcb_atom_t         utf8string_atom; /* UTF8_STRING — used in setup() */
 int                restart         = 0;
 int                barsdirty       = 0;
 xcb_timestamp_t    last_event_time = XCB_CURRENT_TIME;
@@ -127,6 +127,8 @@ cleanup(void)
 	}
 	while (mons)
 		cleanupmon(mons);
+	free(cl);
+	cl = NULL;
 
 	if (showsystray) {
 

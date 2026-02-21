@@ -276,6 +276,7 @@ extern Monitor          *mons, *selmon;
 extern Clientlist       *cl;
 extern Systray          *systray;
 extern xcb_atom_t        wmatom[WMLast], netatom[NetLast], xatom[XLast];
+extern xcb_atom_t        utf8string_atom;
 extern char              stext[STATUS_TEXT_LEN];
 extern int               restart;
 extern int               barsdirty;

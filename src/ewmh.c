@@ -22,12 +22,9 @@ setcurrentdesktop(void)
 void
 setdesktopnames(void)
 {
-	char                     buf[1024];
-	size_t                   off = 0;
-	int                      i;
-	xcb_intern_atom_cookie_t ck;
-	xcb_intern_atom_reply_t *r;
-	xcb_atom_t               utf8str;
+	char   buf[1024];
+	size_t off = 0;
+	int    i;
 
 	/* Build NUL-separated blob of tag names for _NET_DESKTOP_NAMES */
 	for (i = 0; i < (int) TAGSLENGTH; i++) {
@@ -38,12 +35,8 @@ setdesktopnames(void)
 		off += len;
 		buf[off++] = '\0';
 	}
-	ck      = xcb_intern_atom(xc, 0, 11, "UTF8_STRING");
-	r       = xcb_intern_atom_reply(xc, ck, NULL);
-	utf8str = r ? r->atom : XCB_ATOM_STRING;
-	free(r);
 	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
-	    netatom[NetDesktopNames], utf8str, 8, (uint32_t) off, buf);
+	    netatom[NetDesktopNames], utf8string_atom, 8, (uint32_t) off, buf);
 }
 
 int
@@ -195,16 +188,20 @@ setewmhdesktop(Client *c)
 void
 updateworkarea(Monitor *m)
 {
-	uint32_t data[4];
+	uint32_t     data[4 * TAGSLENGTH];
+	unsigned int i;
 
-	/* Calculate workarea (screen minus bar) */
-	data[0] = (uint32_t) m->wx;
-	data[1] = (uint32_t) m->wy;
-	data[2] = (uint32_t) m->ww;
-	data[3] = (uint32_t) m->wh;
+	/* EWMH requires one 4-tuple per desktop (tag).
+	 * We set all desktops to the same workarea for this monitor. */
+	for (i = 0; i < TAGSLENGTH; i++) {
+		data[i * 4 + 0] = (uint32_t) m->wx;
+		data[i * 4 + 1] = (uint32_t) m->wy;
+		data[i * 4 + 2] = (uint32_t) m->ww;
+		data[i * 4 + 3] = (uint32_t) m->wh;
+	}
 
 	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root, netatom[NetWorkarea],
-	    XCB_ATOM_CARDINAL, 32, 4, data);
+	    XCB_ATOM_CARDINAL, 32, 4 * TAGSLENGTH, data);
 }
 
 unsigned long

@@ -280,8 +280,27 @@ configurenotify(xcb_generic_event_t *e)
 			updatebars();
 			for (m = mons; m; m = m->next) {
 				for (c = m->cl->clients; c; c = c->next)
-					if (c->isfullscreen)
-						resizeclient(c, m->mx, m->my, m->mw, m->mh);
+					if (c->isfullscreen) {
+						/* Move window to fill new monitor geometry without
+						 * touching old{x,y,w,h} so unfullscreen restores
+						 * the correct pre-fullscreen position. */
+						uint32_t vals[4] = {
+							(uint32_t) (int32_t) m->mx,
+							(uint32_t) (int32_t) m->my,
+							(uint32_t) m->mw,
+							(uint32_t) m->mh,
+						};
+						xcb_configure_window(xc, c->win,
+						    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+						        XCB_CONFIG_WINDOW_WIDTH |
+						        XCB_CONFIG_WINDOW_HEIGHT,
+						    vals);
+						c->x = m->mx;
+						c->y = m->my;
+						c->w = m->mw;
+						c->h = m->mh;
+						configure(c);
+					}
 				resizebarwin(m);
 			}
 			focus(NULL);
@@ -301,6 +320,13 @@ configurerequest(xcb_generic_event_t *e)
 	xcb_configure_request_event_t *ev = (xcb_configure_request_event_t *) e;
 
 	if ((c = wintoclient(ev->window))) {
+		if (c->isfullscreen) {
+			/* Don't let clients move/resize themselves while fullscreen;
+			 * just echo back the current geometry so they don't hang. */
+			configure(c);
+			xflush();
+			return;
+		}
 		if (ev->value_mask & XCB_CONFIG_WINDOW_BORDER_WIDTH)
 			c->bw = ev->border_width;
 		else if (c->isfloating || !selmon->lt[selmon->sellt]->arrange) {

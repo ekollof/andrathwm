@@ -40,7 +40,7 @@ removesystrayicon(Client *i)
 		return;
 	for (ii = &systray->icons; *ii && *ii != i; ii = &(*ii)->next)
 		;
-	if (ii)
+	if (*ii)
 		*ii = i->next;
 	freeicon(i);
 	free(i);
@@ -127,7 +127,7 @@ updatesystray(void)
 {
 	Client      *i;
 	Monitor     *m  = systraytomon(NULL);
-	unsigned int x  = m->mx + m->mw;
+	int          x  = (int) (m->mx + m->mw);
 	unsigned int sw = TEXTW(stext) - lrpad + systrayspacing;
 	unsigned int w  = 1;
 
@@ -183,7 +183,8 @@ updatesystray(void)
 
 			uint32_t bgpix =
 			    (uint32_t) clr_to_argb(&scheme[SchemeNorm][ColBg]);
-			uint32_t evmask = XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE;
+			uint32_t evmask =
+			    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE;
 			uint32_t one    = 1; /* override_redirect */
 			uint32_t cmap   = (uint32_t) systray->colormap;
 			uint32_t border = 0;
@@ -246,9 +247,9 @@ updatesystray(void)
 			int owns = sor && sor->owner == systray->win;
 			free(sor);
 			if (owns) {
-				sendevent(root, xatom[Manager], XCB_EVENT_MASK_STRUCTURE_NOTIFY,
-				    XCB_CURRENT_TIME, netatom[NetSystemTray], systray->win, 0,
-				    0);
+				sendevent(root, xatom[Manager],
+				    XCB_EVENT_MASK_STRUCTURE_NOTIFY, XCB_CURRENT_TIME,
+				    netatom[NetSystemTray], systray->win, 0, 0);
 				xflush();
 			} else {
 				awm_error("Unable to obtain system tray window");

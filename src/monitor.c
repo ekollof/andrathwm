@@ -158,10 +158,6 @@ createmon(void)
 		m->pertag->drawwithgaps[i] = startwithgaps[0];
 		m->pertag->gappx[i]        = gappx[0];
 	}
-	for (i = 0; i <= LENGTH(tags); i++) {
-		m->pertag->drawwithgaps[i] = startwithgaps[0];
-		m->pertag->gappx[i]        = gappx[0];
-	}
 
 	return m;
 }
@@ -682,12 +678,16 @@ updategeom(void)
 
 			/* Create new monitors if nn > n */
 			for (i = n; i < nn; i++) {
+				Monitor *nm = createmon();
+				if (!nm)
+					die("awm: createmon failed: monitor count exceeds tag "
+					    "count");
 				for (m = mons; m && m->next; m = m->next)
 					;
 				if (m)
-					m->next = createmon();
+					m->next = nm;
 				else
-					mons = createmon();
+					mons = nm;
 			}
 
 			/* Update monitor geometries */
@@ -758,12 +758,15 @@ xinerama_fallback:
 
 		/* new monitors if nn > n */
 		for (i = n; i < nn; i++) {
+			Monitor *nm = createmon();
+			if (!nm)
+				die("awm: createmon failed: monitor count exceeds tag count");
 			for (m = mons; m && m->next; m = m->next)
 				;
 			if (m)
-				m->next = createmon();
+				m->next = nm;
 			else
-				mons = createmon();
+				mons = nm;
 		}
 		for (i = 0, m = mons; i < nn && m; m = m->next, i++)
 			if (i >= n || unique[i].x_org != m->mx ||
@@ -801,6 +804,8 @@ default_monitor:
 	/* default monitor setup */
 	if (!mons)
 		mons = createmon();
+	if (!mons)
+		die("awm: createmon failed: monitor count exceeds tag count");
 	if (mons->mw != sw || mons->mh != sh) {
 		dirty    = 1;
 		mons->mw = mons->ww = sw;

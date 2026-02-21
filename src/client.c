@@ -484,9 +484,9 @@ getwmicon(xcb_window_t w, int size)
 	}
 
 	{
-		int            vlen   = xcb_get_property_value_length(r);
-		unsigned long *data   = (unsigned long *) xcb_get_property_value(r);
-		unsigned long  nitems = (unsigned long) vlen / sizeof(unsigned long);
+		int       vlen   = xcb_get_property_value_length(r);
+		uint32_t *data   = (uint32_t *) xcb_get_property_value(r);
+		uint32_t  nitems = (uint32_t) vlen / sizeof(uint32_t);
 
 		if (nitems > 2) {
 			unsigned long icon_w = data[0];
@@ -975,9 +975,9 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	c->oldh = c->h;
 	c->h    = h;
 	bw      = c->bw;
-	if (!selmon->pertag->drawwithgaps[selmon->pertag->curtag] &&
-	    (((nexttiled(c->mon->cl->clients, selmon) == c &&
-	          !nexttiled(c->next, selmon)) ||
+	if (!c->mon->pertag->drawwithgaps[c->mon->pertag->curtag] &&
+	    (((nexttiled(c->mon->cl->clients, c->mon) == c &&
+	          !nexttiled(c->next, c->mon)) ||
 	        &monocle == c->mon->lt[c->mon->sellt]->arrange)) &&
 	    !c->isfullscreen && !c->isfloating &&
 	    NULL != c->mon->lt[c->mon->sellt]->arrange) {
@@ -1584,8 +1584,12 @@ updatesizehints(Client *c)
 	} else
 		c->minw = c->minh = 0;
 	if (size.flags & XCB_ICCCM_SIZE_HINT_P_ASPECT) {
-		c->mina = (float) size.min_aspect_den / size.min_aspect_num;
-		c->maxa = (float) size.max_aspect_num / size.max_aspect_den;
+		c->mina = (size.min_aspect_num > 0)
+		    ? (float) size.min_aspect_den / size.min_aspect_num
+		    : 0.0f;
+		c->maxa = (size.max_aspect_den > 0)
+		    ? (float) size.max_aspect_num / size.max_aspect_den
+		    : 0.0f;
 	} else
 		c->maxa = c->mina = 0.0;
 	c->isfixed =
