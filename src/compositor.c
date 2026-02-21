@@ -111,7 +111,6 @@ static struct {
 	/* uniform locations */
 	GLint u_tex;
 	GLint u_opacity;
-	GLint u_flip_y; /* reserved: flip V coord (unused for EGL images)  */
 	GLint u_solid;  /* 1 = draw solid colour quad (borders)            */
 	GLint u_color;  /* solid colour (borders)                          */
 	GLint u_rect;   /* x, y, w, h in pixels (cached)                   */
@@ -244,14 +243,13 @@ static const char *vert_src =
     "out vec2 v_uv;\n"
     "uniform vec4 u_rect;\n"   /* x, y, w, h in pixels (top-left origin)  */
     "uniform vec2 u_screen;\n" /* screen width, height                    */
-    "uniform int  u_flip_y;\n" /* reserved: flip V if texture origin differs */
     "void main() {\n"
     "    vec2 px = u_rect.xy + a_pos * u_rect.zw;\n"
     "    gl_Position = vec4(\n"
     "        px.x / u_screen.x * 2.0 - 1.0,\n"
     "        1.0 - px.y / u_screen.y * 2.0,\n" /* Y-flip: screen top=0   */
     "        0.0, 1.0);\n"
-    "    v_uv = (u_flip_y == 1) ? vec2(a_uv.x, 1.0 - a_uv.y) : a_uv;\n"
+    "    v_uv = a_uv;\n"
     "}\n";
 
 /* Fragment shader: samples the window texture with opacity, or fills solid. */
@@ -390,8 +388,9 @@ comp_init_gl(void)
 	/* --- Check for required EGL extensions ----------------------------*/
 	egl_exts = eglQueryString(comp.egl_dpy, EGL_EXTENSIONS);
 
-	if (!egl_exts || !strstr(egl_exts, "EGL_KHR_image_pixmap")) {
-		awm_warn("compositor: EGL_KHR_image_pixmap unavailable, "
+	if (!egl_exts || !strstr(egl_exts, "EGL_KHR_image_base") ||
+	    !strstr(egl_exts, "EGL_KHR_image_pixmap")) {
+		awm_warn("compositor: EGL_KHR_image_base/pixmap unavailable, "
 		         "falling back to XRender");
 		eglTerminate(comp.egl_dpy);
 		comp.egl_dpy = EGL_NO_DISPLAY;
@@ -449,9 +448,12 @@ comp_init_gl(void)
 	}
 
 	/* --- Create GL context --------------------------------------------*/
+	/* Request GL 3.0: shaders use #version 130 (GLSL 1.30 = GL 3.0) and
+	 * VAOs are GL 3.0 core.  A GL 2.1 context is formally incorrect here
+	 * even though Mesa accepts it in practice. */
 	{
-		EGLint ctx_attr[] = { EGL_CONTEXT_MAJOR_VERSION, 2,
-			EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE };
+		EGLint ctx_attr[] = { EGL_CONTEXT_MAJOR_VERSION, 3,
+			EGL_CONTEXT_MINOR_VERSION, 0, EGL_NONE };
 		comp.egl_ctx =
 		    eglCreateContext(comp.egl_dpy, cfg, EGL_NO_CONTEXT, ctx_attr);
 	}
@@ -495,6 +497,24 @@ comp_init_gl(void)
 	/* Enable vsync */
 	eglSwapInterval(comp.egl_dpy, 1);
 
+	/* --- Check for required GL extension (GL side of EGL image TFP) -----*/
+	{
+		const char *gl_exts = (const char *) glGetString(GL_EXTENSIONS);
+		if (!gl_exts || !strstr(gl_exts, "GL_OES_EGL_image")) {
+			awm_warn("compositor: GL_OES_EGL_image unavailable, "
+			         "falling back to XRender");
+			eglMakeCurrent(
+			    comp.egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+			eglDestroySurface(comp.egl_dpy, comp.egl_win);
+			eglDestroyContext(comp.egl_dpy, comp.egl_ctx);
+			comp.egl_win = EGL_NO_SURFACE;
+			comp.egl_ctx = EGL_NO_CONTEXT;
+			eglTerminate(comp.egl_dpy);
+			comp.egl_dpy = EGL_NO_DISPLAY;
+			return -1;
+		}
+	}
+
 	/* --- Compile shaders -----------------------------------------------*/
 	vert = gl_compile_shader(GL_VERTEX_SHADER, vert_src);
 	frag = gl_compile_shader(GL_FRAGMENT_SHADER, frag_src);
@@ -532,7 +552,6 @@ comp_init_gl(void)
 	/* Cache uniform locations */
 	comp.u_tex     = glGetUniformLocation(comp.prog, "u_tex");
 	comp.u_opacity = glGetUniformLocation(comp.prog, "u_opacity");
-	comp.u_flip_y  = glGetUniformLocation(comp.prog, "u_flip_y");
 	comp.u_solid   = glGetUniformLocation(comp.prog, "u_solid");
 	comp.u_color   = glGetUniformLocation(comp.prog, "u_color");
 	comp.u_rect    = glGetUniformLocation(comp.prog, "u_rect");
@@ -610,8 +629,13 @@ comp_bind_tfp(CompWin *cw)
 	    EGL_NATIVE_PIXMAP_KHR, (EGLClientBuffer) (uintptr_t) cw->pixmap,
 	    img_attr);
 
-	if (cw->egl_image == EGL_NO_IMAGE_KHR)
+	if (cw->egl_image == EGL_NO_IMAGE_KHR) {
+		awm_warn("compositor: eglCreateImageKHR failed for window 0x%x "
+		         "(pixmap 0x%x, error 0x%x) — window will not be painted",
+		    (unsigned) cw->win, (unsigned) cw->pixmap,
+		    (unsigned) eglGetError());
 		return;
+	}
 
 	/* Allocate GL texture and attach the EGL image */
 	glGenTextures(1, &cw->texture);
@@ -1337,9 +1361,12 @@ comp_update_wallpaper(void)
 	if (pmap == 0)
 		return;
 
-	/* Always build the XRender picture — used by the XRender fallback path
-	 * and as a sentinel meaning "we have a wallpaper" in the GL path. */
-	{
+	if (comp.use_gl) {
+		/* GL path: no XRender picture needed — just record the pixmap XID
+		 * so comp_update_wallpaper can build an EGLImageKHR from it below. */
+		comp.wallpaper_pixmap = pmap;
+	} else {
+		/* XRender fallback: build a RepeatNormal picture on the pixmap. */
 		const xcb_render_pictvisual_t *pv;
 		xcb_render_pictformat_t        fmt;
 		uint32_t                       pmask;
@@ -1398,6 +1425,10 @@ comp_update_wallpaper(void)
 			comp.egl_image_target_tex(
 			    GL_TEXTURE_2D, (GLeglImageOES) comp.wallpaper_egl_image);
 			glBindTexture(GL_TEXTURE_2D, 0);
+		} else {
+			awm_warn("compositor: eglCreateImageKHR failed for wallpaper "
+			         "(pixmap 0x%x, error 0x%x) — background will be black",
+			    (unsigned) comp.wallpaper_pixmap, (unsigned) eglGetError());
 		}
 	}
 }
@@ -2617,14 +2648,13 @@ comp_do_repaint_gl(void)
 
 	/* --- Partial repaint via EGL_EXT_buffer_age + glScissor ------------- */
 	if (comp.has_buffer_age) {
-		unsigned int age = 0;
-		eglQuerySurface(
-		    comp.egl_dpy, comp.egl_win, EGL_BUFFER_AGE_EXT, (EGLint *) &age);
+		EGLint age = 0;
+		eglQuerySurface(comp.egl_dpy, comp.egl_win, EGL_BUFFER_AGE_EXT, &age);
 
 		/* age==0 means undefined (e.g. first frame or after resize);
 		 * fall back to full repaint.  age==1 means back buffer is one
 		 * frame old — only this frame's dirty rect needs repainting. */
-		if (age > 0 && age <= (unsigned int) DAMAGE_RING_SIZE) {
+		if (age > 0 && age <= (EGLint) DAMAGE_RING_SIZE) {
 			/* Collect current dirty bbox */
 			xcb_rectangle_t cur;
 			dirty_get_bbox(&cur);
@@ -2632,7 +2662,7 @@ comp_do_repaint_gl(void)
 			/* Union current dirty with the past (age-1) frames */
 			int x1 = cur.x, y1 = cur.y;
 			int x2 = x1 + cur.width, y2 = y1 + cur.height;
-			for (unsigned int a = 1; a < age; a++) {
+			for (EGLint a = 1; a < age; a++) {
 				int slot = ((comp.ring_idx - (int) a) + DAMAGE_RING_SIZE * 2) %
 				    DAMAGE_RING_SIZE;
 				xcb_rectangle_t *r = &comp.damage_ring[slot];
@@ -2702,7 +2732,6 @@ comp_do_repaint_gl(void)
 		/* EGLImageKHR is a live mapping — no rebind needed */
 		glUniform4f(comp.u_rect, 0.0f, 0.0f, (float) sw, (float) sh);
 		glUniform1f(comp.u_opacity, 1.0f);
-		glUniform1i(comp.u_flip_y, 0);
 		glUniform1i(comp.u_solid, 0);
 		glBindVertexArray(comp.vao);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -2730,7 +2759,6 @@ comp_do_repaint_gl(void)
 		glUniform4f(comp.u_rect, (float) cw->x, (float) cw->y,
 		    (float) (cw->w + 2 * cw->bw), (float) (cw->h + 2 * cw->bw));
 		glUniform1f(comp.u_opacity, (float) cw->opacity);
-		glUniform1i(comp.u_flip_y, 0); /* NDC Y-flip in vert shader suffices */
 		glUniform1i(comp.u_solid, 0);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
