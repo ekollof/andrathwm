@@ -138,6 +138,7 @@ static struct {
 	/* ---- Shared state ---- */
 	int   damage_ev_base;
 	int   damage_err_base;
+	int   damage_req_base;
 	int   xfixes_ev_base;
 	int   xfixes_err_base;
 	guint repaint_id;          /* GLib idle source id, 0 = none            */
@@ -693,6 +694,7 @@ compositor_init(GMainContext *ctx)
 	}
 	comp.damage_ev_base  = ext->first_event;
 	comp.damage_err_base = ext->first_error;
+	comp.damage_req_base = ext->major_opcode;
 	{
 		xcb_damage_query_version_cookie_t dvck;
 		xcb_damage_query_version_reply_t *dvr;
@@ -952,8 +954,9 @@ compositor_init(GMainContext *ctx)
 
 	schedule_repaint();
 
-	awm_debug("compositor: initialised (gl=%d damage_ev_base=%d)", comp.use_gl,
-	    comp.damage_ev_base);
+	awm_debug(
+	    "compositor: initialised (gl=%d damage_ev_base=%d damage_req_base=%d)",
+	    comp.use_gl, comp.damage_ev_base, comp.damage_req_base);
 	return 0;
 }
 
@@ -1694,6 +1697,10 @@ compositor_bypass_window(Client *c, int bypass)
 		if (comp.use_gl)
 			comp_release_tfp(cw);
 		comp_free_win(cw);
+		/* Caller is responsible for generating an Expose event on
+		 * the unredirected window after the overlay has been lowered,
+		 * so that the window repaints with the correct geometry.
+		 * (See setfullscreen() in client.c.) */
 	} else {
 		xcb_void_cookie_t    ck;
 		xcb_generic_error_t *err;
@@ -1713,6 +1720,81 @@ compositor_bypass_window(Client *c, int bypass)
 	}
 
 	schedule_repaint();
+}
+
+/*
+ * State for the deferred fullscreen bypass callback.
+ * Only one bypass can be pending at a time — if a second fullscreen fires
+ * before the first callback runs, the old source is cancelled and replaced.
+ */
+static xcb_window_t comp_pending_bypass_win = XCB_NONE;
+static guint        comp_pending_bypass_id  = 0;
+
+static gboolean
+comp_fullscreen_bypass_cb(gpointer data)
+{
+	xcb_window_t win = (xcb_window_t) (uintptr_t) data;
+	Client      *c   = NULL;
+	Monitor     *m;
+
+	comp_pending_bypass_id  = 0;
+	comp_pending_bypass_win = XCB_NONE;
+
+	if (!comp.active)
+		return G_SOURCE_REMOVE;
+
+	/* Resolve win back to a Client — the window may have been unmanaged
+	 * or un-fullscreened in the interval since the timeout was queued. */
+	for (m = mons; m; m = m->next) {
+		Client *tc;
+		for (tc = m->cl->clients; tc; tc = tc->next) {
+			if (tc->win == win) {
+				c = tc;
+				break;
+			}
+		}
+		if (c)
+			break;
+	}
+
+	/* Only proceed if the client is still fullscreen */
+	if (!c || !c->isfullscreen)
+		return G_SOURCE_REMOVE;
+
+	compositor_bypass_window(c, 1);
+
+	{
+		uint32_t vals[2] = { (uint32_t) c->mon->barwin, XCB_STACK_MODE_ABOVE };
+		xcb_configure_window(xc, c->win,
+		    XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, vals);
+	}
+
+	compositor_check_unredirect();
+	/* Fire Expose so the client repaints now that it owns the screen */
+	xcb_clear_area(xc, 1, (xcb_window_t) c->win, 0, 0, 0, 0);
+	xcb_flush(xc);
+
+	return G_SOURCE_REMOVE;
+}
+
+void
+compositor_defer_fullscreen_bypass(Client *c)
+{
+	if (!comp.active || !c)
+		return;
+
+	/* Cancel any previously pending bypass for a different window */
+	if (comp_pending_bypass_id) {
+		g_source_remove(comp_pending_bypass_id);
+		comp_pending_bypass_id  = 0;
+		comp_pending_bypass_win = XCB_NONE;
+	}
+
+	comp_pending_bypass_win = c->win;
+	/* 40 ms: enough for one composited frame plus the client's event-loop
+	 * iteration to process ConfigureNotify and fully repaint. */
+	comp_pending_bypass_id = g_timeout_add(
+	    40, comp_fullscreen_bypass_cb, (gpointer) (uintptr_t) c->win);
 }
 
 void
@@ -1886,7 +1968,7 @@ compositor_check_unredirect(void)
 	Client *sel;
 	int     should_pause;
 
-	if (!comp.active || !comp.use_gl)
+	if (!comp.active)
 		return;
 
 	sel          = selmon ? selmon->sel : NULL;
@@ -1953,6 +2035,17 @@ compositor_check_unredirect(void)
 				xcb_void_cookie_t    ck;
 				xcb_generic_error_t *err;
 
+				/* Do not re-redirect windows that carry an explicit
+				 * _NET_WM_BYPASS_COMPOSITOR hint (bypass_compositor==1).
+				 * Those windows were unredirected by
+				 * compositor_bypass_window() independently of the fullscreen
+				 * pause and must stay unredirected until the hint changes.
+				 * Blindly re-redirecting them here would silently undo the
+				 * bypass, causing the compositor to paint over them while they
+				 * still try to draw directly to the display. */
+				if (cw->client->bypass_compositor == 1)
+					continue;
+
 				ck = xcb_composite_redirect_window_checked(
 				    xc, (xcb_window_t) cw->win, XCB_COMPOSITE_REDIRECT_MANUAL);
 				err = xcb_request_check(xc, ck);
@@ -1996,13 +2089,13 @@ compositor_xrender_errors(int *req_base, int *err_base)
 }
 
 void
-compositor_damage_errors(int *err_base)
+compositor_damage_errors(int *req_base, int *err_base)
 {
-	if (!comp.active) {
-		*err_base = -1;
-		return;
-	}
-	*err_base = comp.damage_err_base;
+	/* Return the damage request/error bases even before comp.active is set —
+	 * async BadIDChoice errors from xcb_damage_subtract on stale events can
+	 * fire during the startup window scan before init completes. */
+	*req_base = comp.damage_req_base; /* 0 if not yet initialised */
+	*err_base = comp.damage_err_base; /* 0 if not yet initialised */
 }
 
 void
@@ -2012,6 +2105,16 @@ compositor_glx_errors(int *req_base, int *err_base)
 	 * the error-whitelisting logic in events.c is always a no-op. */
 	*req_base = -1;
 	*err_base = -1;
+}
+
+void
+compositor_present_errors(int *req_base)
+{
+	/* Return the Present major opcode even before comp.active is set —
+	 * async BadIDChoice errors from xcb_present_select_input on stale
+	 * event IDs can fire before init completes.
+	 * Present has no per-extension error base (errors are core types). */
+	*req_base = (int) (uint8_t) comp.present_opcode; /* 0 if not yet init */
 }
 
 void
@@ -2391,21 +2494,25 @@ comp_repaint_idle(gpointer data)
 
 	/* Drain any events still queued in the X connection before painting
 	 * so we paint one complete frame covering all accumulated damage
-	 * instead of a series of partial frames.  All events (not just
-	 * DamageNotify) are dispatched through compositor_handle_event so
-	 * that ConfigureNotify, MapNotify, etc. update compositor state
-	 * before the repaint.  Non-compositor events that arrived after the
-	 * main x_dispatch_cb run will be re-dispatched on the next GLib
-	 * iteration by x_dispatch_cb; there is no need to call WM handlers
-	 * here because we only see events that arrived since the last
-	 * x_dispatch_cb ran, and those will be handled before the next
-	 * repaint is triggered. */
+	 * instead of a series of partial frames.  All events are dispatched
+	 * through compositor_handle_event so that ConfigureNotify, MapNotify,
+	 * etc. update compositor state before the repaint.  Non-compositor
+	 * events are also dispatched to the WM handler[] table so that events
+	 * arriving between x_dispatch_cb runs (e.g. ConfigureNotify from a
+	 * resize, MapNotify from a new window) are not silently lost.
+	 * xcb_poll_for_event removes events from the queue permanently; if we
+	 * only fed them to compositor_handle_event the WM would never see them.
+	 * EnterNotify events are intentionally dropped here (same as in
+	 * arrange/restack) to avoid spurious focus changes mid-repaint. */
 	{
 		xcb_generic_event_t *xe;
 		xcb_flush(xc);
 		while ((xe = xcb_poll_for_event(xc))) {
+			uint8_t type = xe->response_type & ~0x80;
 			if (xe->response_type != 0)
 				compositor_handle_event(xe);
+			if (type != XCB_ENTER_NOTIFY && type < LASTEvent && handler[type])
+				handler[type](xe);
 			free(xe);
 		}
 	}

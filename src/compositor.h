@@ -45,6 +45,16 @@ void compositor_configure_window(Client *c, int actual_bw);
 void compositor_bypass_window(Client *c, int bypass);
 
 /*
+ * Schedule a deferred fullscreen bypass for client c.  Defers the
+ * compositor_bypass_window(c,1) + compositor_check_unredirect() sequence by
+ * one GLib main-loop iteration so the client (e.g. st) has time to process
+ * the ConfigureNotify from resizeclient() and fully repaint while still
+ * redirected.  The compositor paints one clean full-screen frame first, then
+ * the bypass fires.
+ */
+void compositor_defer_fullscreen_bypass(Client *c);
+
+/*
  * Called from propertynotify() when _NET_WM_WINDOW_OPACITY changes.
  * raw is the raw 32-bit property value (0 = fully transparent, 0xFFFFFFFF =
  * opaque).
@@ -84,7 +94,7 @@ void compositor_xrender_errors(int *req_base, int *err_base);
  * Needed by the X error handler to whitelist transient XDamage errors.
  * Sets to -1 if the compositor is not active.
  */
-void compositor_damage_errors(int *err_base);
+void compositor_damage_errors(int *req_base, int *err_base);
 
 /*
  * Fill *req_base and *err_base with the GLX extension major opcode and
@@ -94,6 +104,15 @@ void compositor_damage_errors(int *err_base);
  * Sets both to -1 if the compositor is inactive or not using GL.
  */
 void compositor_glx_errors(int *req_base, int *err_base);
+
+/*
+ * Fill *req_base with the X Present major opcode.
+ * Needed by the X error handler to whitelist transient BadIDChoice errors
+ * that arise when a Present event subscription EID is used after
+ * comp_free_win() destroyed it (stale Present events racing the unsubscribe).
+ * Sets to 0 if the compositor is not yet initialised or Present is absent.
+ */
+void compositor_present_errors(int *req_base);
 
 /*
  * Perform a compositor repaint synchronously right now, bypassing the GLib

@@ -497,6 +497,10 @@ intern_atoms(void)
 		{ &netatom[NetWMStateHidden], "_NET_WM_STATE_HIDDEN" },
 		{ &netatom[NetWMWindowType], "_NET_WM_WINDOW_TYPE" },
 		{ &netatom[NetWMWindowTypeDialog], "_NET_WM_WINDOW_TYPE_DIALOG" },
+		{ &netatom[NetWMWindowTypeDock], "_NET_WM_WINDOW_TYPE_DOCK" },
+		{ &netatom[NetWMWindowTypeToolbar], "_NET_WM_WINDOW_TYPE_TOOLBAR" },
+		{ &netatom[NetWMWindowTypeUtility], "_NET_WM_WINDOW_TYPE_UTILITY" },
+		{ &netatom[NetWMWindowTypeSplash], "_NET_WM_WINDOW_TYPE_SPLASH" },
 		{ &netatom[NetClientList], "_NET_CLIENT_LIST" },
 		{ &netatom[NetClientListStacking], "_NET_CLIENT_LIST_STACKING" },
 		{ &netatom[NetWMDesktop], "_NET_WM_DESKTOP" },
@@ -667,8 +671,7 @@ setup(void)
 	icon_init();
 #ifdef STATUSNOTIFIER
 	/* Initialize StatusNotifier support */
-	if (!sni_init(xc, drw->cairo_xcb, drw->xcb_visual, root, drw, scheme,
-	        sniconsize))
+	if (!sni_init(xc, xc, drw->xcb_visual, root, drw, scheme, sniconsize))
 		awm_warn("Failed to initialize StatusNotifier support");
 #endif
 	/* Initialize launcher */

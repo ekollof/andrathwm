@@ -822,11 +822,30 @@ xcb_error_handler(xcb_generic_error_t *e)
 			return 0;
 	}
 	/* Transient XDamage errors (BadDamage) when a window is destroyed
-	 * while we call xcb_damage_destroy on its damage handle. */
+	 * while we call xcb_damage_destroy on its damage handle.
+	 * BadIDChoice on XDamage Subtract arises when a stale DAMAGE_NOTIFY
+	 * event fires after comp_free_win() already destroyed the damage
+	 * object — the event was queued before the destroy, so we still try
+	 * to ack it and get an async BadIDChoice.  Both are benign. */
 	{
-		int damage_err;
-		compositor_damage_errors(&damage_err);
-		if (damage_err >= 0 && err == (uint8_t) damage_err)
+		int damage_req, damage_err;
+		compositor_damage_errors(&damage_req, &damage_err);
+		if (damage_err > 0 && err == (uint8_t) damage_err)
+			return 0;
+		if (damage_req > 0 && req == (uint8_t) damage_req &&
+		    err == XCB_ID_CHOICE)
+			return 0;
+	}
+	/* Transient X Present errors (BadIDChoice) arise when a stale
+	 * PresentCompleteNotify or similar event fires after comp_free_win()
+	 * already destroyed the Present event subscription (EID).  The X
+	 * server sends BadIDChoice on the next xcb_present_select_input
+	 * referencing that EID.  Benign — ignore. */
+	{
+		int present_req;
+		compositor_present_errors(&present_req);
+		if (present_req > 0 && req == (uint8_t) present_req &&
+		    err == XCB_ID_CHOICE)
 			return 0;
 	}
 	/* GLX errors are stubs — compositor_glx_errors always returns -1 */

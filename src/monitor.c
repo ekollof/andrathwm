@@ -423,6 +423,12 @@ restack(Monitor *m)
 			free(xe);
 		}
 	}
+	/* After stacking client windows, ensure the compositor overlay remains
+	 * on top.  xcb_configure_window(STACK_MODE_ABOVE) on client windows can
+	 * push them above the overlay, making the compositor paint under them. */
+#ifdef COMPOSITOR
+	compositor_raise_overlay();
+#endif
 	updateclientlist(); /* Update stacking order */
 }
 
@@ -454,9 +460,14 @@ tile(Monitor *m)
 				    m->wy + my,
 				    mw - (2 * c->bw) - m->pertag->gappx[m->pertag->curtag],
 				    h - (2 * c->bw), 0);
-				if (my + HEIGHT(c) + m->pertag->gappx[m->pertag->curtag] <
+				/* Advance by the ideal slot height (h + 2*bw), not the
+				 * hint-snapped HEIGHT(c).  If we used HEIGHT(c) and
+				 * applysizehints snapped the window smaller, the remaining
+				 * space would be divided as if less was consumed, causing
+				 * gaps to accumulate at the bottom of the column. */
+				if (my + h + 2 * c->bw + m->pertag->gappx[m->pertag->curtag] <
 				    m->wh)
-					my += HEIGHT(c) + m->pertag->gappx[m->pertag->curtag];
+					my += h + 2 * c->bw + m->pertag->gappx[m->pertag->curtag];
 			} else {
 				h = (m->wh - ty) / (n - i) -
 				    m->pertag->gappx[m->pertag->curtag];
@@ -465,9 +476,11 @@ tile(Monitor *m)
 				    m->ww - mw - (2 * c->bw) -
 				        2 * m->pertag->gappx[m->pertag->curtag],
 				    h - (2 * c->bw), 0);
-				if (ty + HEIGHT(c) + m->pertag->gappx[m->pertag->curtag] <
+				/* Same: advance by ideal slot height, not snapped HEIGHT(c).
+				 */
+				if (ty + h + 2 * c->bw + m->pertag->gappx[m->pertag->curtag] <
 				    m->wh)
-					ty += HEIGHT(c) + m->pertag->gappx[m->pertag->curtag];
+					ty += h + 2 * c->bw + m->pertag->gappx[m->pertag->curtag];
 			}
 	} else { /* draw with singularborders logic */
 		if (n > m->nmaster)
@@ -483,12 +496,12 @@ tile(Monitor *m)
 				else
 					resize(c, m->wx - c->bw, m->wy + my, mw - c->bw, h - c->bw,
 					    0);
-				my += HEIGHT(c) - c->bw;
+				my += h - c->bw; /* ideal slot, not snapped HEIGHT(c) */
 			} else {
 				h = (m->wh - ty) / (n - i);
 				resize(c, m->wx + mw - c->bw, m->wy + ty, m->ww - mw,
 				    h - c->bw, 0);
-				ty += HEIGHT(c) - c->bw;
+				ty += h - c->bw; /* ideal slot, not snapped HEIGHT(c) */
 			}
 	}
 }
