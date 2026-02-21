@@ -925,9 +925,9 @@ compositor_init(GMainContext *ctx)
 
 	{
 		xcb_intern_atom_cookie_t ck0 =
-		    xcb_intern_atom(xc, 0, 12, "_XROOTPMAP_ID");
+		    xcb_intern_atom(xc, 0, 13, "_XROOTPMAP_ID");
 		xcb_intern_atom_cookie_t ck1 =
-		    xcb_intern_atom(xc, 0, 15, "ESETROOT_PMAP_ID");
+		    xcb_intern_atom(xc, 0, 16, "ESETROOT_PMAP_ID");
 		xcb_intern_atom_cookie_t ck2 =
 		    xcb_intern_atom(xc, 0, 24, "_NET_WM_WINDOW_OPACITY");
 		xcb_intern_atom_reply_t *r0 = xcb_intern_atom_reply(xc, ck0, NULL);
@@ -1359,7 +1359,17 @@ comp_update_wallpaper(void)
 			    (xcb_drawable_t) pmap, fmt, pmask, &pval);
 			xcb_flush(xc);
 			err = xcb_request_check(xc, ck);
-			free(err); /* error intentionally discarded */
+			if (err) {
+				/* Picture creation failed (e.g. pixmap depth/visual
+				 * mismatch).  Release the XID and treat as no wallpaper
+				 * so the compositor falls back to a solid background. */
+				awm_warn("compositor: wallpaper picture creation failed "
+				         "(error %d); background will be black",
+				    (int) err->error_code);
+				xcb_render_free_picture(xc, comp.wallpaper_pict);
+				comp.wallpaper_pict = 0;
+				free(err);
+			}
 		}
 
 		if (comp.wallpaper_pict)
