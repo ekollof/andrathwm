@@ -422,6 +422,16 @@ scan(void)
 			continue;
 		if (map_state == XCB_MAP_STATE_VIEWABLE ||
 		    getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC) {
+			/* Skip XEMBED clients (systray icons reparented back to
+			 * root when the systray container was destroyed on restart) */
+			xcb_get_property_reply_t *xer       = xcb_get_property_reply(xc,
+			          xcb_get_property(xc, 0, wins[i],
+			              (xcb_atom_t) xatom[XembedInfo], XCB_ATOM_ANY, 0, 2),
+			          NULL);
+			int                       is_xembed = xer && xer->length > 0;
+			free(xer);
+			if (is_xembed)
+				continue;
 			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
 			xcb_get_geometry_reply_t *gr =
 			    xcb_get_geometry_reply(xc, gck, NULL);
@@ -446,6 +456,15 @@ scan(void)
 		        xcb_icccm_get_wm_transient_for(xc, wins[i]), &trans, NULL) &&
 		    (map_state == XCB_MAP_STATE_VIEWABLE ||
 		        getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC)) {
+			/* Skip XEMBED clients here too */
+			xcb_get_property_reply_t *xer       = xcb_get_property_reply(xc,
+			          xcb_get_property(xc, 0, wins[i],
+			              (xcb_atom_t) xatom[XembedInfo], XCB_ATOM_ANY, 0, 2),
+			          NULL);
+			int                       is_xembed = xer && xer->length > 0;
+			free(xer);
+			if (is_xembed)
+				continue;
 			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
 			xcb_get_geometry_reply_t *gr =
 			    xcb_get_geometry_reply(xc, gck, NULL);
@@ -688,13 +707,17 @@ setup(void)
 int
 main(int argc, char *argv[])
 {
+	int no_autostart = 0;
+
 	/* Initialize logging subsystem */
 	log_init("awm");
 
 	if (argc == 2 && !strcmp("-v", argv[1]))
 		die("awm-" VERSION);
+	else if (argc == 2 && !strcmp("-s", argv[1]))
+		no_autostart = 1;
 	else if (argc != 1)
-		die("usage: awm [-v]");
+		die("usage: awm [-v] [-s]");
 	if (!setlocale(LC_CTYPE, ""))
 		fputs("warning: no locale support\n", stderr);
 	xc = xcb_connect(NULL, &screen);
@@ -708,7 +731,7 @@ main(int argc, char *argv[])
 		die("pledge");
 #endif /* __OpenBSD__ */
 	scan();
-	if (!restart && !getenv("RESTARTED"))
+	if (!no_autostart && !restart && !getenv("RESTARTED"))
 		runautostart();
 	/* Always re-apply Xresources after scan: on a fresh start
 	 * autostart_blocking.sh may have just run `xrdb -merge`; on an
