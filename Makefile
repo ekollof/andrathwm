@@ -7,7 +7,16 @@ include config.mk
 SRCDIR = src
 BUILDDIR = build
 
-SRC = drw.c awm.c util.c menu.c dbus.c icon.c sni.c log.c \
+# Drawing backend: use 'make DRW_CAIRO=1' to build the pure Cairo backend
+# (src/drw_cairo.c) instead of the default hybrid XCB+Cairo backend (src/drw.c).
+# Both implement the same drw.h API; no callers need to change.
+ifdef DRW_CAIRO
+DRW_SRC = drw_cairo.c
+else
+DRW_SRC = drw.c
+endif
+
+SRC = $(DRW_SRC) awm.c util.c menu.c dbus.c icon.c sni.c log.c \
 	client.c monitor.c events.c ewmh.c systray.c spawn.c xrdb.c \
 	status.c status_util.c status_components.c launcher.c xsource.c \
 	compositor.c compositor_egl.c compositor_xrender.c
