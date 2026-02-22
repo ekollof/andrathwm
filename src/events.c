@@ -96,6 +96,7 @@ buttonpress(xcb_generic_event_t *e)
 		focus(c);
 		restack(selmon);
 		xcb_allow_events(xc, XCB_ALLOW_REPLAY_POINTER, XCB_CURRENT_TIME);
+		xflush();
 		click = ClkClientWin;
 	}
 #ifdef STATUSNOTIFIER
@@ -158,7 +159,7 @@ clientmessage(xcb_generic_event_t *e)
 	Client                     *c   = wintoclient(cme->window);
 	unsigned int                i;
 
-	if (showsystray && cme->window == systray->win &&
+	if (showsystray && systray && cme->window == systray->win &&
 	    cme->type == netatom[NetSystemTrayOP]) {
 		/* add systray icons */
 		if (cme->data.data32[1] == SYSTEM_TRAY_REQUEST_DOCK) {
@@ -249,8 +250,8 @@ clientmessage(xcb_generic_event_t *e)
 			xcb_set_close_down_mode(xc, XCB_CLOSE_DOWN_DESTROY_ALL);
 			xcb_kill_client(xc, c->win);
 			xcb_ungrab_server(xc);
-			xflush();
 		}
+		xflush();
 	} else if (cme->type == netatom[NetMoveResizeWindow]) {
 		/* _NET_MOVERESIZE_WINDOW client message */
 		int          x, y, w, h;
@@ -763,7 +764,7 @@ updatenumlockmask(void)
 				xcb_keycode_t *nl;
 				for (nl = nlcodes; *nl != XCB_NO_SYMBOL; nl++)
 					if (kc == *nl)
-						numlockmask = (1u << i);
+						numlockmask |= (1u << i);
 			}
 		free(nlcodes);
 	}

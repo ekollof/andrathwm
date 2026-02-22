@@ -872,8 +872,10 @@ movemouse(const Arg *arg)
 		}
 		free(gr);
 	}
-	if (!getrootptr(&x, &y))
+	if (!getrootptr(&x, &y)) {
+		xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
 		return;
+	}
 	xcb_flush(xc);
 	for (;;) {
 		while (!(xe = xcb_wait_for_event(xc)))
@@ -1106,9 +1108,11 @@ sendmon(Client *c, Monitor *m)
 	if (c->mon == m)
 		return;
 	unfocus(c, 1);
+	detach(c);
 	detachstack(c);
 	c->mon  = m;
 	c->tags = m->tagset[m->seltags];
+	attach(c);
 	attachstack(c);
 	focus(NULL);
 	arrange(NULL);
@@ -1175,7 +1179,7 @@ setgaps(const Arg *arg)
 	case GAP_RESET:
 		if (selmon->pertag->curtag > 0)
 			selmon->pertag->gappx[selmon->pertag->curtag] =
-			    gappx[selmon->pertag->curtag - 1 % LENGTH(gappx)];
+			    gappx[(selmon->pertag->curtag - 1) % LENGTH(gappx)];
 		else
 			selmon->pertag->gappx[0] = gappx[0];
 		break;
@@ -1258,7 +1262,8 @@ showhide(Client *c)
 		showhide(c->snext);
 		compositor_set_hidden(c, 1);
 		{
-			uint32_t vals[2] = { (uint32_t) (WIDTH(c) * -2), (uint32_t) c->y };
+			uint32_t vals[2] = { (uint32_t) (int32_t) (WIDTH(c) * -2),
+				(uint32_t) c->y };
 			xcb_configure_window(
 			    xc, c->win, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
 		}

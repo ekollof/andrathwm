@@ -87,6 +87,11 @@ drw_create(xcb_connection_t *xc, int screen, xcb_window_t root, unsigned int w,
 	if (drw->xcb_visual) {
 		drw->cairo_surface = cairo_xcb_surface_create(xc,
 		    (xcb_drawable_t) drw->drawable, drw->xcb_visual, (int) w, (int) h);
+		if (drw->cairo_surface &&
+		    cairo_surface_status(drw->cairo_surface) != CAIRO_STATUS_SUCCESS) {
+			cairo_surface_destroy(drw->cairo_surface);
+			drw->cairo_surface = NULL;
+		}
 	}
 
 	return drw;
@@ -124,6 +129,11 @@ drw_resize(Drw *drw, unsigned int w, unsigned int h)
 	if (drw->xcb_visual) {
 		drw->cairo_surface = cairo_xcb_surface_create(drw->xc,
 		    (xcb_drawable_t) drw->drawable, drw->xcb_visual, (int) w, (int) h);
+		if (drw->cairo_surface &&
+		    cairo_surface_status(drw->cairo_surface) != CAIRO_STATUS_SUCCESS) {
+			cairo_surface_destroy(drw->cairo_surface);
+			drw->cairo_surface = NULL;
+		}
 	}
 }
 
@@ -433,31 +443,12 @@ drw_fontset_getwidth_clamp(Drw *drw, const char *text, unsigned int n)
 Cur *
 drw_cur_create(Drw *drw, int shape)
 {
-	Cur                  *cur;
-	xcb_cursor_context_t *ctx;
+	Cur *cur;
 
 	if (!drw || !(cur = ecalloc(1, sizeof(Cur))))
 		return NULL;
 
-	/* Use xcb-cursor to load a cursor from the cursor font by glyph index
-	 */
-	if (xcb_cursor_context_new(drw->xc,
-	        xcb_setup_roots_iterator(xcb_get_setup(drw->xc)).data, &ctx) < 0) {
-		/* Fallback: create glyph cursor directly from cursor font */
-		xcb_font_t font = xcb_generate_id(drw->xc);
-		xcb_open_font(drw->xc, font, strlen("cursor"), "cursor");
-		cur->cursor = xcb_generate_id(drw->xc);
-		xcb_create_glyph_cursor(drw->xc, cur->cursor, font, font,
-		    (uint16_t) shape, (uint16_t) (shape + 1), 0, 0, 0, 65535, 65535,
-		    65535);
-		xcb_close_font(drw->xc, font);
-		return cur;
-	}
-
-	xcb_cursor_context_free(ctx);
-
-	/* Create glyph cursor directly — reliable and matches Xlib behaviour
-	 */
+	/* Create glyph cursor directly — reliable and matches Xlib behaviour */
 	{
 		xcb_font_t font = xcb_generate_id(drw->xc);
 		xcb_open_font(drw->xc, font, strlen("cursor"), "cursor");

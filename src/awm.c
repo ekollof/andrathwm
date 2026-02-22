@@ -131,7 +131,14 @@ cleanup(void)
 	cl = NULL;
 
 	if (showsystray) {
-
+		Client *ic = systray->icons;
+		while (ic) {
+			Client *next = ic->next;
+			free(ic);
+			ic = next;
+		}
+		if (systray->colormap)
+			xcb_free_colormap(xc, systray->colormap);
 		xcb_unmap_window(xc, systray->win);
 		xcb_destroy_window(xc, systray->win);
 		free(systray);
