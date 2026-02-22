@@ -762,6 +762,18 @@ on_search_changed(GtkSearchEntry *entry, gpointer user_data)
 		gtk_list_box_select_row(GTK_LIST_BOX(launcher->listbox), first);
 }
 
+/* Signal: delete-event — hide instead of destroying the window */
+static gboolean
+on_delete_event(GtkWidget *widget, GdkEvent *event, gpointer user_data)
+{
+	Launcher *launcher = (Launcher *) user_data;
+	(void) widget;
+	(void) event;
+
+	launcher_hide(launcher);
+	return TRUE; /* prevent GTK from destroying the window */
+}
+
 /* Signal: key press on the window */
 static gboolean
 on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
@@ -962,6 +974,8 @@ launcher_create(xcb_connection_t *xc, xcb_window_t root, Clr **scheme,
 	    G_CALLBACK(on_row_activated), launcher);
 	g_signal_connect(launcher->window, "key-press-event",
 	    G_CALLBACK(on_key_press), launcher);
+	g_signal_connect(launcher->window, "delete-event",
+	    G_CALLBACK(on_delete_event), launcher);
 
 	/* Hide by default */
 	gtk_widget_hide(launcher->window);
