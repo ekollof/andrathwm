@@ -97,11 +97,10 @@ void compositor_xrender_errors(int *req_base, int *err_base);
 void compositor_damage_errors(int *req_base, int *err_base);
 
 /*
- * Fill *req_base and *err_base with the GLX extension major opcode and
- * error base.  Needed by the X error handler to whitelist transient GLX
- * errors (e.g. GLXBadPixmap / GLXBadContextState) that arise when a TFP
- * pixmap is destroyed while rendering is in flight (e.g. on fullscreen).
- * Sets both to -1 if the compositor is inactive or not using GL.
+ * Always sets *req_base and *err_base to -1.
+ * The EGL backend has no X extension opcodes (unlike GLX/TFP), so there are
+ * no GLX error codes to whitelist.  This stub exists to avoid changing the
+ * X error handler in events.c; callers that see -1 skip the whitelist check.
  */
 void compositor_glx_errors(int *req_base, int *err_base);
 

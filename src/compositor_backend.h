@@ -96,6 +96,12 @@ typedef struct CompBackend {
 	/* Handle a screen resize (sw/sh already updated).
 	 * Called from compositor_notify_screen_resize(). */
 	void (*notify_resize)(void);
+
+	/* Apply the window's ShapeBounding clip to its picture/texture.
+	 * Called from the ShapeNotify handler when shape_kind==BOUNDING.
+	 * The EGL backend re-acquires the pixmap; XRender updates the picture
+	 * clip.  May be NULL if the backend has nothing to do here. */
+	void (*apply_shape)(CompWin *cw);
 } CompBackend;
 
 /* Backend singletons — defined in compositor_egl.c / compositor_xrender.c */

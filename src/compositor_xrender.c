@@ -87,13 +87,29 @@ xrender_init(void)
 
 	/* Overlay target picture */
 	xr.target = xcb_generate_id(xc);
-	xcb_render_create_picture(xr.target ? xc : xc, xr.target,
-	    (xcb_drawable_t) comp.overlay, fmt, pict_mask, &pict_val);
+	xcb_render_create_picture(xc, xr.target, (xcb_drawable_t) comp.overlay,
+	    fmt, pict_mask, &pict_val);
 
 	/* Back-buffer pixmap + picture */
-	xr.back_pixmap = xcb_generate_id(xc);
-	xcb_create_pixmap(xc, xcb_screen_root_depth(xc, screen), xr.back_pixmap,
-	    (xcb_drawable_t) root, (uint16_t) sw, (uint16_t) sh);
+	{
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *perr;
+
+		xr.back_pixmap = xcb_generate_id(xc);
+		ck = xcb_create_pixmap_checked(xc, xcb_screen_root_depth(xc, screen),
+		    xr.back_pixmap, (xcb_drawable_t) root, (uint16_t) sw,
+		    (uint16_t) sh);
+		xcb_flush(xc);
+		perr = xcb_request_check(xc, ck);
+		if (perr) {
+			awm_warn("compositor/xrender: back-buffer pixmap creation "
+			         "failed (error %d)",
+			    (int) perr->error_code);
+			free(perr);
+			xr.back_pixmap = 0;
+			return -1;
+		}
+	}
 
 	xr.back = xcb_generate_id(xc);
 	xcb_render_create_picture(xc, xr.back, (xcb_drawable_t) xr.back_pixmap,
@@ -118,6 +134,9 @@ xrender_cleanup(void)
 {
 	int i;
 
+	/* Wallpaper is released by xrender_release_wallpaper() before cleanup()
+	 * is called from compositor_cleanup().  The check below is a safety net
+	 * only; in normal operation xr.wallpaper_pict is already 0 here. */
 	if (xr.wallpaper_pict) {
 		xcb_render_free_picture(xc, xr.wallpaper_pict);
 		xr.wallpaper_pict = 0;
@@ -211,7 +230,18 @@ xrender_bind_pixmap(CompWin *cw)
         xc, cw->picture, (xcb_drawable_t) cw->pixmap, fmt, pmask, &pval);
 	xcb_flush(xc);
 	err = xcb_request_check(xc, ck);
-	free(err); /* error intentionally discarded — pixmap may be gone */
+	if (err) {
+		/* Picture creation failed — pixmap was likely destroyed between
+		 * comp_refresh_pixmap and here.  Free the unused XID and bail out
+		 * so subsequent ops don't operate on an invalid picture. */
+		awm_warn("compositor/xrender: CreatePicture failed for window 0x%x "
+		         "(error %d) — window will not be painted",
+		    (unsigned) cw->win, (int) err->error_code);
+		free(err);
+		xcb_render_free_picture(xc, cw->picture);
+		cw->picture = 0;
+		return;
+	}
 	xrender_apply_shape(cw);
 }
 
@@ -275,11 +305,6 @@ xrender_update_wallpaper(void)
 static void
 xrender_notify_resize(void)
 {
-	const xcb_render_pictvisual_t *pv;
-	xcb_render_pictformat_t        fmt;
-	uint32_t                       pmask;
-	uint32_t                       pval;
-
 	if (xr.back) {
 		xcb_render_free_picture(xc, xr.back);
 		xr.back = 0;
@@ -289,19 +314,37 @@ xrender_notify_resize(void)
 		xr.back_pixmap = 0;
 	}
 
-	xr.back_pixmap = xcb_generate_id(xc);
-	xcb_create_pixmap(xc, xcb_screen_root_depth(xc, screen), xr.back_pixmap,
-	    (xcb_drawable_t) root, (uint16_t) sw, (uint16_t) sh);
+	{
+		xcb_void_cookie_t              ck;
+		xcb_generic_error_t           *perr;
+		xcb_render_pictvisual_t const *pv2;
+		xcb_render_pictformat_t        fmt2;
+		uint32_t                       pmask2;
+		uint32_t                       pval2;
 
-	if (xr.back_pixmap) {
-		pv = xcb_render_util_find_visual_format(
+		xr.back_pixmap = xcb_generate_id(xc);
+		ck = xcb_create_pixmap_checked(xc, xcb_screen_root_depth(xc, screen),
+		    xr.back_pixmap, (xcb_drawable_t) root, (uint16_t) sw,
+		    (uint16_t) sh);
+		xcb_flush(xc);
+		perr = xcb_request_check(xc, ck);
+		if (perr) {
+			awm_warn("compositor/xrender: back-buffer resize pixmap "
+			         "failed (error %d)",
+			    (int) perr->error_code);
+			free(perr);
+			xr.back_pixmap = 0;
+			return;
+		}
+
+		pv2 = xcb_render_util_find_visual_format(
 		    comp.render_formats, xcb_screen_root_visual(xc, screen));
-		fmt     = pv ? pv->format : 0;
-		pmask   = XCB_RENDER_CP_SUBWINDOW_MODE;
-		pval    = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;
+		fmt2    = pv2 ? pv2->format : 0;
+		pmask2  = XCB_RENDER_CP_SUBWINDOW_MODE;
+		pval2   = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;
 		xr.back = xcb_generate_id(xc);
-		xcb_render_create_picture(
-		    xc, xr.back, (xcb_drawable_t) xr.back_pixmap, fmt, pmask, &pval);
+		xcb_render_create_picture(xc, xr.back, (xcb_drawable_t) xr.back_pixmap,
+		    fmt2, pmask2, &pval2);
 	}
 }
 
@@ -384,17 +427,6 @@ xrender_repaint(void)
 }
 
 /* -------------------------------------------------------------------------
- * Public accessor for comp_apply_shape — called from compositor.c when a
- * ShapeNotify arrives in the XRender path.
- * ---------------------------------------------------------------------- */
-
-void
-comp_xrender_apply_shape(CompWin *cw)
-{
-	xrender_apply_shape(cw);
-}
-
-/* -------------------------------------------------------------------------
  * Backend vtable singleton
  * ---------------------------------------------------------------------- */
 
@@ -407,6 +439,7 @@ const CompBackend comp_backend_xrender = {
 	.release_wallpaper = xrender_release_wallpaper,
 	.repaint           = xrender_repaint,
 	.notify_resize     = xrender_notify_resize,
+	.apply_shape       = xrender_apply_shape,
 };
 
 #endif /* COMPOSITOR */

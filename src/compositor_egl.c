@@ -450,14 +450,9 @@ egl_init(void)
 static void
 egl_cleanup(void)
 {
-	if (egl.wallpaper_texture) {
-		glDeleteTextures(1, &egl.wallpaper_texture);
-		egl.wallpaper_texture = 0;
-	}
-	if (egl.wallpaper_egl_image != EGL_NO_IMAGE_KHR) {
-		egl.egl_destroy_image(egl.egl_dpy, egl.wallpaper_egl_image);
-		egl.wallpaper_egl_image = EGL_NO_IMAGE_KHR;
-	}
+	/* Wallpaper resources are already freed by egl_release_wallpaper(), which
+	 * compositor_cleanup() calls before calling cleanup().  Do not free them
+	 * again here to avoid a double-free if the ordering is ever changed. */
 	if (egl.prog)
 		glDeleteProgram(egl.prog);
 	if (egl.vao)
@@ -783,6 +778,8 @@ const CompBackend comp_backend_egl = {
 	.release_wallpaper = egl_release_wallpaper,
 	.repaint           = egl_repaint,
 	.notify_resize     = egl_notify_resize,
+	.apply_shape = NULL, /* EGL handles ShapeNotify via comp_refresh_pixmap in
+	                        compositor.c */
 };
 
 #endif /* COMPOSITOR */

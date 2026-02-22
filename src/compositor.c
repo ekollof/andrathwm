@@ -132,9 +132,6 @@ comp_dirty_full(void)
 	comp.dirty_bbox_valid = 1;
 }
 
-/* Declared in compositor_xrender.c; called from the ShapeNotify handler. */
-void comp_xrender_apply_shape(CompWin *cw);
-
 /* -------------------------------------------------------------------------
  * compositor_init
  * ---------------------------------------------------------------------- */
@@ -142,7 +139,6 @@ void comp_xrender_apply_shape(CompWin *cw);
 int
 compositor_init(GMainContext *ctx)
 {
-	int                                i;
 	const xcb_query_extension_reply_t *ext;
 
 	memset(&comp, 0, sizeof(comp));
@@ -419,9 +415,6 @@ compositor_init(GMainContext *ctx)
 
 	schedule_repaint();
 
-	/* Suppress unused variable warning in case we add more backends later */
-	(void) i;
-
 	awm_debug("compositor: initialised (backend=%s damage_ev_base=%d)",
 	    (comp.backend == &comp_backend_egl) ? "egl" : "xrender",
 	    comp.damage_ev_base);
@@ -551,7 +544,8 @@ comp_free_win(CompWin *cw)
 		xcb_void_cookie_t    ck;
 		xcb_generic_error_t *err;
 
-		ck  = xcb_shape_select_input_checked(xc, (xcb_window_t) cw->win, 0);
+		ck = xcb_shape_select_input_checked(xc, (xcb_window_t) cw->win, 0);
+		xcb_flush(xc);
 		err = xcb_request_check(xc, ck);
 		free(err);
 	}
@@ -562,17 +556,22 @@ comp_free_win(CompWin *cw)
 		xcb_void_cookie_t    ck;
 		xcb_generic_error_t *err;
 
-		ck  = xcb_damage_destroy_checked(xc, cw->damage);
+		ck = xcb_damage_destroy_checked(xc, cw->damage);
+		xcb_flush(xc);
 		err = xcb_request_check(xc, ck);
 		free(err);
 		cw->damage = 0;
 	}
-	/* picture is owned by the XRender backend; it calls
-	 * xcb_render_free_picture in release_pixmap().  For the EGL backend
-	 * cw->picture is always 0. We clear it here as a safety measure in case
-	 * comp_free_win is called without a prior release_pixmap (e.g. on a window
-	 * that was never fully initialised). */
+	/* picture is owned by the XRender backend; it is freed and zeroed by
+	 * release_pixmap() (a vtable contract requirement — every backend's
+	 * release_pixmap must zero cw->picture before returning).  For the EGL
+	 * backend cw->picture is always 0.  This block is a defensive last-resort
+	 * for windows that were never fully initialised (no prior release_pixmap
+	 * call), but must NOT fire in normal operation. */
 	if (cw->picture) {
+		awm_warn("compositor: comp_free_win: cw->picture non-zero without "
+		         "prior release_pixmap — freeing defensively (window 0x%x)",
+		    (unsigned) cw->win);
 		xcb_render_free_picture(xc, cw->picture);
 		cw->picture = 0;
 	}
@@ -605,7 +604,12 @@ comp_refresh_pixmap(CompWin *cw)
 		    xc, (xcb_window_t) cw->win, pix);
 		xcb_flush(xc);
 		err = xcb_request_check(xc, ck);
-		free(err);
+		if (err) {
+			/* NameWindowPixmap failed (window unmapped/destroyed);
+			 * do not assign pix — it was never created on the server. */
+			free(err);
+			return;
+		}
 		cw->pixmap = pix;
 	}
 
@@ -1127,6 +1131,14 @@ compositor_check_unredirect(void)
 			g_source_remove(comp.repaint_id);
 			comp.repaint_id = 0;
 		}
+
+		/* Cancel any deferred fullscreen bypass that may fire after teardown.
+		 */
+		if (comp_pending_bypass_id) {
+			g_source_remove(comp_pending_bypass_id);
+			comp_pending_bypass_id  = 0;
+			comp_pending_bypass_win = XCB_NONE;
+		}
 		comp.vblank_armed    = 0;
 		comp.repaint_pending = 0;
 		{
@@ -1204,6 +1216,11 @@ compositor_xrender_errors(int *req_base, int *err_base)
 void
 compositor_damage_errors(int *req_base, int *err_base)
 {
+	if (!comp.active) {
+		*req_base = 0;
+		*err_base = 0;
+		return;
+	}
 	*req_base = comp.damage_req_base;
 	*err_base = comp.damage_err_base;
 }
@@ -1436,8 +1453,8 @@ compositor_handle_event(xcb_generic_event_t *ev)
 						 * the new shape. */
 						if (cw->redirected)
 							comp_refresh_pixmap(cw);
-					} else if (cw->picture) {
-						comp_xrender_apply_shape(cw);
+					} else if (comp.backend->apply_shape) {
+						comp.backend->apply_shape(cw);
 					}
 					schedule_repaint();
 				}
