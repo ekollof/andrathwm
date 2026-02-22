@@ -36,7 +36,8 @@
 #define LAUNCHER_SCROLL_BAR_WIDTH 6
 
 static const char *desktop_paths[] = {
-	"/usr/share/applications", "/usr/local/share/applications",
+	"/usr/share/applications",
+	"/usr/local/share/applications",
 	NULL, /* will be replaced with ~/.local/share/applications */
 	NULL, /* will be replaced with flatpak path */
 };
@@ -885,7 +886,7 @@ launcher_create(xcb_connection_t *xc, xcb_window_t root, Clr **scheme,
 		home = "/root";
 
 	for (i = 0; i < (int) (sizeof(desktop_paths) / sizeof(desktop_paths[0]));
-	     i++) {
+	    i++) {
 		if (desktop_paths[i] == NULL) {
 			if (i == 2) {
 				snprintf(
@@ -1447,7 +1448,11 @@ launcher_handle_event(Launcher *launcher, xcb_generic_event_t *ev)
 			char buf[32];
 			int  len;
 
+			/* xkb_keysym_to_utf8 returns byte count *including* the NUL
+			 * terminator, or 0 for no representation.  Subtract 1 to get
+			 * the number of actual data bytes to insert. */
 			len = xkb_keysym_to_utf8((xkb_keysym_t) key, buf, sizeof(buf));
+			len--; /* strip NUL: now len is real UTF-8 byte count, or -1 */
 			if (len > 0 &&
 			    (isprint((unsigned char) buf[0]) ||
 			        (unsigned char) buf[0] >= 0x80)) {
