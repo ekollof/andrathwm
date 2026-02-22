@@ -77,6 +77,7 @@ static Menu *sni_menu = NULL;
 /* Forward declarations for internal functions */
 static void sni_menu_item_activated(int item_id, SNIItem *item);
 static void sni_register_host(void);
+static void sni_queue_icon_load(SNIItem *item);
 
 /* Forward declarations for DBus handlers */
 static DBusHandlerResult sni_handle_register_item(
@@ -1103,8 +1104,161 @@ sni_render_item(SNIItem *item)
 	}
 
 	awm_debug("SNI: Placeholder rendered for %s", item->service);
-	/* Actual icon will be applied asynchronously by the icon loading system.
-	 */
+
+	/* Queue the real icon load now that the window exists. */
+	sni_queue_icon_load(item);
+}
+
+/* ============================================================================
+ * Real Icon Loading
+ * ============================================================================
+ */
+
+/* Context for async icon load — mirrors SNIGetAllCtx pattern. */
+typedef struct {
+	SNIItem *item;
+	uint32_t generation; /* snapshot of item->generation at dispatch time */
+} SNIIconLoadData;
+
+/* Paint a cairo surface onto item->win as its background pixmap. */
+static void
+sni_icon_render(SNIItem *item, cairo_surface_t *surface)
+{
+	xcb_pixmap_t     pixmap;
+	cairo_surface_t *pixmap_surface;
+	cairo_t         *cr;
+	uint8_t          depth;
+
+	if (!item || !item->win || !surface || !sni_cairo_xcb || !sni_xcb_visual)
+		return;
+
+	depth = (uint8_t) xcb_screen_root_depth_sni(sni_xc, screen);
+
+	pixmap = xcb_generate_id(sni_cairo_xcb);
+	xcb_create_pixmap(sni_cairo_xcb, depth, pixmap, (xcb_drawable_t) item->win,
+	    (uint16_t) sniconsize, (uint16_t) sniconsize);
+
+	pixmap_surface =
+	    cairo_xcb_surface_create(sni_cairo_xcb, (xcb_drawable_t) pixmap,
+	        sni_xcb_visual, (int) sniconsize, (int) sniconsize);
+
+	if (cairo_surface_status(pixmap_surface) != CAIRO_STATUS_SUCCESS) {
+		awm_error(
+		    "SNI: sni_icon_render: failed to create pixmap surface for %s",
+		    item->service);
+		cairo_surface_destroy(pixmap_surface);
+		xcb_free_pixmap(sni_cairo_xcb, pixmap);
+		return;
+	}
+
+	cr = cairo_create(pixmap_surface);
+
+	/* Fill background */
+	if (sni_scheme) {
+		Clr bg = sni_scheme[0][ColBg];
+		cairo_set_source_rgb(
+		    cr, bg.r / 65535.0, bg.g / 65535.0, bg.b / 65535.0);
+	} else {
+		cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+	}
+	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+	cairo_paint(cr);
+
+	/* Scale and paint the real icon on top */
+	{
+		double iw = cairo_image_surface_get_width(surface);
+		double ih = cairo_image_surface_get_height(surface);
+		if (iw > 0 && ih > 0) {
+			cairo_scale(cr, sniconsize / iw, sniconsize / ih);
+		}
+	}
+	cairo_set_source_surface(cr, surface, 0, 0);
+	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+	cairo_paint(cr);
+
+	cairo_destroy(cr);
+	cairo_surface_flush(pixmap_surface);
+	cairo_surface_destroy(pixmap_surface);
+
+	{
+		const uint32_t xcb_pm = (uint32_t) pixmap;
+		xcb_change_window_attributes(sni_cairo_xcb, (xcb_window_t) item->win,
+		    XCB_CW_BACK_PIXMAP, &xcb_pm);
+		xcb_clear_area(sni_cairo_xcb, 0, (xcb_window_t) item->win, 0, 0, 0, 0);
+		xcb_free_pixmap(sni_cairo_xcb, pixmap);
+	}
+	xcb_flush(sni_cairo_xcb);
+
+	awm_debug("SNI: Icon rendered for %s", item->service);
+}
+
+/* Callback from icon_load_async() — called on the GLib main loop. */
+static void
+sni_icon_loaded_cb(cairo_surface_t *surface, void *userdata)
+{
+	SNIIconLoadData *data = (SNIIconLoadData *) userdata;
+	SNIItem         *item;
+
+	if (!data)
+		return;
+
+	item = data->item;
+
+	/* Guard against use-after-free: check generation and list membership. */
+	if (item && item->generation == data->generation && sni_watcher) {
+		SNIItem *p;
+		for (p = sni_watcher->items; p; p = p->next) {
+			if (p == item)
+				break;
+		}
+		if (p == item && surface &&
+		    cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS) {
+			sni_icon_render(item, surface);
+		}
+	}
+
+	if (surface)
+		cairo_surface_destroy(surface);
+	free(data);
+}
+
+/* Determine the best icon source and kick off the load. */
+static void
+sni_queue_icon_load(SNIItem *item)
+{
+	if (!item)
+		return;
+
+	if (item->icon_pixmap_count > 0 && item->icon_pixmap) {
+		/* Inline ARGB pixmap — convert synchronously (fast, no I/O). */
+		cairo_surface_t *surface =
+		    icon_pixmap_to_surface((Icon *) item->icon_pixmap,
+		        item->icon_pixmap_count, (int) sniconsize);
+		if (surface) {
+			sni_icon_render(item, surface);
+			cairo_surface_destroy(surface);
+		}
+	} else if (item->icon_name && item->icon_name[0] != '\0') {
+		if (item->icon_name[0] == '/') {
+			/* Absolute path — use async load to avoid blocking the WM. */
+			SNIIconLoadData *data = malloc(sizeof(SNIIconLoadData));
+			if (!data)
+				return;
+			data->item       = item;
+			data->generation = item->generation;
+			icon_load_async(
+			    item->icon_name, (int) sniconsize, sni_icon_loaded_cb, data);
+		} else {
+			/* Theme name — icon_load() handles GTK theme lookup + caching. */
+			cairo_surface_t *surface =
+			    icon_load(item->icon_name, (int) sniconsize);
+			if (surface) {
+				sni_icon_render(item, surface);
+				cairo_surface_destroy(surface);
+			}
+		}
+	}
+	/* If neither pixmap nor name is available, the placeholder stays. */
 }
 
 void
