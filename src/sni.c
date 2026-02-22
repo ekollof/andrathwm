@@ -1240,14 +1240,28 @@ sni_queue_icon_load(SNIItem *item)
 		}
 	} else if (item->icon_name && item->icon_name[0] != '\0') {
 		if (item->icon_name[0] == '/') {
-			/* Absolute path — use async load to avoid blocking the WM. */
-			SNIIconLoadData *data = malloc(sizeof(SNIIconLoadData));
-			if (!data)
-				return;
-			data->item       = item;
-			data->generation = item->generation;
-			icon_load_async(
-			    item->icon_name, (int) sniconsize, sni_icon_loaded_cb, data);
+			const char *n = item->icon_name;
+			int         is_svg =
+			    (strstr(n, ".svg") != NULL || strstr(n, ".SVG") != NULL);
+			if (is_svg) {
+				/* SVG: rasterize synchronously via librsvg (no gdk-pixbuf
+				 * SVG loader required, and it's fast at icon sizes). */
+				cairo_surface_t *surface =
+				    icon_load(item->icon_name, (int) sniconsize);
+				if (surface) {
+					sni_icon_render(item, surface);
+					cairo_surface_destroy(surface);
+				}
+			} else {
+				/* Non-SVG absolute path — async load via gdk-pixbuf. */
+				SNIIconLoadData *data = malloc(sizeof(SNIIconLoadData));
+				if (!data)
+					return;
+				data->item       = item;
+				data->generation = item->generation;
+				icon_load_async(item->icon_name, (int) sniconsize,
+				    sni_icon_loaded_cb, data);
+			}
 		} else {
 			/* Theme name — icon_load() handles GTK theme lookup + caching. */
 			cairo_surface_t *surface =
