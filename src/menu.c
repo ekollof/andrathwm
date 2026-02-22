@@ -179,7 +179,9 @@ void
 menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
     xcb_timestamp_t event_time)
 {
-	GdkRectangle rect;
+	GdkRectangle    rect;
+	GdkEvent       *trigger;
+	GdkEventButton *btn;
 
 	if (!menu || !menu->items)
 		return;
@@ -208,13 +210,31 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
 	rect.width  = 1;
 	rect.height = 1;
 
+	/* Build a synthetic GdkEventButton carrying the real X server timestamp
+	 * and root coordinates.  Without this, gtk_menu_popup_at_rect uses
+	 * GDK_CURRENT_TIME for its seat grab — which races against the XCB
+	 * button-press awm already consumed — causing the grab to fail or the
+	 * menu to appear without proper input ownership, leaving hotkeys dead. */
+	trigger = gdk_event_new(GDK_BUTTON_PRESS);
+	btn     = (GdkEventButton *) trigger;
+	btn->window =
+	    g_object_ref(gdk_screen_get_root_window(gdk_screen_get_default()));
+	btn->send_event = TRUE;
+	btn->time       = (guint32) event_time;
+	btn->x_root     = (gdouble) x;
+	btn->y_root     = (gdouble) y;
+	btn->x          = (gdouble) x;
+	btn->y          = (gdouble) y;
+	btn->button     = 3;
+	btn->state      = 0;
+	btn->device     = gdk_seat_get_pointer(
+        gdk_display_get_default_seat(gdk_display_get_default()));
+
 	gtk_menu_popup_at_rect(GTK_MENU(menu->gtk_menu),
 	    gdk_screen_get_root_window(gdk_screen_get_default()), &rect,
-	    GDK_GRAVITY_NORTH_WEST, GDK_GRAVITY_NORTH_WEST,
-	    NULL /* no triggering GdkEvent; timestamp handled internally */);
+	    GDK_GRAVITY_NORTH_WEST, GDK_GRAVITY_NORTH_WEST, trigger);
 
-	/* Suppress unused event_time warning — GTK manages its own grab timing */
-	(void) event_time;
+	gdk_event_free(trigger);
 }
 
 void

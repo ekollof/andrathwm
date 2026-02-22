@@ -1048,8 +1048,17 @@ launcher_show(Launcher *launcher, int x, int y)
 	if (first)
 		gtk_list_box_select_row(GTK_LIST_BOX(launcher->listbox), first);
 
-	/* Realize first so gtk_window_move takes effect before mapping */
+	/* Realize first so gtk_window_move takes effect before mapping.
+	 * Also set override-redirect here defensively — the 'realize' signal
+	 * fires only once; if GTK already realized the window internally (e.g.
+	 * during gtk_widget_hide at create time) the signal callback is a no-op
+	 * for subsequent show calls, so we must apply it unconditionally. */
 	gtk_widget_realize(launcher->window);
+	{
+		GdkWindow *gdk_win = gtk_widget_get_window(launcher->window);
+		if (gdk_win)
+			gdk_window_set_override_redirect(gdk_win, TRUE);
+	}
 	gtk_window_move(GTK_WINDOW(launcher->window), x, y);
 	gtk_widget_show_all(launcher->window);
 	gtk_window_present(GTK_WINDOW(launcher->window));

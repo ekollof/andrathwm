@@ -104,6 +104,12 @@ buttonpress(xcb_generic_event_t *e)
 	else {
 		SNIItem *sni_item = sni_find_item_by_window(ev->event);
 		if (sni_item) {
+			/* Release the passive-grab pointer sync before handing off to
+			 * GTK — without this the X server keeps the pointer frozen and
+			 * GTK's subsequent seat-grab (for the popup menu) either fails
+			 * or never releases, killing awm's key bindings. */
+			xcb_allow_events(xc, XCB_ALLOW_SYNC_POINTER, ev->time);
+			xcb_flush(xc);
 			sni_handle_click(
 			    ev->event, ev->detail, ev->root_x, ev->root_y, ev->time);
 			return; /* Don't process further */
