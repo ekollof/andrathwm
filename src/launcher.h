@@ -2,15 +2,17 @@
  * See LICENSE file for copyright and license details.
  *
  * rofi-style launcher that reads .desktop files and falls back to PATH
+ * GTK backend: GtkWindow + GtkSearchEntry + GtkListBox
  */
 
 #ifndef LAUNCHER_H
 #define LAUNCHER_H
 
-#include "drw.h"
+#include <gtk/gtk.h>
 #include <xcb/xcb.h>
 #include <cairo/cairo.h>
 #include <stddef.h>
+#include "drw.h"
 
 #define LAUNCHER_ICON_SIZE 20
 
@@ -26,29 +28,19 @@ typedef struct LauncherItem {
 } LauncherItem;
 
 typedef struct {
-	xcb_connection_t *xc;
-	xcb_window_t      win;
-	Drw              *drw;
-	Clr             **scheme;
+	xcb_connection_t *xc;       /* kept only so fork() can close the fd */
+	const char       *terminal; /* Terminal emulator binary */
 
-	char input[256]; /* User input text */
-	int  input_len;  /* Current input length */
-	int  cursor_pos; /* Cursor position in input */
+	LauncherItem *items;      /* All available items (linked list) */
+	int           item_count; /* Total items */
 
-	LauncherItem  *items;         /* All available items */
-	LauncherItem **filtered;      /* Filtered/matching items */
-	int            item_count;    /* Total items */
-	int            visible_count; /* Filtered items */
-	int            selected;      /* Currently selected index */
+	int  visible;
+	char history_path[512]; /* Path to launch-history file */
 
-	int          x, y;
-	unsigned int w, h;
-
-	int          visible;
-	int          scroll_offset;
-	char         history_path[512]; /* Path to launch-history file */
-	unsigned int max_item_width; /* Widest item across all items, set once */
-	const char  *terminal; /* Terminal emulator binary for Terminal=true */
+	/* GTK widgets */
+	GtkWidget *window;  /* GtkWindow (POPUP_MENU hint, undecorated) */
+	GtkWidget *search;  /* GtkSearchEntry */
+	GtkWidget *listbox; /* GtkListBox */
 } Launcher;
 
 Launcher *launcher_create(xcb_connection_t *xc, xcb_window_t root,

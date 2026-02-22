@@ -1,13 +1,16 @@
 /* AndrathWM - Application Launcher
  * See LICENSE file for copyright and license details.
  *
- * rofi-style launcher that reads .desktop files and falls back to PATH
+ * rofi-style launcher that reads .desktop files and falls back to PATH.
+ * GTK backend: GtkWindow (undecorated, POPUP_MENU) + GtkSearchEntry +
+ * GtkScrolledWindow + GtkListBox.
+ *
+ * Everything related to item discovery, icon loading, history, and launching
+ * is identical to the original implementation.  Only the UI layer has
+ * changed: XCB windows / drw_* calls are replaced with GTK widgets driven
+ * by the GLib main loop that already runs in awm.c.
  */
 
-#include <xkbcommon/xkbcommon-keysyms.h>
-#include <xcb/xcb.h>
-#include <xcb/xcb_keysyms.h>
-#include <xkbcommon/xkbcommon.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -19,27 +22,23 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "drw.h"
+#include <gtk/gtk.h>
+#include <xcb/xcb.h>
+
 #include "icon.h"
 #include "launcher.h"
 #include "log.h"
 #include "util.h"
-#include "awm.h"
 
-#include <gtk/gtk.h>
-
-#define LAUNCHER_INPUT_HEIGHT 28
-#define LAUNCHER_ITEM_HEIGHT 24
-#define LAUNCHER_PADDING 8
-#define LAUNCHER_MIN_WIDTH 400
-#define LAUNCHER_MAX_VISIBLE 12
-#define LAUNCHER_SCROLL_BAR_WIDTH 6
+/* -------------------------------------------------------------------------
+ * Desktop file scanning (unchanged from original)
+ * ---------------------------------------------------------------------- */
 
 static const char *desktop_paths[] = {
 	"/usr/share/applications",
 	"/usr/local/share/applications",
-	NULL, /* will be replaced with ~/.local/share/applications */
-	NULL, /* will be replaced with flatpak path */
+	NULL, /* replaced at runtime with ~/.local/share/applications */
+	NULL, /* replaced at runtime with flatpak path */
 };
 
 static const char *skip_prefixes[] = {
@@ -50,14 +49,13 @@ static const char *skip_prefixes[] = {
 	"Encoding",
 };
 
-/*
- * Build a one-time lookup table: lowercase(last dot component) -> full icon
- * name. Used to resolve icon names like "Alacritty" ->
- * "com.alacritty.Alacritty".
- */
+/* -------------------------------------------------------------------------
+ * Icon alias table (unchanged)
+ * ---------------------------------------------------------------------- */
+
 typedef struct IconAlias {
-	char             *short_lower; /* lowercase last component */
-	char             *full_name;   /* actual theme icon name */
+	char             *short_lower;
+	char             *full_name;
 	struct IconAlias *next;
 } IconAlias;
 
@@ -93,7 +91,6 @@ icon_alias_build(void)
 	for (l = all; l; l = l->next) {
 		const char *name = (const char *) l->data;
 		const char *dot  = strrchr(name, '.');
-		/* only reverse-DNS style names (contain a dot) */
 		if (!dot)
 			continue;
 		const char *last = dot + 1;
@@ -162,19 +159,10 @@ launcher_load_icon(const char *icon_name, int size)
 	if (!icon_name || !*icon_name)
 		return NULL;
 
-	/* Try direct load first (handles absolute paths and exact theme names) */
 	surface = icon_load(icon_name, size);
 	if (surface)
 		return surface;
 
-	/*
-	 * Fallback: resolve via alias table.
-	 * Many apps use reverse-DNS icon names (e.g. com.alacritty.Alacritty)
-	 * while the .desktop file just says Icon=Alacritty.
-	 * Use icon_load() for the resolved name so SVG files go through
-	 * icon_load_svg() rather than gdk_pixbuf_new_from_file(), which
-	 * would bake in a white background.
-	 */
 	icon_alias_build();
 	resolved = icon_alias_lookup(icon_name);
 	if (!resolved)
@@ -183,14 +171,19 @@ launcher_load_icon(const char *icon_name, int size)
 	return icon_load(resolved, size);
 }
 
+/* -------------------------------------------------------------------------
+ * Item matching / sorting (unchanged)
+ * ---------------------------------------------------------------------- */
+
 static int
 launcher_item_matches(LauncherItem *item, const char *input)
 {
+	char name_lower[256];
+	char input_lower[256];
+
 	if (!input || !*input)
 		return 1;
 
-	char name_lower[256];
-	char input_lower[256];
 	strncpy(name_lower, item->name, sizeof(name_lower) - 1);
 	name_lower[sizeof(name_lower) - 1] = '\0';
 	strncpy(input_lower, input, sizeof(input_lower) - 1);
@@ -211,6 +204,28 @@ launcher_item_matches(LauncherItem *item, const char *input)
 }
 
 static int
+launcher_item_cmp(const void *a, const void *b)
+{
+	const LauncherItem *ia = *(const LauncherItem *const *) a;
+	const LauncherItem *ib = *(const LauncherItem *const *) b;
+	int                 ca = ia->launch_count > 0 ? ia->launch_count : 0;
+	int                 cb = ib->launch_count > 0 ? ib->launch_count : 0;
+
+	if (ca > 0 && cb > 0)
+		return (cb > ca) - (ca > cb);
+	if (ca > 0)
+		return -1;
+	if (cb > 0)
+		return 1;
+
+	return strcasecmp(ia->name, ib->name);
+}
+
+/* -------------------------------------------------------------------------
+ * Desktop file parsing helpers (unchanged)
+ * ---------------------------------------------------------------------- */
+
+static int
 launcher_is_executable(const char *path)
 {
 	struct stat st;
@@ -224,13 +239,6 @@ launcher_is_desktop_entry(const char *filename)
 	return len > 8 && strcmp(filename + len - 8, ".desktop") == 0;
 }
 
-/*
- * Strip XDG desktop file field codes from an Exec string in-place.
- * Per spec (XDG Desktop Entry 1.5 §11): field codes are %x where x is one of
- * u U f F d D n N i c k v m.  When not launched with a URI/file argument
- * (which a launcher never provides) they must be removed entirely.
- * %% is a literal '%' and is preserved as a single '%'.
- */
 static void
 exec_strip_field_codes(char *s)
 {
@@ -240,27 +248,22 @@ exec_strip_field_codes(char *s)
 		if (*r == '%' && *(r + 1) != '\0') {
 			char code = *(r + 1);
 			if (code == '%') {
-				/* %% -> literal % */
 				*w++ = '%';
 				r += 2;
 			} else if (code == 'u' || code == 'U' || code == 'f' ||
 			    code == 'F' || code == 'd' || code == 'D' || code == 'n' ||
 			    code == 'N' || code == 'v' || code == 'm' || code == 'k' ||
 			    code == 'c' || code == 'i') {
-				/* Skip the %x token and any surrounding whitespace */
 				r += 2;
-				/* Eat one trailing space so we don't leave a double-space */
 				if (*r == ' ')
 					r++;
 			} else {
-				/* Unknown %x: pass through unchanged */
 				*w++ = *r++;
 			}
 		} else {
 			*w++ = *r++;
 		}
 	}
-	/* Trim any trailing spaces left by removed tokens */
 	while (w > s && *(w - 1) == ' ')
 		w--;
 	*w = '\0';
@@ -271,8 +274,7 @@ launcher_get_value(char *line, const char *key)
 {
 	size_t keylen = strlen(key);
 	if (strncmp(line, key, keylen) == 0 && line[keylen] == '=') {
-		char *val = line + keylen + 1;
-		/* Strip trailing newline/carriage-return in place */
+		char  *val  = line + keylen + 1;
 		size_t vlen = strlen(val);
 		while (vlen > 0 && (val[vlen - 1] == '\n' || val[vlen - 1] == '\r'))
 			val[--vlen] = '\0';
@@ -295,18 +297,16 @@ launcher_should_skip_entry(const char *name)
 static LauncherItem *
 launcher_parse_desktop_file(const char *path)
 {
-	/* Check filename against skip_prefixes before opening the file */
 	const char *basename = strrchr(path, '/');
 	basename             = basename ? basename + 1 : path;
 
-	/* Skip entries whose filename matches a known prefix */
 	if (launcher_should_skip_entry(basename))
 		return NULL;
 
 	FILE         *fp;
 	char         *line = NULL;
 	size_t        len  = 0;
-	ssize_t       read;
+	ssize_t       nread;
 	char         *name       = NULL;
 	char         *exec_cmd   = NULL;
 	char         *icon       = NULL;
@@ -318,7 +318,7 @@ launcher_parse_desktop_file(const char *path)
 	if (!fp)
 		return NULL;
 
-	while ((read = getline(&line, &len, fp)) != -1) {
+	while ((nread = getline(&line, &len, fp)) != -1) {
 		if (line[0] == '[') {
 			if (name && exec_cmd && strcmp(line, "[Desktop Entry]\n") != 0)
 				break;
@@ -358,12 +358,9 @@ launcher_parse_desktop_file(const char *path)
 	fclose(fp);
 
 	if (!name || !exec_cmd || no_display) {
-		if (name)
-			free(name);
-		if (exec_cmd)
-			free(exec_cmd);
-		if (icon)
-			free(icon);
+		free(name);
+		free(exec_cmd);
+		free(icon);
 		return NULL;
 	}
 
@@ -458,8 +455,6 @@ launcher_scan_path(LauncherItem *existing)
 				if (!launcher_is_executable(full_path))
 					continue;
 
-				/* Skip if already present in desktop items or this PATH list
-				 */
 				if (launcher_find_duplicates(existing, entry->d_name))
 					continue;
 				if (launcher_find_duplicates(items, entry->d_name))
@@ -485,14 +480,9 @@ launcher_scan_path(LauncherItem *existing)
 	return items;
 }
 
-/*
- * History: persist launch counts in a plain-text file.
- * Format: one entry per line — "name\tcount\n".
- * Location: $XDG_STATE_HOME/awm/launcher_history
- *           (falls back to ~/.local/state/awm/launcher_history)
- */
-
-#define LAUNCHER_HISTORY_TOP 10 /* items ranked above alphabetic block */
+/* -------------------------------------------------------------------------
+ * History (unchanged)
+ * ---------------------------------------------------------------------- */
 
 static void
 launcher_history_path(char *out, size_t sz)
@@ -521,7 +511,6 @@ launcher_history_load(Launcher *launcher)
 		return;
 
 	while (fgets(line, sizeof(line), f)) {
-		/* strip trailing newline */
 		size_t len = strlen(line);
 		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
 			line[--len] = '\0';
@@ -552,14 +541,11 @@ launcher_history_save(Launcher *launcher)
 	char          tmp[512];
 	int           n;
 
-	/* Ensure parent directory exists */
 	n = snprintf(tmp, sizeof(tmp), "%s", launcher->history_path);
-	/* strip filename component */
 	while (n > 0 && tmp[n - 1] != '/')
 		n--;
 	if (n > 0) {
 		tmp[n] = '\0';
-		/* mkdir -p: create each component */
 		for (int i = 1; i <= n; i++) {
 			if (tmp[i] == '/' || tmp[i] == '\0') {
 				char save = tmp[i];
@@ -581,206 +567,139 @@ launcher_history_save(Launcher *launcher)
 	fclose(f);
 }
 
-/*
- * Sort comparator for the filtered array.
- * Items with a positive launch_count are ranked by count descending
- * (up to LAUNCHER_HISTORY_TOP entries); everything else is alphabetic.
- */
-static int
-launcher_item_cmp(const void *a, const void *b)
-{
-	const LauncherItem *ia = *(const LauncherItem *const *) a;
-	const LauncherItem *ib = *(const LauncherItem *const *) b;
-	int                 ca = ia->launch_count > 0 ? ia->launch_count : 0;
-	int                 cb = ib->launch_count > 0 ? ib->launch_count : 0;
-
-	/* Both have history: sort by count descending */
-	if (ca > 0 && cb > 0)
-		return (cb > ca) - (ca > cb);
-
-	/* Only one has history: it floats to the top */
-	if (ca > 0)
-		return -1;
-	if (cb > 0)
-		return 1;
-
-	/* Neither has history: alphabetic by name */
-	return strcasecmp(ia->name, ib->name);
-}
+/* -------------------------------------------------------------------------
+ * Append items helper (unchanged)
+ * ---------------------------------------------------------------------- */
 
 static void
-launcher_filter_items(Launcher *launcher)
+launcher_append_items(Launcher *launcher, LauncherItem *new_items)
 {
-	LauncherItem *item;
+	LauncherItem *last;
+
+	if (!new_items)
+		return;
+
+	launcher->item_count = 0;
+	for (LauncherItem *i = launcher->items; i; i = i->next)
+		launcher->item_count++;
+	for (LauncherItem *i = new_items; i; i = i->next)
+		launcher->item_count++;
+
+	last = launcher->items;
+	if (!last) {
+		launcher->items = new_items;
+	} else {
+		while (last->next)
+			last = last->next;
+		last->next = new_items;
+	}
+}
+
+/* -------------------------------------------------------------------------
+ * GTK UI helpers
+ * ---------------------------------------------------------------------- */
+
+/* Retrieve the LauncherItem* stored on a GtkListBoxRow */
+static LauncherItem *
+row_get_item(GtkListBoxRow *row)
+{
+	return (LauncherItem *) g_object_get_data(G_OBJECT(row), "launcher-item");
+}
+
+/* Build all rows for the listbox from the full item list.
+ * Sorting: build a temporary pointer array, qsort it with launcher_item_cmp,
+ * then append rows in that order.  Filtering is done via
+ * gtk_list_box_set_filter_func — GTK calls it on every row automatically. */
+static void
+launcher_populate_listbox(Launcher *launcher)
+{
+	/* Count items */
 	int           count = 0;
+	LauncherItem *it;
 
-	if (launcher->filtered) {
-		free(launcher->filtered);
-		launcher->filtered = NULL;
-	}
+	for (it = launcher->items; it; it = it->next)
+		count++;
 
-	for (item = launcher->items; item; item = item->next) {
-		if (launcher_item_matches(item, launcher->input))
-			count++;
-	}
-
-	if (count == 0) {
-		launcher->visible_count = 0;
-		launcher->selected      = -1;
-		return;
-	}
-
-	launcher->filtered = ecalloc(count + 1, sizeof(LauncherItem *));
-	count              = 0;
-	for (item = launcher->items; item; item = item->next) {
-		if (launcher_item_matches(item, launcher->input)) {
-			launcher->filtered[count++] = item;
-		}
-	}
-	launcher->filtered[count] = NULL;
-	launcher->visible_count   = count;
-	launcher->scroll_offset   = 0;
-
-	/* Sort: top LAUNCHER_HISTORY_TOP items by launch count float first,
-	 * then everything (including lower-ranked history) is alphabetic. */
-	qsort(
-	    launcher->filtered, count, sizeof(LauncherItem *), launcher_item_cmp);
-
-	launcher->selected = 0;
-	if (launcher->selected >= launcher->visible_count)
-		launcher->selected = launcher->visible_count - 1;
-}
-
-static void
-launcher_calculate_size(Launcher *launcher)
-{
-	/* Use the pre-computed full-list maximum as the minimum width so the
-	 * window never shrinks as the filter narrows the visible set. */
-	unsigned int maxw = launcher->max_item_width > LAUNCHER_MIN_WIDTH
-	    ? launcher->max_item_width
-	    : LAUNCHER_MIN_WIDTH;
-
-	launcher->w = maxw + LAUNCHER_PADDING * 2 + LAUNCHER_SCROLL_BAR_WIDTH;
-	launcher->h = LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING * 2;
-	if (launcher->visible_count > LAUNCHER_MAX_VISIBLE)
-		launcher->h += LAUNCHER_MAX_VISIBLE * LAUNCHER_ITEM_HEIGHT;
-	else if (launcher->visible_count > 0)
-		launcher->h += launcher->visible_count * LAUNCHER_ITEM_HEIGHT;
-	else
-		launcher->h += LAUNCHER_ITEM_HEIGHT;
-}
-
-static void
-launcher_render(Launcher *launcher)
-{
-	int x, y;
-
-	if (!launcher->drw || !launcher->scheme || !launcher->visible)
+	if (count == 0)
 		return;
 
-	/* Resize window if needed */
-	if (launcher->drw->w < launcher->w || launcher->drw->h < launcher->h)
-		drw_resize(launcher->drw, launcher->w, launcher->h);
+	/* Build sorted pointer array */
+	LauncherItem **arr = ecalloc(count, sizeof(LauncherItem *));
+	int            idx = 0;
+	for (it = launcher->items; it; it = it->next)
+		arr[idx++] = it;
+	qsort(arr, count, sizeof(LauncherItem *), launcher_item_cmp);
 
-	drw_setscheme(launcher->drw, launcher->scheme[0]);
-	drw_rect(launcher->drw, 0, 0, launcher->w, launcher->h, 1, 0);
+	/* Add rows */
+	for (int i = 0; i < count; i++) {
+		LauncherItem *item = arr[i];
 
-	drw_setscheme(launcher->drw, launcher->scheme[1]);
-	drw_rect(launcher->drw, 0, 0, launcher->w,
-	    LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING * 2, 1, 0);
+		GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
 
-	x = LAUNCHER_PADDING;
-	y = LAUNCHER_PADDING;
-
-	char input_display[260];
-	int  len = launcher->input_len;
-	if (len > (int) sizeof(input_display) - 1)
-		len = sizeof(input_display) - 1;
-	memcpy(input_display, launcher->input, len);
-	input_display[len] = '\0';
-
-	drw_text(launcher->drw, x, y, launcher->w - LAUNCHER_PADDING * 2,
-	    LAUNCHER_INPUT_HEIGHT, 0, input_display, 0);
-
-	y += LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING;
-
-	if (launcher->visible_count == 0) {
-		drw_setscheme(launcher->drw, launcher->scheme[0]);
-		drw_text(launcher->drw, x, y, launcher->w - LAUNCHER_PADDING * 2,
-		    LAUNCHER_ITEM_HEIGHT, 0, "(no matches)", 0);
-		drw_map(launcher->drw, launcher->win, 0, 0, launcher->w, launcher->h);
-		xflush();
-		return;
-	}
-
-	int start_idx = launcher->scroll_offset;
-	int end_idx   = start_idx + LAUNCHER_MAX_VISIBLE;
-	if (end_idx > launcher->visible_count)
-		end_idx = launcher->visible_count;
-
-	for (int i = start_idx; i < end_idx; i++) {
-		LauncherItem *item        = launcher->filtered[i];
-		int           is_selected = (i == launcher->selected);
-
-		if (is_selected)
-			drw_setscheme(launcher->drw, launcher->scheme[1]);
-		else
-			drw_setscheme(launcher->drw, launcher->scheme[0]);
-
-		drw_rect(launcher->drw, 0, y, launcher->w, LAUNCHER_ITEM_HEIGHT, 1, 1);
-
-		/* Draw icon if available */
+		/* Icon */
 		if (item->icon) {
-			int icon_x = x + 2;
-			int icon_y = y + (LAUNCHER_ITEM_HEIGHT - LAUNCHER_ICON_SIZE) / 2;
-			/* Paint background behind icon so alpha edges blend correctly */
-			drw_rect(launcher->drw, icon_x, icon_y, LAUNCHER_ICON_SIZE,
-			    LAUNCHER_ICON_SIZE, 1, 1);
-			drw_pic(launcher->drw, icon_x, icon_y, LAUNCHER_ICON_SIZE,
-			    LAUNCHER_ICON_SIZE, item->icon);
-			drw_text(launcher->drw, x + LAUNCHER_ICON_SIZE + 6, y,
-			    launcher->w - LAUNCHER_PADDING * 2 - LAUNCHER_ICON_SIZE - 4,
-			    LAUNCHER_ITEM_HEIGHT, 0, item->name, 0);
-		} else {
-			drw_text(launcher->drw, x, y, launcher->w - LAUNCHER_PADDING * 2,
-			    LAUNCHER_ITEM_HEIGHT, 0, item->name, 0);
+			GdkPixbuf *pb = gdk_pixbuf_get_from_surface(
+			    item->icon, 0, 0, LAUNCHER_ICON_SIZE, LAUNCHER_ICON_SIZE);
+			if (pb) {
+				GtkWidget *img = gtk_image_new_from_pixbuf(pb);
+				g_object_unref(pb);
+				gtk_box_pack_start(GTK_BOX(row_box), img, FALSE, FALSE, 2);
+			}
 		}
 
-		y += LAUNCHER_ITEM_HEIGHT;
+		/* Label */
+		GtkWidget *lbl = gtk_label_new(item->name);
+		gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+		gtk_box_pack_start(GTK_BOX(row_box), lbl, TRUE, TRUE, 0);
+
+		GtkWidget *row = gtk_list_box_row_new();
+		gtk_container_add(GTK_CONTAINER(row), row_box);
+		g_object_set_data(G_OBJECT(row), "launcher-item", item);
+
+		gtk_list_box_insert(GTK_LIST_BOX(launcher->listbox), row, -1);
 	}
 
-	if (launcher->visible_count > LAUNCHER_MAX_VISIBLE) {
-		unsigned int scroll_h = LAUNCHER_MAX_VISIBLE * LAUNCHER_ITEM_HEIGHT;
-		unsigned int thumb_h =
-		    (scroll_h * LAUNCHER_MAX_VISIBLE) / launcher->visible_count;
-		unsigned int thumb_y =
-		    (launcher->scroll_offset * scroll_h) / launcher->visible_count;
-
-		drw_setscheme(launcher->drw, launcher->scheme[0]);
-		drw_rect(launcher->drw, launcher->w - LAUNCHER_SCROLL_BAR_WIDTH - 2,
-		    LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING * 2, 2, scroll_h, 1, 0);
-
-		drw_setscheme(launcher->drw, launcher->scheme[1]);
-		drw_rect(launcher->drw, launcher->w - LAUNCHER_SCROLL_BAR_WIDTH - 2,
-		    LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING * 2 + thumb_y, 2, thumb_h,
-		    1, 0);
-	}
-
-	drw_map(launcher->drw, launcher->win, 0, 0, launcher->w, launcher->h);
-	xflush();
+	free(arr);
+	gtk_widget_show_all(launcher->listbox);
 }
 
-void
-launcher_launch_selected(Launcher *launcher)
+/* GtkListBoxFilterFunc — called by GTK for every row on invalidation */
+static gboolean
+launcher_filter_func(GtkListBoxRow *row, gpointer user_data)
 {
-	if (!launcher || launcher->selected < 0 || !launcher->filtered)
-		return;
+	Launcher     *launcher = (Launcher *) user_data;
+	LauncherItem *item     = row_get_item(row);
+	const char   *text     = gtk_entry_get_text(GTK_ENTRY(launcher->search));
 
-	LauncherItem *item = launcher->filtered[launcher->selected];
+	if (!item)
+		return FALSE;
+	return launcher_item_matches(item, text);
+}
+
+/* GtkListBoxSortFunc */
+static gint
+launcher_sort_func(GtkListBoxRow *a, GtkListBoxRow *b, gpointer user_data)
+{
+	(void) user_data;
+	LauncherItem *ia = row_get_item(a);
+	LauncherItem *ib = row_get_item(b);
+
+	if (!ia || !ib)
+		return 0;
+
+	/* Wrap in pointer so we can reuse launcher_item_cmp */
+	const LauncherItem *pa = ia;
+	const LauncherItem *pb = ib;
+	return launcher_item_cmp(&pa, &pb);
+}
+
+/* Launch the currently selected row */
+static void
+launcher_launch_row(Launcher *launcher, LauncherItem *item)
+{
 	if (!item || !item->exec)
 		return;
 
-	/* Record the launch before hiding/forking */
 	item->launch_count++;
 	launcher_history_save(launcher);
 
@@ -792,7 +711,7 @@ launcher_launch_selected(Launcher *launcher)
 		return;
 	}
 	if (pid == 0) {
-		signal(SIGCHLD, SIG_DFL); /* reset inherited SIG_IGN from WM */
+		signal(SIGCHLD, SIG_DFL);
 		if (launcher->xc)
 			close(xcb_get_file_descriptor(launcher->xc));
 		setsid();
@@ -810,30 +729,144 @@ launcher_launch_selected(Launcher *launcher)
 	}
 }
 
+/* Signal: row activated (double-click or Enter on a row) */
 static void
-launcher_append_items(Launcher *launcher, LauncherItem *new_items)
+on_row_activated(GtkListBox *listbox, GtkListBoxRow *row, gpointer user_data)
 {
-	LauncherItem *last;
+	Launcher     *launcher = (Launcher *) user_data;
+	LauncherItem *item     = row_get_item(row);
+	(void) listbox;
 
-	if (!new_items)
-		return;
-
-	launcher->item_count = 0;
-	for (LauncherItem *i = launcher->items; i; i = i->next)
-		launcher->item_count++;
-
-	for (LauncherItem *i = new_items; i; i = i->next)
-		launcher->item_count++;
-
-	last = launcher->items;
-	if (!last) {
-		launcher->items = new_items;
-	} else {
-		while (last->next)
-			last = last->next;
-		last->next = new_items;
-	}
+	launcher_launch_row(launcher, item);
 }
+
+/* Signal: search text changed — re-filter and re-sort rows */
+static void
+on_search_changed(GtkSearchEntry *entry, gpointer user_data)
+{
+	Launcher *launcher = (Launcher *) user_data;
+	(void) entry;
+
+	gtk_list_box_invalidate_filter(GTK_LIST_BOX(launcher->listbox));
+	gtk_list_box_invalidate_sort(GTK_LIST_BOX(launcher->listbox));
+
+	/* Select first visible row */
+	GtkListBoxRow *first =
+	    gtk_list_box_get_row_at_index(GTK_LIST_BOX(launcher->listbox), 0);
+	/* Iterate to find first visible row */
+	int i = 0;
+	while (first && !gtk_widget_get_visible(GTK_WIDGET(first)))
+		first = gtk_list_box_get_row_at_index(
+		    GTK_LIST_BOX(launcher->listbox), ++i);
+	if (first)
+		gtk_list_box_select_row(GTK_LIST_BOX(launcher->listbox), first);
+}
+
+/* Signal: key press on the window */
+static gboolean
+on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
+{
+	Launcher      *launcher = (Launcher *) user_data;
+	GtkListBox    *lb       = GTK_LIST_BOX(launcher->listbox);
+	GtkListBoxRow *sel;
+	int            new_idx;
+	(void) widget;
+
+	switch (event->keyval) {
+	case GDK_KEY_Escape:
+		launcher_hide(launcher);
+		return TRUE;
+
+	case GDK_KEY_Return:
+	case GDK_KEY_KP_Enter: {
+		sel = gtk_list_box_get_selected_row(lb);
+		if (sel)
+			launcher_launch_row(launcher, row_get_item(sel));
+		return TRUE;
+	}
+
+	case GDK_KEY_Up: {
+		sel = gtk_list_box_get_selected_row(lb);
+		if (!sel) {
+			/* select last visible */
+			int            i = 0;
+			GtkListBoxRow *r, *last_vis = NULL;
+			while ((r = gtk_list_box_get_row_at_index(lb, i++))) {
+				if (gtk_widget_get_visible(GTK_WIDGET(r)))
+					last_vis = r;
+			}
+			if (last_vis)
+				gtk_list_box_select_row(lb, last_vis);
+		} else {
+			new_idx = gtk_list_box_row_get_index(sel) - 1;
+			while (new_idx >= 0) {
+				GtkListBoxRow *r = gtk_list_box_get_row_at_index(lb, new_idx);
+				if (r && gtk_widget_get_visible(GTK_WIDGET(r))) {
+					gtk_list_box_select_row(lb, r);
+					GtkWidget *sw = gtk_widget_get_parent(
+					    gtk_widget_get_parent(launcher->listbox));
+					gtk_widget_activate(GTK_WIDGET(r));
+					/* scroll into view */
+					GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(
+					    GTK_SCROLLED_WINDOW(sw));
+					GtkAllocation alloc;
+					gtk_widget_get_allocation(GTK_WIDGET(r), &alloc);
+					gtk_adjustment_clamp_page(
+					    adj, alloc.y, alloc.y + alloc.height);
+					break;
+				}
+				new_idx--;
+			}
+		}
+		return TRUE;
+	}
+
+	case GDK_KEY_Down: {
+		sel = gtk_list_box_get_selected_row(lb);
+		if (!sel) {
+			/* select first visible */
+			int            i = 0;
+			GtkListBoxRow *r;
+			while ((r = gtk_list_box_get_row_at_index(lb, i++))) {
+				if (gtk_widget_get_visible(GTK_WIDGET(r))) {
+					gtk_list_box_select_row(lb, r);
+					break;
+				}
+			}
+		} else {
+			new_idx = gtk_list_box_row_get_index(sel) + 1;
+			while (TRUE) {
+				GtkListBoxRow *r = gtk_list_box_get_row_at_index(lb, new_idx);
+				if (!r)
+					break;
+				if (gtk_widget_get_visible(GTK_WIDGET(r))) {
+					gtk_list_box_select_row(lb, r);
+					GtkWidget *sw = gtk_widget_get_parent(
+					    gtk_widget_get_parent(launcher->listbox));
+					GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(
+					    GTK_SCROLLED_WINDOW(sw));
+					GtkAllocation alloc;
+					gtk_widget_get_allocation(GTK_WIDGET(r), &alloc);
+					gtk_adjustment_clamp_page(
+					    adj, alloc.y, alloc.y + alloc.height);
+					break;
+				}
+				new_idx++;
+			}
+		}
+		return TRUE;
+	}
+
+	default:
+		break;
+	}
+
+	return FALSE;
+}
+
+/* -------------------------------------------------------------------------
+ * Public API
+ * ---------------------------------------------------------------------- */
 
 Launcher *
 launcher_create(xcb_connection_t *xc, xcb_window_t root, Clr **scheme,
@@ -844,43 +877,21 @@ launcher_create(xcb_connection_t *xc, xcb_window_t root, Clr **scheme,
 	char      path[512];
 	int       i;
 
-	launcher            = ecalloc(1, sizeof(Launcher));
-	launcher->xc        = xc;
-	launcher->scheme    = scheme;
-	launcher->selected  = -1;
-	launcher->w         = LAUNCHER_MIN_WIDTH;
-	launcher->h         = 100;
-	launcher->input[0]  = '\0';
-	launcher->input_len = 0;
-	launcher->terminal  = (term && *term) ? term : "st";
+	/* Suppress unused-parameter warnings — API compat only */
+	(void) root;
+	(void) scheme;
+	(void) fonts;
+	(void) fontcount;
 
-	/* Create the launcher's own drawing context.  This gives the launcher
-	 * its own pixmap and Cairo surface so drw_resize() never touches the
-	 * bar's drawable or Cairo surface. */
-	{
-		xcb_screen_t *xs = xcb_setup_roots_iterator(xcb_get_setup(xc)).data;
-		/* walk to the correct screen */
-		{
-			xcb_screen_iterator_t sit =
-			    xcb_setup_roots_iterator(xcb_get_setup(xc));
-			int s = screen;
-			for (; s > 0; s--)
-				xcb_screen_next(&sit);
-			xs = sit.data;
-		}
-		launcher->drw =
-		    drw_create(xc, screen, root, (unsigned int) xs->width_in_pixels,
-		        (unsigned int) xs->height_in_pixels);
-	}
-	if (!launcher->drw)
-		die("launcher: drw_create failed");
-	if (!drw_fontset_create(launcher->drw, fonts, fontcount))
-		die("launcher: no fonts could be loaded");
+	launcher           = ecalloc(1, sizeof(Launcher));
+	launcher->xc       = xc;
+	launcher->terminal = (term && *term) ? term : "st";
 
-	/* Resolve history file path */
+	/* Resolve history path */
 	launcher_history_path(
 	    launcher->history_path, sizeof(launcher->history_path));
 
+	/* Scan desktop files */
 	home = getenv("HOME");
 	if (!home)
 		home = "/root";
@@ -888,16 +899,15 @@ launcher_create(xcb_connection_t *xc, xcb_window_t root, Clr **scheme,
 	for (i = 0; i < (int) (sizeof(desktop_paths) / sizeof(desktop_paths[0]));
 	    i++) {
 		if (desktop_paths[i] == NULL) {
-			if (i == 2) {
+			if (i == 2)
 				snprintf(
 				    path, sizeof(path), "%s/.local/share/applications", home);
-			} else if (i == 3) {
+			else if (i == 3)
 				snprintf(path, sizeof(path),
 				    "%s/.local/share/flatpak/exports/share/applications",
 				    home);
-			} else {
+			else
 				continue;
-			}
 		} else {
 			snprintf(path, sizeof(path), "%s", desktop_paths[i]);
 		}
@@ -909,55 +919,52 @@ launcher_create(xcb_connection_t *xc, xcb_window_t root, Clr **scheme,
 	LauncherItem *path_items = launcher_scan_path(launcher->items);
 	launcher_append_items(launcher, path_items);
 
-	/* Load launch history so counts are available before first filter/sort */
 	launcher_history_load(launcher);
 
-	/* Pre-compute the widest item width so the window never shrinks while
-	 * typing — calculate over the full item list, not just visible items. */
-	{
-		LauncherItem *it;
-		for (it = launcher->items; it; it = it->next) {
-			unsigned int w = drw_fontset_getwidth(launcher->drw, it->name);
-			if (it->icon)
-				w += LAUNCHER_ICON_SIZE + 6;
-			if (w > launcher->max_item_width)
-				launcher->max_item_width = w;
-		}
-	}
+	/* ----- Build GTK widget tree ----- */
+	launcher->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+	gtk_window_set_decorated(GTK_WINDOW(launcher->window), FALSE);
+	gtk_window_set_skip_taskbar_hint(GTK_WINDOW(launcher->window), TRUE);
+	gtk_window_set_skip_pager_hint(GTK_WINDOW(launcher->window), TRUE);
+	gtk_window_set_type_hint(
+	    GTK_WINDOW(launcher->window), GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+	gtk_window_set_default_size(GTK_WINDOW(launcher->window), 420, 400);
+	gtk_window_set_resizable(GTK_WINDOW(launcher->window), FALSE);
 
-	launcher_filter_items(launcher);
-	launcher_calculate_size(launcher);
+	GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	gtk_container_add(GTK_CONTAINER(launcher->window), vbox);
 
-	{
-		xcb_screen_t  *xs  = xcb_setup_roots_iterator(xcb_get_setup(xc)).data;
-		uint32_t       vid = xs->root_visual;
-		xcb_colormap_t cmap;
-		uint32_t       vals[5];
-		uint32_t       mask;
+	launcher->search = gtk_search_entry_new();
+	gtk_box_pack_start(GTK_BOX(vbox), launcher->search, FALSE, FALSE, 4);
 
-		cmap = xcb_generate_id(xc);
-		xcb_create_colormap(xc, XCB_COLORMAP_ALLOC_NONE, cmap, xs->root, vid);
+	GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
+	gtk_scrolled_window_set_policy(
+	    GTK_SCROLLED_WINDOW(sw), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+	gtk_widget_set_size_request(sw, -1, 360);
+	gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
 
-		/* Values must be in ascending XCB_CW_* bit order:
-		 * BACK_PIXEL(1) BORDER_PIXEL(3) OVERRIDE_REDIRECT(9)
-		 * EVENT_MASK(11) COLORMAP(13) */
-		mask = XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL |
-		    XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK | XCB_CW_COLORMAP;
-		vals[0] = 0; /* back pixel */
-		vals[1] = 0; /* border pixel */
-		vals[2] = 1; /* override redirect */
-		vals[3] = XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS |
-		    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
-		    XCB_EVENT_MASK_POINTER_MOTION;
-		vals[4] = cmap;
+	launcher->listbox = gtk_list_box_new();
+	gtk_list_box_set_selection_mode(
+	    GTK_LIST_BOX(launcher->listbox), GTK_SELECTION_SINGLE);
+	gtk_list_box_set_filter_func(
+	    GTK_LIST_BOX(launcher->listbox), launcher_filter_func, launcher, NULL);
+	gtk_list_box_set_sort_func(
+	    GTK_LIST_BOX(launcher->listbox), launcher_sort_func, NULL, NULL);
+	gtk_container_add(GTK_CONTAINER(sw), launcher->listbox);
 
-		launcher->win = xcb_generate_id(xc);
-		xcb_create_window(xc, (uint8_t) xs->root_depth, launcher->win,
-		    (xcb_window_t) root, 0, 0, (uint16_t) launcher->w,
-		    (uint16_t) launcher->h, 1, XCB_WINDOW_CLASS_INPUT_OUTPUT, vid,
-		    mask, vals);
-		xcb_free_colormap(xc, cmap);
-	}
+	/* Populate rows once at startup */
+	launcher_populate_listbox(launcher);
+
+	/* Signals */
+	g_signal_connect(launcher->search, "search-changed",
+	    G_CALLBACK(on_search_changed), launcher);
+	g_signal_connect(launcher->listbox, "row-activated",
+	    G_CALLBACK(on_row_activated), launcher);
+	g_signal_connect(launcher->window, "key-press-event",
+	    G_CALLBACK(on_key_press), launcher);
+
+	/* Hide by default */
+	gtk_widget_hide(launcher->window);
 
 	return launcher;
 }
@@ -973,14 +980,12 @@ launcher_free(Launcher *launcher)
 	if (launcher->visible)
 		launcher_hide(launcher);
 
-	if (launcher->win)
-		xcb_destroy_window(launcher->xc, launcher->win);
-
-	if (launcher->drw)
-		drw_free(launcher->drw);
-
-	if (launcher->filtered)
-		free(launcher->filtered);
+	if (launcher->window) {
+		gtk_widget_destroy(launcher->window);
+		launcher->window  = NULL;
+		launcher->search  = NULL;
+		launcher->listbox = NULL;
+	}
 
 	for (item = launcher->items; item; item = next) {
 		next = item->next;
@@ -1002,93 +1007,27 @@ launcher_show(Launcher *launcher, int x, int y)
 	if (!launcher)
 		return;
 
-	launcher->x          = x;
-	launcher->y          = y;
-	launcher->input[0]   = '\0';
-	launcher->input_len  = 0;
-	launcher->cursor_pos = 0;
+	/* Clear search text — triggers on_search_changed which re-filters */
+	gtk_entry_set_text(GTK_ENTRY(launcher->search), "");
 
-	launcher_filter_items(launcher);
-	launcher_calculate_size(launcher);
+	/* Select first visible row */
+	GtkListBoxRow *first =
+	    gtk_list_box_get_row_at_index(GTK_LIST_BOX(launcher->listbox), 0);
+	int fi = 0;
+	while (first && !gtk_widget_get_visible(GTK_WIDGET(first)))
+		first = gtk_list_box_get_row_at_index(
+		    GTK_LIST_BOX(launcher->listbox), ++fi);
+	if (first)
+		gtk_list_box_select_row(GTK_LIST_BOX(launcher->listbox), first);
 
-	{
-		xcb_connection_t *xc2 = launcher->xc;
-		xcb_screen_t *xs2 = xcb_setup_roots_iterator(xcb_get_setup(xc2)).data;
-		int           mon_x = 0, mon_y = 0;
-		int           mon_w = (int) xs2->width_in_pixels;
-		int           mon_h = (int) xs2->height_in_pixels;
+	gtk_window_move(GTK_WINDOW(launcher->window), x, y);
+	gtk_widget_show_all(launcher->window);
+	gtk_window_present(GTK_WINDOW(launcher->window));
 
-		if (launcher->x + launcher->w > mon_x + mon_w)
-			launcher->x = mon_x + mon_w - launcher->w;
-		if (launcher->y + launcher->h > mon_y + mon_h)
-			launcher->y = mon_y + mon_h - launcher->h;
-		if (launcher->x < mon_x)
-			launcher->x = mon_x;
-		if (launcher->y < mon_y)
-			launcher->y = mon_y;
-	}
-
-	{
-		xcb_connection_t *xc = launcher->xc;
-		uint32_t          cv[4];
-		uint32_t          sv[1];
-
-		cv[0] = (uint32_t) launcher->x;
-		cv[1] = (uint32_t) launcher->y;
-		cv[2] = (uint32_t) launcher->w;
-		cv[3] = (uint32_t) launcher->h;
-		xcb_configure_window(xc, launcher->win,
-		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
-		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
-		    cv);
-		xcb_map_window(xc, launcher->win);
-		sv[0] = XCB_STACK_MODE_ABOVE;
-		xcb_configure_window(
-		    xc, launcher->win, XCB_CONFIG_WINDOW_STACK_MODE, sv);
-	}
-	xflush();
+	/* Give keyboard focus to the search entry */
+	gtk_widget_grab_focus(launcher->search);
 
 	launcher->visible = 1;
-	launcher_render(launcher);
-
-	/* Release any existing grabs first, then flush so the releases are
-	 * processed by the X server before we attempt new active grabs.
-	 * This ensures the WM's own passive keybinding grab (which delivered
-	 * the keypress that triggered us) is fully released before we try to
-	 * establish the active keyboard grab. */
-	{
-		xcb_connection_t *xc = launcher->xc;
-
-		xcb_ungrab_pointer(xc, (xcb_timestamp_t) last_event_time);
-		xcb_ungrab_keyboard(xc, (xcb_timestamp_t) last_event_time);
-		xflush();
-		{
-			xcb_grab_pointer_cookie_t pc;
-			xcb_grab_pointer_reply_t *pr;
-
-			pc = xcb_grab_pointer(xc, 0, launcher->win,
-			    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
-			        XCB_EVENT_MASK_POINTER_MOTION,
-			    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, XCB_NONE, XCB_NONE,
-			    (xcb_timestamp_t) last_event_time);
-			pr = xcb_grab_pointer_reply(xc, pc, NULL);
-			if (!pr || pr->status != XCB_GRAB_STATUS_SUCCESS)
-				awm_warn("Launcher: Failed to grab pointer");
-			free(pr);
-		}
-		{
-			xcb_grab_keyboard_cookie_t kc;
-			xcb_grab_keyboard_reply_t *kr;
-
-			kc = xcb_grab_keyboard(xc, 1, launcher->win,
-			    (xcb_timestamp_t) last_event_time, XCB_GRAB_MODE_ASYNC,
-			    XCB_GRAB_MODE_ASYNC);
-			kr = xcb_grab_keyboard_reply(xc, kc, NULL);
-			if (!kr || kr->status != XCB_GRAB_STATUS_SUCCESS)
-				awm_warn("Launcher: Failed to grab keyboard");
-			free(kr);
-		}
-	}
 }
 
 void
@@ -1097,436 +1036,35 @@ launcher_hide(Launcher *launcher)
 	if (!launcher || !launcher->visible)
 		return;
 
-	{
-		xcb_connection_t *xc = launcher->xc;
-
-		xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
-		xcb_ungrab_keyboard(xc, XCB_CURRENT_TIME);
-		xcb_unmap_window(xc, launcher->win);
-	}
+	gtk_widget_hide(launcher->window);
 	launcher->visible = 0;
 }
 
-static void
-launcher_insert_text(Launcher *launcher, const char *s, int len)
-{
-	int avail;
-
-	if (len <= 0)
-		return;
-
-	avail = (int) sizeof(launcher->input) - 1 - launcher->input_len;
-	if (avail <= 0)
-		return;
-	if (len > avail)
-		len = avail;
-
-	if (launcher->cursor_pos < launcher->input_len) {
-		memmove(launcher->input + launcher->cursor_pos + len,
-		    launcher->input + launcher->cursor_pos,
-		    launcher->input_len - launcher->cursor_pos);
-	}
-	memcpy(launcher->input + launcher->cursor_pos, s, len);
-	launcher->input_len += len;
-	launcher->cursor_pos += len;
-	launcher->input[launcher->input_len] = '\0';
-
-	launcher_filter_items(launcher);
-	launcher_calculate_size(launcher);
-	{
-		xcb_connection_t *xc = launcher->xc;
-		uint32_t          rv[2];
-
-		rv[0] = (uint32_t) launcher->w;
-		rv[1] = (uint32_t) launcher->h;
-		xcb_configure_window(xc, launcher->win,
-		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, rv);
-	}
-	launcher_render(launcher);
-}
-
-/* Delete the character before the cursor (Backspace) */
-static void
-launcher_delete_char(Launcher *launcher)
-{
-	int pos, nbytes;
-
-	if (launcher->cursor_pos <= 0 || launcher->input_len <= 0)
-		return;
-
-	/* Walk back over UTF-8 continuation bytes (10xxxxxx) to find the
-	 * start of the codepoint, then delete the whole sequence. */
-	pos = launcher->cursor_pos - 1;
-	while (pos > 0 && ((unsigned char) launcher->input[pos] & 0xC0) == 0x80)
-		pos--;
-	nbytes = launcher->cursor_pos - pos;
-
-	memmove(launcher->input + pos, launcher->input + launcher->cursor_pos,
-	    launcher->input_len - launcher->cursor_pos);
-	launcher->input_len -= nbytes;
-	launcher->cursor_pos                 = pos;
-	launcher->input[launcher->input_len] = '\0';
-
-	launcher_filter_items(launcher);
-	launcher_calculate_size(launcher);
-	{
-		xcb_connection_t *xc = launcher->xc;
-		uint32_t          rv[2];
-
-		rv[0] = (uint32_t) launcher->w;
-		rv[1] = (uint32_t) launcher->h;
-		xcb_configure_window(xc, launcher->win,
-		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, rv);
-	}
-	launcher_render(launcher);
-}
-
-/* Delete the character at the cursor (Delete) */
-static void
-launcher_delete_char_forward(Launcher *launcher)
-{
-	int end, nbytes;
-
-	if (launcher->cursor_pos >= launcher->input_len)
-		return;
-
-	/* Determine the byte length of the codepoint at cursor.
-	 * UTF-8 lead byte tells us how many bytes follow. */
-	end = launcher->cursor_pos + 1;
-	while (end < launcher->input_len &&
-	    ((unsigned char) launcher->input[end] & 0xC0) == 0x80)
-		end++;
-	nbytes = end - launcher->cursor_pos;
-
-	memmove(launcher->input + launcher->cursor_pos, launcher->input + end,
-	    launcher->input_len - end);
-	launcher->input_len -= nbytes;
-	launcher->input[launcher->input_len] = '\0';
-
-	launcher_filter_items(launcher);
-	launcher_calculate_size(launcher);
-	{
-		xcb_connection_t *xc = launcher->xc;
-		uint32_t          rv[2];
-
-		rv[0] = (uint32_t) launcher->w;
-		rv[1] = (uint32_t) launcher->h;
-		xcb_configure_window(xc, launcher->win,
-		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, rv);
-	}
-	launcher_render(launcher);
-}
-
-/* Delete the word before the cursor (Ctrl+w) */
-static void
-launcher_delete_word(Launcher *launcher)
-{
-	int pos = launcher->cursor_pos;
-
-	if (pos <= 0)
-		return;
-
-	/* Skip trailing spaces */
-	while (pos > 0 && launcher->input[pos - 1] == ' ')
-		pos--;
-	/* Skip the word */
-	while (pos > 0 && launcher->input[pos - 1] != ' ')
-		pos--;
-
-	int deleted = launcher->cursor_pos - pos;
-	memmove(launcher->input + pos, launcher->input + launcher->cursor_pos,
-	    launcher->input_len - launcher->cursor_pos);
-	launcher->input_len -= deleted;
-	launcher->cursor_pos                 = pos;
-	launcher->input[launcher->input_len] = '\0';
-
-	launcher_filter_items(launcher);
-	launcher_calculate_size(launcher);
-	{
-		xcb_connection_t *xc = launcher->xc;
-		uint32_t          rv[2];
-
-		rv[0] = (uint32_t) launcher->w;
-		rv[1] = (uint32_t) launcher->h;
-		xcb_configure_window(xc, launcher->win,
-		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, rv);
-	}
-	launcher_render(launcher);
-}
-
-static void
-launcher_move_cursor(Launcher *launcher, int delta)
-{
-	int pos = launcher->cursor_pos;
-
-	if (delta < 0) {
-		/* Move backward: step back one byte at a time over UTF-8
-		 * continuation bytes (10xxxxxx) to land on the codepoint start. */
-		if (pos <= 0)
-			return;
-		pos--;
-		while (
-		    pos > 0 && ((unsigned char) launcher->input[pos] & 0xC0) == 0x80)
-			pos--;
-	} else {
-		/* Move forward: skip past the leading byte and any continuation
-		 * bytes to land on the start of the next codepoint. */
-		if (pos >= launcher->input_len)
-			return;
-		pos++;
-		while (pos < launcher->input_len &&
-		    ((unsigned char) launcher->input[pos] & 0xC0) == 0x80)
-			pos++;
-	}
-
-	launcher->cursor_pos = pos;
-}
-
-static void
-launcher_scroll(Launcher *launcher, int delta)
-{
-	int new_offset = launcher->scroll_offset + delta;
-
-	if (new_offset < 0)
-		new_offset = 0;
-	if (new_offset + LAUNCHER_MAX_VISIBLE > launcher->visible_count)
-		new_offset = launcher->visible_count - LAUNCHER_MAX_VISIBLE;
-	if (new_offset < 0)
-		new_offset = 0;
-
-	launcher->scroll_offset = new_offset;
-
-	if (launcher->selected < launcher->scroll_offset)
-		launcher->selected = launcher->scroll_offset;
-	if (launcher->selected >= launcher->scroll_offset + LAUNCHER_MAX_VISIBLE)
-		launcher->selected =
-		    launcher->scroll_offset + LAUNCHER_MAX_VISIBLE - 1;
-}
-
+/* GTK handles all input through its own event loop.  Return 1 when visible
+ * so that awm.c's keybinding handler knows to swallow the triggering event
+ * and not re-dispatch it as a WM shortcut. */
 int
 launcher_handle_event(Launcher *launcher, xcb_generic_event_t *ev)
 {
-	xcb_keysym_t key;
-	int          idx, y;
-	uint8_t      type;
+	(void) ev;
 
 	if (!launcher || !launcher->visible)
 		return 0;
 
-	type = ev->response_type & ~0x80;
+	return 1;
+}
 
-	if (type == XCB_EXPOSE) {
-		xcb_expose_event_t *e = (xcb_expose_event_t *) ev;
-		if (e->count == 0)
-			launcher_render(launcher);
-		return 1;
-	}
+/* Launch the currently selected row (called from awm.c if needed) */
+void
+launcher_launch_selected(Launcher *launcher)
+{
+	if (!launcher)
+		return;
 
-	if (type == XCB_KEY_PRESS) {
-		xcb_key_press_event_t *e = (xcb_key_press_event_t *) ev;
-		key =
-		    xcb_key_symbols_get_keysym(keysyms, (xcb_keycode_t) e->detail, 0);
+	GtkListBoxRow *row =
+	    gtk_list_box_get_selected_row(GTK_LIST_BOX(launcher->listbox));
+	if (!row)
+		return;
 
-		switch (key) {
-		case XKB_KEY_Escape:
-			launcher_hide(launcher);
-			return 1;
-		case XKB_KEY_Return:
-		case XKB_KEY_KP_Enter:
-			launcher_launch_selected(launcher);
-			return 1;
-		case XKB_KEY_Up:
-			if (launcher->selected > 0) {
-				launcher->selected--;
-				if (launcher->selected < launcher->scroll_offset)
-					launcher_scroll(launcher, -1);
-			}
-			launcher_render(launcher);
-			return 1;
-		case XKB_KEY_Down:
-			if (launcher->selected < launcher->visible_count - 1) {
-				launcher->selected++;
-				if (launcher->selected >=
-				    launcher->scroll_offset + LAUNCHER_MAX_VISIBLE)
-					launcher_scroll(launcher, 1);
-			}
-			launcher_render(launcher);
-			return 1;
-		case XKB_KEY_Page_Up:
-			launcher_scroll(launcher, -LAUNCHER_MAX_VISIBLE);
-			launcher_render(launcher);
-			return 1;
-		case XKB_KEY_Page_Down:
-			launcher_scroll(launcher, LAUNCHER_MAX_VISIBLE);
-			launcher_render(launcher);
-			return 1;
-		case XKB_KEY_Home:
-			launcher->selected      = 0;
-			launcher->scroll_offset = 0;
-			launcher_render(launcher);
-			return 1;
-		case XKB_KEY_End:
-			launcher->selected = launcher->visible_count - 1;
-			launcher->scroll_offset =
-			    launcher->visible_count - LAUNCHER_MAX_VISIBLE;
-			if (launcher->scroll_offset < 0)
-				launcher->scroll_offset = 0;
-			launcher_render(launcher);
-			return 1;
-		case XKB_KEY_BackSpace:
-			if (launcher->cursor_pos > 0) {
-				launcher_delete_char(launcher);
-			}
-			return 1;
-		case XKB_KEY_Delete:
-			if (launcher->cursor_pos < launcher->input_len) {
-				launcher_delete_char_forward(launcher);
-			}
-			return 1;
-		case XKB_KEY_Left:
-			launcher_move_cursor(launcher, -1);
-			launcher_render(launcher);
-			return 1;
-		case XKB_KEY_Right:
-			launcher_move_cursor(launcher, +1);
-			launcher_render(launcher);
-			return 1;
-		case XKB_KEY_Tab:
-			if (e->state & XCB_MOD_MASK_SHIFT) {
-				if (launcher->selected > 0) {
-					launcher->selected--;
-					if (launcher->selected < launcher->scroll_offset)
-						launcher_scroll(launcher, -1);
-				}
-			} else {
-				if (launcher->selected < launcher->visible_count - 1) {
-					launcher->selected++;
-					if (launcher->selected >=
-					    launcher->scroll_offset + LAUNCHER_MAX_VISIBLE)
-						launcher_scroll(launcher, 1);
-				}
-			}
-			launcher_render(launcher);
-			return 1;
-		default:
-			break;
-		}
-
-		if (e->state & XCB_MOD_MASK_CONTROL) {
-			switch (key) {
-			case XKB_KEY_u:
-				launcher->input[0]   = '\0';
-				launcher->input_len  = 0;
-				launcher->cursor_pos = 0;
-				launcher_filter_items(launcher);
-				launcher_calculate_size(launcher);
-				launcher_render(launcher);
-				return 1;
-			case XKB_KEY_k:
-				launcher->input[launcher->cursor_pos] = '\0';
-				launcher->input_len                   = launcher->cursor_pos;
-				launcher_filter_items(launcher);
-				launcher_calculate_size(launcher);
-				launcher_render(launcher);
-				return 1;
-			case XKB_KEY_w:
-				launcher_delete_word(launcher);
-				return 1;
-			case XKB_KEY_a:
-				launcher->cursor_pos = 0;
-				launcher_render(launcher);
-				return 1;
-			case XKB_KEY_e:
-				launcher->cursor_pos = launcher->input_len;
-				launcher_render(launcher);
-				return 1;
-			}
-		}
-
-		/* Handle character input */
-		{
-			char buf[32];
-			int  len;
-
-			/* xkb_keysym_to_utf8 returns byte count *including* the NUL
-			 * terminator, or 0 for no representation.  Subtract 1 to get
-			 * the number of actual data bytes to insert. */
-			len = xkb_keysym_to_utf8((xkb_keysym_t) key, buf, sizeof(buf));
-			len--; /* strip NUL: now len is real UTF-8 byte count, or -1 */
-			if (len > 0 &&
-			    (isprint((unsigned char) buf[0]) ||
-			        (unsigned char) buf[0] >= 0x80)) {
-				launcher_insert_text(launcher, buf, len);
-			}
-		}
-
-		return 1;
-	}
-
-	if (type == XCB_MOTION_NOTIFY) {
-		xcb_motion_notify_event_t *e = (xcb_motion_notify_event_t *) ev;
-		if (e->event_y <
-		    (int) (LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING * 2)) {
-			launcher->selected = -1;
-			launcher_render(launcher);
-			return 1;
-		}
-
-		y   = LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING * 2;
-		idx = launcher->scroll_offset;
-
-		while (idx < launcher->visible_count &&
-		    y + LAUNCHER_ITEM_HEIGHT <= (int) launcher->h) {
-			if (e->event_y >= y && e->event_y < y + LAUNCHER_ITEM_HEIGHT) {
-				if (launcher->selected != idx) {
-					launcher->selected = idx;
-					launcher_render(launcher);
-				}
-				return 1;
-			}
-			y += LAUNCHER_ITEM_HEIGHT;
-			idx++;
-		}
-		return 1;
-	}
-
-	if (type == XCB_BUTTON_PRESS || type == XCB_BUTTON_RELEASE) {
-		xcb_button_press_event_t *e = (xcb_button_press_event_t *) ev;
-		/* Swallow all wheel events — Button4/5 generate both press and
-		 * release; if we only handle press, the release falls through to
-		 * the launch path. */
-		if (e->detail == XCB_BUTTON_INDEX_4 ||
-		    e->detail == XCB_BUTTON_INDEX_5) {
-			if (type == XCB_BUTTON_PRESS) {
-				if (e->detail == XCB_BUTTON_INDEX_4) {
-					if (launcher->selected > 0)
-						launcher->selected--;
-					if (launcher->selected < launcher->scroll_offset)
-						launcher_scroll(launcher, -1);
-				} else {
-					if (launcher->selected < launcher->visible_count - 1)
-						launcher->selected++;
-					if (launcher->selected >=
-					    launcher->scroll_offset + LAUNCHER_MAX_VISIBLE)
-						launcher_scroll(launcher, 1);
-				}
-				launcher_render(launcher);
-			}
-			return 1;
-		}
-
-		if (e->event_y <
-		    (int) (LAUNCHER_INPUT_HEIGHT + LAUNCHER_PADDING * 2)) {
-			launcher_hide(launcher);
-			return 1;
-		}
-
-		if (type == XCB_BUTTON_RELEASE && launcher->selected >= 0) {
-			launcher_launch_selected(launcher);
-			return 1;
-		}
-		return 1;
-	}
-
-	return 0;
+	launcher_launch_row(launcher, row_get_item(row));
 }

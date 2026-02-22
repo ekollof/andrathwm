@@ -1,14 +1,15 @@
 /* See LICENSE file for copyright and license details.
  *
  * Reusable menu system for awm
- * Provides X11-based popup menus with keyboard and mouse support
+ * Provides GTK-based popup menus with keyboard and mouse support
  */
 
 #ifndef MENU_H
 #define MENU_H
 
-#include "drw.h"
+#include <gtk/gtk.h>
 #include <xcb/xcb.h>
+#include "drw.h"
 
 /* Toggle types for DBusMenu checkbox/radio items */
 typedef enum {
@@ -35,26 +36,16 @@ typedef void (*MenuCallback)(int item_id, void *data);
 /* Menu structure */
 typedef struct Menu {
 	xcb_connection_t *xc;
-	xcb_window_t      win;
-	Drw              *drw;
-	Clr             **scheme;
+	GtkWidget        *gtk_menu; /* GTK menu widget */
 
 	MenuItem *items;
 	int       item_count;
 	int owns_items; /* Whether this menu should free items on destruction */
-	int selected;
-	int x, y;
-	unsigned int w, h;
 
 	MenuCallback callback;
 	void        *callback_data;
 
 	int visible;
-	int ignore_next_release; /* Ignore first ButtonRelease after showing */
-
-	struct Menu *parent;                     /* Parent menu (for submenus) */
-	struct Menu *active_submenu;             /* Currently open submenu */
-	int          mon_x, mon_y, mon_w, mon_h; /* Monitor bounds */
 } Menu;
 
 /* Menu API */
