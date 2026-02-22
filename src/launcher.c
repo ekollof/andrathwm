@@ -762,6 +762,18 @@ on_search_changed(GtkSearchEntry *entry, gpointer user_data)
 		gtk_list_box_select_row(GTK_LIST_BOX(launcher->listbox), first);
 }
 
+/* Signal: realize — set override-redirect so the WM does not manage this
+ * window.  This must be done on the underlying GdkWindow after it is
+ * created but before it is mapped. */
+static void
+on_window_realize(GtkWidget *widget, gpointer user_data)
+{
+	(void) user_data;
+	GdkWindow *gdk_win = gtk_widget_get_window(widget);
+	if (gdk_win)
+		gdk_window_set_override_redirect(gdk_win, TRUE);
+}
+
 /* Signal: delete-event — hide instead of destroying the window */
 static gboolean
 on_delete_event(GtkWidget *widget, GdkEvent *event, gpointer user_data)
@@ -972,6 +984,8 @@ launcher_create(xcb_connection_t *xc, xcb_window_t root, Clr **scheme,
 	    G_CALLBACK(on_search_changed), launcher);
 	g_signal_connect(launcher->listbox, "row-activated",
 	    G_CALLBACK(on_row_activated), launcher);
+	g_signal_connect(
+	    launcher->window, "realize", G_CALLBACK(on_window_realize), NULL);
 	g_signal_connect(launcher->window, "key-press-event",
 	    G_CALLBACK(on_key_press), launcher);
 	g_signal_connect(launcher->window, "delete-event",
@@ -1034,6 +1048,8 @@ launcher_show(Launcher *launcher, int x, int y)
 	if (first)
 		gtk_list_box_select_row(GTK_LIST_BOX(launcher->listbox), first);
 
+	/* Realize first so gtk_window_move takes effect before mapping */
+	gtk_widget_realize(launcher->window);
 	gtk_window_move(GTK_WINDOW(launcher->window), x, y);
 	gtk_widget_show_all(launcher->window);
 	gtk_window_present(GTK_WINDOW(launcher->window));
