@@ -968,7 +968,6 @@ static gboolean
 comp_pause_watchdog_cb(gpointer data)
 {
 	Monitor *m;
-	Client  *sel;
 	int      still_fullscreen;
 	(void) data;
 
@@ -979,15 +978,21 @@ comp_pause_watchdog_cb(gpointer data)
 
 	still_fullscreen = 0;
 	for (m = mons; m; m = m->next) {
-		sel = m->sel;
-		if (sel && sel->isfullscreen && sel->opacity >= 1.0 &&
-		    sel->x == m->mx && sel->y == m->my && sel->w == m->mw &&
-		    sel->h == m->mh) {
-			awm_debug("compositor: watchdog: paused justified by "
-			          "window 0x%lx on mon %dx%d+%d+%d",
-			    (unsigned long) sel->win, m->mw, m->mh, m->mx, m->my);
-			still_fullscreen = 1;
+		Client *c;
+		for (c = m->cl->clients; c; c = c->next) {
+			if (!ISVISIBLE(c, m))
+				continue;
+			if (c->isfullscreen && c->opacity >= 1.0 && c->x == m->mx &&
+			    c->y == m->my && c->w == m->mw && c->h == m->mh) {
+				awm_debug("compositor: watchdog: paused justified by "
+				          "window 0x%lx on mon %dx%d+%d+%d",
+				    (unsigned long) c->win, m->mw, m->mh, m->mx, m->my);
+				still_fullscreen = 1;
+				break;
+			}
 		}
+		if (still_fullscreen)
+			break;
 	}
 
 	if (!still_fullscreen) {
@@ -1150,28 +1155,33 @@ void
 compositor_check_unredirect(void)
 {
 	Monitor *m;
-	Client  *sel, *bypass_client;
+	Client  *bypass_client;
 	int      should_pause;
 
 	if (!comp.active)
 		return;
 
-	/* Pause the compositor if ANY monitor has a focused fullscreen window
-	 * that covers its entire output.  Checking only selmon->sel caused the
-	 * bar on a fullscreen monitor to reappear whenever focus moved to a
-	 * different monitor (selmon changed, so the fullscreen window was no
-	 * longer selmon->sel and should_pause fell to 0). */
+	/* Pause the compositor if ANY monitor has a fullscreen window covering
+	 * its entire output.  We scan all visible clients — not just m->sel —
+	 * so that a notification or launcher stealing focus on the same monitor
+	 * does not falsely resume the compositor while the video is still there.
+	 */
 	should_pause  = 0;
 	bypass_client = NULL;
 	for (m = mons; m; m = m->next) {
-		sel = m->sel;
-		if (sel && sel->isfullscreen && sel->opacity >= 1.0 &&
-		    sel->x == m->mx && sel->y == m->my && sel->w == m->mw &&
-		    sel->h == m->mh) {
-			should_pause  = 1;
-			bypass_client = sel;
-			break;
+		Client *c;
+		for (c = m->cl->clients; c; c = c->next) {
+			if (!ISVISIBLE(c, m))
+				continue;
+			if (c->isfullscreen && c->opacity >= 1.0 && c->x == m->mx &&
+			    c->y == m->my && c->w == m->mw && c->h == m->mh) {
+				should_pause  = 1;
+				bypass_client = c;
+				break;
+			}
 		}
+		if (should_pause)
+			break;
 	}
 
 	awm_debug("compositor_check_unredirect: should_pause=%d comp.paused=%d "
