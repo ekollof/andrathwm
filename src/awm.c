@@ -39,6 +39,7 @@
 #include "monitor.h"
 #include "spawn.h"
 #include "status.h"
+#include "switcher.h"
 #include "systray.h"
 #include "ui_proto.h"
 #include "xrdb.h"
@@ -167,6 +168,7 @@ cleanup(void)
 #ifdef COMPOSITOR
 	compositor_cleanup();
 #endif
+	switcher_cleanup();
 
 	for (i = 0; i < CurLast; i++)
 		drw_cur_free(drw, cursor[i]);
@@ -921,6 +923,7 @@ setup(void)
 	if (compositor_init(g_main_context_default()) < 0)
 		awm_warn("compositor: init failed, running without compositing");
 #endif
+	switcher_init();
 }
 
 int

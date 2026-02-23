@@ -322,6 +322,7 @@ xcb_screen_root_depth(xcb_connection_t *xc, int scr_num)
 /* core WM functions (defined in awm.c) */
 void quit(const Arg *arg);
 void launchermenu(const Arg *arg);
+void switcher_show(const Arg *arg);
 
 /* The Pertag struct uses LENGTH(tags) so must be defined after config.h.
  * It is defined in awm.c after the #include "config.h". */

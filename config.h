@@ -87,6 +87,8 @@ static const Rule rules[] = {
 	{ NULL, NULL, "mpd", 0, 1, 1, -1, 'm', 0.0 },
 	/* awm's own launcher — floating, centered, shown on all tags */
 	{ "awm-launcher", NULL, NULL, 0, 1, 1, -1, 0, 0.0 },
+	/* awm window switcher — floating, centered */
+	{ "awm-switcher", NULL, NULL, 0, 1, 1, -1, 0, 0.0 },
 };
 
 /* layout(s) */
@@ -198,7 +200,10 @@ static const Key keys[] = {
 	{ MODKEY | XCB_MOD_MASK_CONTROL, XKB_KEY_j, movestack, { .i = +1 } },
 	{ MODKEY | XCB_MOD_MASK_CONTROL, XKB_KEY_k, movestack, { .i = -1 } },
 	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_Return, zoom, { 0 } },
-	{ MODKEY, XKB_KEY_Tab, view, { 0 } },
+	{ MODKEY, XKB_KEY_Tab, switcher_show, { .i = 1 } },
+	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_Tab, switcher_show, { .i = 1 } },
+	{ ALTKEY, XKB_KEY_Tab, switcher_show, { .i = 0 } },
+	{ ALTKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_Tab, switcher_show, { .i = 0 } },
 	{ MODKEY, XKB_KEY_x, killclient, { 0 } },
 	{ MODKEY, XKB_KEY_t, setlayout, { .v = &layouts[0] } },
 	{ MODKEY, XKB_KEY_f, setlayout, { .v = &layouts[1] } },

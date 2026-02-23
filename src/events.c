@@ -9,6 +9,7 @@
 #include "ewmh.h"
 #include "monitor.h"
 #include "spawn.h"
+#include "switcher.h"
 #include "systray.h"
 #include "xrdb.h"
 #include "config.h"
@@ -441,6 +442,10 @@ enternotify(xcb_generic_event_t *e)
 	if (launcher_visible)
 		return;
 
+	/* Same guard for the window switcher. */
+	if (switcher_active())
+		return;
+
 	c = wintoclient(ev->event);
 	m = c ? c->mon : wintomon(ev->event);
 	if (m != selmon) {
@@ -488,6 +493,11 @@ void
 focusin(xcb_generic_event_t *e)
 {
 	xcb_focus_in_event_t *ev = (xcb_focus_in_event_t *) e;
+
+	/* While the switcher is visible it must keep keyboard focus; prevent awm
+	 * from stealing it back to the previously focused client. */
+	if (switcher_active())
+		return;
 
 	if (!selmon->sel || ev->event == selmon->sel->win)
 		return;
