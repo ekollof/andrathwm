@@ -958,6 +958,49 @@ compositor_bypass_window(Client *c, int bypass)
 static xcb_window_t comp_pending_bypass_win = XCB_NONE;
 static guint        comp_pending_bypass_id  = 0;
 
+/* Watchdog timer — fires every 5 s while the compositor is paused.
+ * If no fullscreen window justifies the pause, force a resume.
+ * This is a belt-and-suspenders against any edge case that leaves
+ * comp.paused stuck at 1. */
+static guint comp_pause_watchdog_id = 0;
+
+static gboolean
+comp_pause_watchdog_cb(gpointer data)
+{
+	Monitor *m;
+	Client  *sel;
+	int      still_fullscreen;
+	(void) data;
+
+	if (!comp.active || !comp.paused) {
+		comp_pause_watchdog_id = 0;
+		return G_SOURCE_REMOVE;
+	}
+
+	still_fullscreen = 0;
+	for (m = mons; m; m = m->next) {
+		sel = m->sel;
+		if (sel && sel->isfullscreen && sel->opacity >= 1.0 &&
+		    sel->x == m->mx && sel->y == m->my && sel->w == m->mw &&
+		    sel->h == m->mh) {
+			awm_debug("compositor: watchdog: paused justified by "
+			          "window 0x%lx on mon %dx%d+%d+%d",
+			    (unsigned long) sel->win, m->mw, m->mh, m->mx, m->my);
+			still_fullscreen = 1;
+		}
+	}
+
+	if (!still_fullscreen) {
+		awm_warn("compositor: watchdog: paused but no fullscreen window "
+		         "found — forcing resume");
+		comp_pause_watchdog_id = 0;
+		compositor_check_unredirect();
+		return G_SOURCE_REMOVE;
+	}
+
+	return G_SOURCE_CONTINUE;
+}
+
 static gboolean
 comp_fullscreen_bypass_cb(gpointer data)
 {
@@ -1107,7 +1150,7 @@ void
 compositor_check_unredirect(void)
 {
 	Monitor *m;
-	Client  *sel;
+	Client  *sel, *bypass_client;
 	int      should_pause;
 
 	if (!comp.active)
@@ -1118,16 +1161,23 @@ compositor_check_unredirect(void)
 	 * bar on a fullscreen monitor to reappear whenever focus moved to a
 	 * different monitor (selmon changed, so the fullscreen window was no
 	 * longer selmon->sel and should_pause fell to 0). */
-	should_pause = 0;
+	should_pause  = 0;
+	bypass_client = NULL;
 	for (m = mons; m; m = m->next) {
 		sel = m->sel;
 		if (sel && sel->isfullscreen && sel->opacity >= 1.0 &&
 		    sel->x == m->mx && sel->y == m->my && sel->w == m->mw &&
 		    sel->h == m->mh) {
-			should_pause = 1;
+			should_pause  = 1;
+			bypass_client = sel;
 			break;
 		}
 	}
+
+	awm_debug("compositor_check_unredirect: should_pause=%d comp.paused=%d "
+	          "bypass_client=0x%lx",
+	    should_pause, comp.paused,
+	    bypass_client ? (unsigned long) bypass_client->win : 0UL);
 
 	if (should_pause == comp.paused)
 		return;
@@ -1141,8 +1191,13 @@ compositor_check_unredirect(void)
 		}
 
 		/* Cancel any deferred fullscreen bypass that may fire after teardown.
-		 */
+		 * If the timer was still pending (< 40ms since setfullscreen), we take
+		 * over the bypass work here including the raise-above-bar and
+		 * xcb_clear_area that the callback would have done. */
 		if (comp_pending_bypass_id) {
+			awm_debug("compositor: cancelling pending bypass timer for "
+			          "window 0x%x — taking over inline",
+			    (unsigned) comp_pending_bypass_win);
 			g_source_remove(comp_pending_bypass_id);
 			comp_pending_bypass_id  = 0;
 			comp_pending_bypass_win = XCB_NONE;
@@ -1163,6 +1218,26 @@ compositor_check_unredirect(void)
 					cw->redirected = 0;
 					comp.backend->release_pixmap(cw);
 					comp_free_win(cw);
+					awm_debug("compositor: inline unredirect of fullscreen "
+					          "window 0x%lx",
+					    cw->win);
+
+					/* Raise the fullscreen window above the bar window, then
+					 * poke it with xcb_clear_area so the DRI scanout path
+					 * activates.  This mirrors comp_fullscreen_bypass_cb which
+					 * does the same work via the deferred timer — when the
+					 * timer is cancelled we must do it here instead. */
+					if (cw->client->mon) {
+						uint32_t vals[2] = {
+							(uint32_t) cw->client->mon->barwin,
+							XCB_STACK_MODE_ABOVE
+						};
+						xcb_configure_window(xc, (xcb_window_t) cw->win,
+						    XCB_CONFIG_WINDOW_SIBLING |
+						        XCB_CONFIG_WINDOW_STACK_MODE,
+						    vals);
+					}
+					xcb_clear_area(xc, 1, (xcb_window_t) cw->win, 0, 0, 0, 0);
 				}
 			}
 		}
@@ -1171,7 +1246,15 @@ compositor_check_unredirect(void)
 			xcb_configure_window(
 			    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 		}
+		xcb_flush(xc);
 		awm_debug("compositor: suspended (fullscreen unredirect)");
+
+		/* Start watchdog — fires every 5 s to force-resume if the
+		 * fullscreen window disappears without triggering our normal
+		 * resume path. */
+		if (!comp_pause_watchdog_id)
+			comp_pause_watchdog_id =
+			    g_timeout_add(5000, comp_pause_watchdog_cb, NULL);
 	} else {
 		CompWin *cw;
 		for (cw = comp.windows; cw; cw = cw->next) {
@@ -1203,6 +1286,11 @@ compositor_check_unredirect(void)
 			uint32_t stack = XCB_STACK_MODE_ABOVE;
 			xcb_configure_window(
 			    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		}
+		/* Cancel the watchdog — we resumed normally. */
+		if (comp_pause_watchdog_id) {
+			g_source_remove(comp_pause_watchdog_id);
+			comp_pause_watchdog_id = 0;
 		}
 		compositor_damage_all();
 		awm_debug("compositor: resumed");
