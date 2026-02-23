@@ -1,11 +1,11 @@
-/* Simple utility to query X11 idle time using XScreenSaver extension
- * Compile: gcc -o xidle xidle.c -lX11 -lXss
+/* Simple utility to query X11 idle time using XCB screensaver extension
+ * Compile: clang -std=c11 -o xidle xidle.c -lxcb -lxcb-screensaver
  * Usage: ./xidle [-h]
  *   No args: Print idle time in milliseconds
  *   -h:      Print idle time in human-readable format
  */
-#include <X11/Xlib.h>
-#include <X11/extensions/scrnsaver.h>
+#include <xcb/xcb.h>
+#include <xcb/screensaver.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,51 +33,51 @@ print_human_time(unsigned long ms)
 int
 main(int argc, char *argv[])
 {
-	Display          *dpy;
-	XScreenSaverInfo *info;
-	int               event_base, error_base;
-	int               human_readable = 0;
+	xcb_connection_t                   *xc;
+	xcb_screen_t                       *screen;
+	const xcb_query_extension_reply_t  *ext;
+	xcb_screensaver_query_info_cookie_t ck;
+	xcb_screensaver_query_info_reply_t *info;
+	int                                 human_readable = 0;
 
 	/* Parse arguments */
 	if (argc > 1 && strcmp(argv[1], "-h") == 0) {
 		human_readable = 1;
 	}
 
-	dpy = XOpenDisplay(NULL);
-	if (!dpy) {
+	xc = xcb_connect(NULL, NULL);
+	if (xcb_connection_has_error(xc)) {
 		fprintf(stderr, "xidle: cannot open display\n");
+		xcb_disconnect(xc);
 		return 1;
 	}
 
-	/* Check if XScreenSaver extension is available */
-	if (!XScreenSaverQueryExtension(dpy, &event_base, &error_base)) {
+	/* Check if screensaver extension is available */
+	ext = xcb_get_extension_data(xc, &xcb_screensaver_id);
+	if (!ext || !ext->present) {
 		fprintf(stderr, "xidle: XScreenSaver extension not available\n");
-		XCloseDisplay(dpy);
+		xcb_disconnect(xc);
 		return 1;
 	}
 
-	info = XScreenSaverAllocInfo();
+	screen = xcb_setup_roots_iterator(xcb_get_setup(xc)).data;
+
+	ck   = xcb_screensaver_query_info(xc, screen->root);
+	info = xcb_screensaver_query_info_reply(xc, ck, NULL);
 	if (!info) {
-		fprintf(stderr, "xidle: failed to allocate XScreenSaverInfo\n");
-		XCloseDisplay(dpy);
-		return 1;
-	}
-
-	if (XScreenSaverQueryInfo(dpy, DefaultRootWindow(dpy), info)) {
-		if (human_readable) {
-			print_human_time(info->idle);
-		} else {
-			/* idle time is in milliseconds */
-			printf("%lu\n", info->idle);
-		}
-	} else {
 		fprintf(stderr, "xidle: failed to query idle time\n");
-		XFree(info);
-		XCloseDisplay(dpy);
+		xcb_disconnect(xc);
 		return 1;
 	}
 
-	XFree(info);
-	XCloseDisplay(dpy);
+	if (human_readable) {
+		print_human_time(info->ms_since_user_input);
+	} else {
+		/* idle time is in milliseconds */
+		printf("%u\n", info->ms_since_user_input);
+	}
+
+	free(info);
+	xcb_disconnect(xc);
 	return 0;
 }

@@ -1,41 +1,21 @@
-/* compositor.c — EGL/KHR_image_pixmap accelerated compositor for awm
+/* compositor.c — compositor core for awm
  *
  * Architecture:
  *   - XCompositeRedirectSubwindows(root, CompositeRedirectManual) captures
  *     all root children into server-side pixmaps.
- *   - An overlay window (XCompositeGetOverlayWindow) is used as the EGL
- *     surface; a GL context is created on it and windows are rendered
- *     directly to it via textured quads.
- *   - Each window's XCompositeNameWindowPixmap is bound as a GL texture
- *     via EGL_KHR_image_pixmap + GL_OES_EGL_image (zero CPU copy, GPU
- *     compositing).  This replaces the old GLX_EXT_texture_from_pixmap
- *     (TFP) path.
+ *   - An overlay window (XCompositeGetOverlayWindow) is used as the render
+ *     surface.  The active backend (EGL/GL or XRender) draws into it.
+ *   - Each window's XCompositeNameWindowPixmap is handed to the backend
+ *     via bind_pixmap() so the backend can build whatever resource it needs
+ *     (EGLImageKHR+texture for the GL path; XRenderPicture for XRender).
  *   - XDamage tracks which windows have changed since the last repaint.
- *   - eglSwapInterval(1) enables vsync so frames are presented at display
- *     rate with no tearing.
- *   - Border rectangles for managed clients are drawn as GL quads in the
- *     same pass.
- *   - XRender is retained only for building the alpha-picture cache that
- *     was used for opacity; opacity is now handled by the GL blend equation
- *     directly (no XRender needed at runtime).
+ *   - Border rectangles for managed clients are drawn by the active backend
+ *     in the same repaint pass.
  *
- * Why EGL with a dedicated second Display* (gl_dpy):
- *   Mesa's DRI3/gallium backend (libgallium, libxcb-dri3, libxcb-present)
- *   sends XCB requests directly on the underlying xcb_connection_t,
- *   bypassing Xlib's dpy->request counter.  When the wire sequence
- *   crosses a 65535 boundary, Xlib's widening arithmetic in
- *   _XSetLastRequestRead sees the gap and prints "Xlib: sequence lost".
- *   Fix: open a dedicated second Display* for all EGL/GL operations and
- *   call XSetEventQueueOwner(gl_dpy, XCBOwnsEventQueue) immediately after.
- *   XCB then owns the authoritative sequence counter for that connection,
- *   so Xlib's widening always stays consistent.  The main dpy is never
- *   touched by Mesa.  EGL wraps gl_dpy; pixmap XIDs are valid across both
- *   connections (same X server), so EGLImageKHR creation works unchanged.
- *
- * Fallback:
- *   - If EGL_KHR_image_pixmap is unavailable the compositor falls back to
- *     the original XRender path (comp_do_repaint_xrender) so the WM still
- *     works on software-only X servers.
+ * Backend selection:
+ *   EGL/GL (comp_backend_egl) is tried first.  If EGL_KHR_image_pixmap is
+ *   unavailable the compositor falls back to XRender (comp_backend_xrender)
+ *   so the WM still works on software-only X servers.
  *
  * Compile-time guard: the entire file is dead code unless -DCOMPOSITOR.
  */
@@ -47,672 +27,109 @@
 #include <string.h>
 #include <stdio.h>
 
-#include <X11/Xlib.h>
-#include <X11/Xlibint.h>
-#include <X11/Xlib-xcb.h>
-#include <X11/Xutil.h>
-#include <X11/extensions/shape.h>
-#include <X11/extensions/Xcomposite.h>
-#include <X11/extensions/Xdamage.h>
-#include <X11/extensions/Xfixes.h>
-#include <X11/extensions/Xrender.h>
-
 #include <xcb/xcb.h>
+#include <xcb/composite.h>
+#include <xcb/damage.h>
+#include <xcb/render.h>
+#include <xcb/xfixes.h>
+#include <xcb/shape.h>
+#include <xcb/xcb_renderutil.h>
 #include <xcb/present.h>
-
-/* EGL + GL — only included when -DCOMPOSITOR is active */
-#define GL_GLEXT_PROTOTYPES
-#include <GL/gl.h>
-#include <GL/glext.h>
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
 
 #include <glib.h>
 
 #include "awm.h"
 #include "log.h"
 #include "compositor.h"
+#include "compositor_backend.h"
 
 /* -------------------------------------------------------------------------
- * Internal types
+ * Shared compositor state — single instance, accessed by all backend files
  * ---------------------------------------------------------------------- */
 
-typedef struct CompWin {
-	Window  win;
-	Client *client; /* NULL for override_redirect windows        */
-	Pixmap  pixmap; /* XCompositeNameWindowPixmap result          */
-	/* XRender path (fallback) */
-	Picture picture; /* XRenderCreatePicture on pixmap             */
-	/* GL/EGL path */
-	EGLImageKHR egl_image; /* EGL image wrapping pixmap (KHR_image_pixmap) */
-	GLuint      texture;   /* GL_TEXTURE_2D bound via EGL image            */
-	Damage      damage;
-	int         x, y, w, h, bw; /* last known geometry                */
-	int         depth;          /* window depth                              */
-	int         argb;           /* depth == 32                               */
-	double      opacity;        /* 0.0 – 1.0                                 */
-	int         redirected;     /* 0 = bypass (fullscreen/bypass-hint)    */
-	int         hidden;         /* 1 = moved off-screen by showhide()        */
-	int         ever_damaged;   /* 0 = no damage received yet (since map) */
-	xcb_present_event_t present_eid; /* 0 = not subscribed to Present events */
-	struct CompWin     *next;
-} CompWin;
-
-/* -------------------------------------------------------------------------
- * Module state (all static, no global pollution)
- * ---------------------------------------------------------------------- */
-
-static struct {
-	int    active;
-	Window overlay;
-
-	/* ---- GL path (primary) ---- */
-	int      use_gl;    /* 1 if EGL_KHR_image_pixmap available and ctx ok */
-	Display *gl_dpy;    /* dedicated Display* for EGL/Mesa; XCBOwnsEventQueue
-	                     * is set on it so Mesa's DRI3 XCB calls don't
-	                     * corrupt the main dpy's Xlib sequence counter    */
-	EGLDisplay egl_dpy; /* EGL display wrapping gl_dpy                    */
-	EGLContext egl_ctx; /* EGL/GL context                                  */
-	EGLSurface egl_win; /* EGL surface wrapping comp.overlay               */
-	GLuint     prog;    /* shader program                                  */
-	GLuint     vbo;     /* quad vertex buffer                              */
-	GLuint     vao;     /* vertex array object                             */
-	/* uniform locations */
-	GLint u_tex;
-	GLint u_opacity;
-	GLint u_flip_y; /* reserved: flip V coord (unused for EGL images)  */
-	GLint u_solid;  /* 1 = draw solid colour quad (borders)            */
-	GLint u_color;  /* solid colour (borders)                          */
-	GLint u_rect;   /* x, y, w, h in pixels (cached)                   */
-	GLint u_screen; /* screen width, height (cached)                   */
-	/* EGL_KHR_image_pixmap function pointers (loaded at runtime) */
-	PFNEGLCREATEIMAGEKHRPROC            egl_create_image;
-	PFNEGLDESTROYIMAGEKHRPROC           egl_destroy_image;
-	PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_tex;
-	/* EGL_EXT_buffer_age partial repaint ring buffer.
-	 * Each slot holds the bounding box of one past frame's dirty region.
-	 * ring_idx is the slot that will be written after the *next* swap. */
-#define DAMAGE_RING_SIZE 6
-	XRectangle damage_ring[DAMAGE_RING_SIZE];
-	int        ring_idx; /* next write position (0..DAMAGE_RING_SIZE-1) */
-	int        has_buffer_age; /* 1 if EGL_EXT_buffer_age is available    */
-
-	/* ---- XRender path (fallback) ---- */
-	Picture target; /* XRenderPicture on overlay                   */
-	Pixmap  back_pixmap;
-	Picture back;            /* XRenderPicture on back_pixmap       */
-	Picture alpha_pict[256]; /* pre-built 1×1 RepeatNormal solids   */
-
-	/* ---- Shared state ---- */
-	int           damage_ev_base;
-	int           damage_err_base;
-	int           xfixes_ev_base;
-	int           xfixes_err_base;
-	guint         repaint_id; /* GLib idle source id, 0 = none            */
-	int           paused;     /* 1 = overlay hidden, repaints suppressed  */
-	XserverRegion dirty;      /* accumulated dirty region                 */
-	CompWin      *windows;
-	GMainContext *ctx;
-	/* Wallpaper support */
-	Atom        atom_rootpmap;
-	Atom        atom_esetroot;
-	Pixmap      wallpaper_pixmap;
-	Picture     wallpaper_pict;      /* XRender picture (fallback path)      */
-	EGLImageKHR wallpaper_egl_image; /* EGL image for wallpaper (GL)         */
-	GLuint      wallpaper_texture;   /* GL texture for wallpaper (GL)        */
-	/* XRender extension codes — needed for error whitelisting */
-	int render_request_base;
-	int render_err_base;
-	/* XShape extension — optional */
-	int has_xshape;
-	int shape_ev_base;
-	int shape_err_base;
-	/* X Present extension — optional, used to detect DRI3/Present frames */
-	int     has_present;    /* 1 if Present extension available */
-	uint8_t present_opcode; /* major opcode for GenericEvent filter */
-	xcb_present_event_t present_eid_next; /* monotonically incrementing EID */
-	/* _NET_WM_CM_Sn selection ownership */
-	Window cm_owner_win; /* utility window used to hold the CM selection */
-	Atom   atom_cm_sn;   /* _NET_WM_CM_S<screen> atom                    */
-	/* Per-window opacity atom */
-	Atom atom_net_wm_opacity; /* _NET_WM_WINDOW_OPACITY                 */
-} comp;
+CompShared comp;
 
 /* ---- compositor compile-time invariants ---- */
 _Static_assert(sizeof(unsigned short) == 2,
-    "unsigned short must be 16 bits for XRenderColor alpha/channel field "
-    "scaling");
+    "unsigned short must be 16 bits for xcb_render_color_t alpha/channel "
+    "field scaling");
 _Static_assert(sizeof(short) == 2,
-    "short must be 16 bits to match XRectangle.x and XRectangle.y field "
-    "types");
-_Static_assert(sizeof(Pixmap) == sizeof(unsigned long),
-    "Pixmap (XID) must equal unsigned long in size for format-32 property "
-    "reads");
+    "short must be 16 bits to match xcb_rectangle_t x and y field types");
+_Static_assert(sizeof(xcb_pixmap_t) == sizeof(uint32_t),
+    "xcb_pixmap_t must be 32 bits for format-32 property reads");
 
 /* -------------------------------------------------------------------------
- * Forward declarations
+ * Forward declarations (internal)
  * ---------------------------------------------------------------------- */
 
-static void     comp_add_by_xid(Window w);
-static CompWin *comp_find_by_xid(Window w);
+static void     comp_add_by_xid(xcb_window_t w);
+static CompWin *comp_find_by_xid(xcb_window_t w);
 static CompWin *comp_find_by_client(Client *c);
 static void     comp_free_win(CompWin *cw);
 static void     comp_refresh_pixmap(CompWin *cw);
-static void     comp_apply_shape(CompWin *cw);
 static void     comp_update_wallpaper(void);
 static void     schedule_repaint(void);
 static void     comp_do_repaint(void);
-static void     comp_do_repaint_gl(void);
-static void     comp_do_repaint_xrender(void);
+static void     comp_arm_vblank(void);
 static gboolean comp_repaint_idle(gpointer data);
-static Picture  make_alpha_picture(double a);
 
 /* -------------------------------------------------------------------------
- * Helpers
- * ---------------------------------------------------------------------- */
-
-/* Suppress X errors for a single call */
-static int
-comp_xerror_ignore(Display *d, XErrorEvent *e)
-{
-	(void) d;
-	(void) e;
-	return 0;
-}
-
-static int (*prev_xerror)(Display *, XErrorEvent *) = NULL;
-static int xerror_ignore_depth                      = 0;
-
-static void
-xerror_push_ignore(void)
-{
-	if (xerror_ignore_depth++ == 0)
-		prev_xerror = XSetErrorHandler(comp_xerror_ignore);
-}
-
-static void
-xerror_pop(void)
-{
-	XSync(dpy, False);
-	if (--xerror_ignore_depth == 0) {
-		XSetErrorHandler(prev_xerror);
-		prev_xerror = NULL;
-	}
-}
-
-/* -------------------------------------------------------------------------
- * XESetWireToEvent workaround (picom-derived)
+ * CPU-side dirty bbox helpers
  *
- * Mesa's DRI3/present backend registers XESetWireToEvent hooks on whatever
- * Display* it is given.  Because EGL is initialised on the dedicated gl_dpy
- * (which has XCBOwnsEventQueue), Mesa's hooks live on gl_dpy — NOT on dpy.
- *
- * However libXdamage also registers a wire-to-event hook on dpy for
- * XDamageNotify.  If anything calls proc(dpy, dummy, (xEvent*)ev) with an
- * already-decoded XEvent*, the cast produces a layout mismatch:
- *   • XAnyEvent.serial  is at byte offset 8 (unsigned long, 8 bytes)
- *   • xGenericReply.sequenceNumber is at byte offset 2 (CARD16, 2 bytes)
- * so _XSetLastRequestRead reads garbage as the sequence number and emits
- * "Xlib: sequence lost" warnings on every XDamageNotify.
- *
- * The only safe thing to do is prevent Xlib from calling the hook a second
- * time when it processes the already-queued XEvent.  We do this by clearing
- * the hook and immediately restoring it — the event has already been decoded
- * by XNextEvent so no further wire-to-event translation is needed.
+ * comp_dirty_add_rect(x,y,w,h)  — union a rectangle into comp.dirty (server)
+ *                                  and extend the CPU bbox.
+ * comp_dirty_full()              — mark the whole screen dirty.
+ * comp_dirty_clear()             — reset to empty after a repaint.
+ *                                  (defined as static inline in
+ * compositor_backend.h so it is also visible in the backend files)
  * ---------------------------------------------------------------------- */
 
-void
-compositor_fix_wire_to_event(XEvent *ev)
-{
-	int type = ev->type & 0x7f; /* strip SendEvent bit */
-	Bool (*proc)(Display *, XEvent *, xEvent *);
-
-	if (!comp.use_gl)
-		return;
-
-	/* Temporarily clear the hook so Xlib won't re-invoke it, then restore.
-	 * Do NOT call proc ourselves: casting an XEvent* to xEvent* produces a
-	 * struct-layout mismatch that causes _XSetLastRequestRead to read garbage
-	 * bytes as the sequence number, triggering "sequence lost" warnings. */
-	proc = XESetWireToEvent(dpy, type, NULL);
-	if (proc)
-		XESetWireToEvent(dpy, type, proc);
-}
-
-static Picture
-make_alpha_picture(double a)
-{
-	XRenderPictFormat       *fmt;
-	XRenderPictureAttributes pa;
-	Pixmap                   pix;
-	Picture                  pic;
-	XRenderColor             col;
-
-	fmt       = XRenderFindStandardFormat(dpy, PictStandardA8);
-	pix       = XCreatePixmap(dpy, root, 1, 1, 8);
-	pa.repeat = RepeatNormal;
-	pic       = XRenderCreatePicture(dpy, pix, fmt, CPRepeat, &pa);
-	col.alpha = (unsigned short) (a * 0xffff);
-	col.red = col.green = col.blue = 0;
-	XRenderFillRectangle(dpy, PictOpSrc, pic, &col, 0, 0, 1, 1);
-	XFreePixmap(dpy, pix);
-	return pic;
-}
-
-/* -------------------------------------------------------------------------
- * GL shader source
- * ---------------------------------------------------------------------- */
-
-/* Vertex shader: maps pixel coordinates to NDC.
- * Uniforms: screen width/height are baked into the projection done here.
- * We pass (x, y, w, h) as per-draw uniforms and generate the quad inline. */
-static const char *vert_src =
-    "#version 130\n"
-    "in vec2 a_pos;\n" /* unit quad [0,1]×[0,1]                   */
-    "in vec2 a_uv;\n"
-    "out vec2 v_uv;\n"
-    "uniform vec4 u_rect;\n"   /* x, y, w, h in pixels (top-left origin)  */
-    "uniform vec2 u_screen;\n" /* screen width, height                    */
-    "uniform int  u_flip_y;\n" /* reserved: flip V if texture origin differs */
-    "void main() {\n"
-    "    vec2 px = u_rect.xy + a_pos * u_rect.zw;\n"
-    "    gl_Position = vec4(\n"
-    "        px.x / u_screen.x * 2.0 - 1.0,\n"
-    "        1.0 - px.y / u_screen.y * 2.0,\n" /* Y-flip: screen top=0   */
-    "        0.0, 1.0);\n"
-    "    v_uv = (u_flip_y == 1) ? vec2(a_uv.x, 1.0 - a_uv.y) : a_uv;\n"
-    "}\n";
-
-/* Fragment shader: samples the window texture with opacity, or fills solid. */
-static const char *frag_src =
-    "#version 130\n"
-    "in vec2 v_uv;\n"
-    "out vec4 frag_color;\n"
-    "uniform sampler2D u_tex;\n"
-    "uniform float     u_opacity;\n"
-    "uniform int       u_solid;\n"
-    "uniform vec4      u_color;\n"
-    "void main() {\n"
-    "    if (u_solid == 1) {\n"
-    "        frag_color = u_color;\n"
-    "    } else {\n"
-    "        vec4 c = texture(u_tex, v_uv).rgba;\n"
-    /* Straight alpha: just scale alpha by opacity.  The blend equation
-     * GL_SRC_ALPHA/GL_ONE_MINUS_SRC_ALPHA handles the rest. */
-    "        c.a *= u_opacity;\n"
-    "        frag_color = c;\n"
-    "    }\n"
-    "}\n";
-
-/* -------------------------------------------------------------------------
- * GL init helpers
- * ---------------------------------------------------------------------- */
-
-static GLuint
-gl_compile_shader(GLenum type, const char *src)
-{
-	GLuint s  = glCreateShader(type);
-	GLint  ok = 0;
-	glShaderSource(s, 1, &src, NULL);
-	glCompileShader(s);
-	glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-	if (!ok) {
-		char buf[512];
-		glGetShaderInfoLog(s, sizeof(buf), NULL, buf);
-		awm_warn("compositor: shader compile error: %s", buf);
-		glDeleteShader(s);
-		return 0;
-	}
-	return s;
-}
-
-static GLuint
-gl_link_program(GLuint vert, GLuint frag)
-{
-	GLuint p  = glCreateProgram();
-	GLint  ok = 0;
-	glAttachShader(p, vert);
-	glAttachShader(p, frag);
-	glBindAttribLocation(p, 0, "a_pos");
-	glBindAttribLocation(p, 1, "a_uv");
-	glLinkProgram(p);
-	glGetProgramiv(p, GL_LINK_STATUS, &ok);
-	if (!ok) {
-		char buf[512];
-		glGetProgramInfoLog(p, sizeof(buf), NULL, buf);
-		awm_warn("compositor: shader link error: %s", buf);
-		glDeleteProgram(p);
-		return 0;
-	}
-	return p;
-}
-
-/* Attempt to initialise the GL/EGL path.  Returns 0 on success, -1 if EGL
- * is unavailable (caller falls back to XRender). */
-static int
-comp_init_gl(void)
-{
-	const char *egl_exts;
-	EGLConfig   cfg     = NULL;
-	EGLint      num_cfg = 0;
-	GLuint      vert = 0, frag = 0;
-
-	/* Unit-quad geometry: two triangles covering [0,1]×[0,1] */
-	static const float quad[] = {
-		/* a_pos    a_uv */
-		0.0f,
-		0.0f,
-		0.0f,
-		0.0f,
-		1.0f,
-		0.0f,
-		1.0f,
-		0.0f,
-		0.0f,
-		1.0f,
-		0.0f,
-		1.0f,
-		1.0f,
-		1.0f,
-		1.0f,
-		1.0f,
-	};
-
-	/* --- Get EGL display wrapping the dedicated GL connection ----------
-	 * Prefer eglGetPlatformDisplayEXT(EGL_PLATFORM_X11_EXT) over the
-	 * legacy eglGetDisplay(): the legacy path lets Mesa auto-detect the
-	 * platform, which on some driver/Mesa versions picks a non-X11
-	 * platform (device, surfaceless) that does not advertise
-	 * EGL_KHR_image_pixmap.  The explicit platform hint guarantees we
-	 * get the X11 EGL display, which does expose that extension.
-	 */
-	{
-		PFNEGLGETPLATFORMDISPLAYEXTPROC get_plat_dpy =
-		    (PFNEGLGETPLATFORMDISPLAYEXTPROC) eglGetProcAddress(
-		        "eglGetPlatformDisplayEXT");
-		if (get_plat_dpy) {
-			comp.egl_dpy =
-			    get_plat_dpy(EGL_PLATFORM_X11_EXT, comp.gl_dpy, NULL);
-			awm_debug("compositor: used eglGetPlatformDisplayEXT"
-			          "(EGL_PLATFORM_X11_EXT)");
-		} else {
-			comp.egl_dpy = eglGetDisplay((EGLNativeDisplayType) comp.gl_dpy);
-			awm_debug("compositor: eglGetPlatformDisplayEXT "
-			          "unavailable, used legacy eglGetDisplay");
-		}
-	}
-	if (comp.egl_dpy == EGL_NO_DISPLAY) {
-		awm_warn("compositor: eglGetDisplay failed, "
-		         "falling back to XRender");
-		return -1;
-	}
-
-	{
-		EGLint major = 0, minor = 0;
-		if (!eglInitialize(comp.egl_dpy, &major, &minor)) {
-			awm_warn("compositor: eglInitialize failed (0x%x), "
-			         "falling back to XRender",
-			    (unsigned int) eglGetError());
-			comp.egl_dpy = EGL_NO_DISPLAY;
-			return -1;
-		}
-		awm_debug("compositor: EGL %d.%d initialised", major, minor);
-	}
-
-	/* --- Check for required EGL extensions ----------------------------*/
-	egl_exts = eglQueryString(comp.egl_dpy, EGL_EXTENSIONS);
-
-	if (!egl_exts || !strstr(egl_exts, "EGL_KHR_image_pixmap")) {
-		awm_warn("compositor: EGL_KHR_image_pixmap unavailable, "
-		         "falling back to XRender");
-		eglTerminate(comp.egl_dpy);
-		comp.egl_dpy = EGL_NO_DISPLAY;
-		return -1;
-	}
-
-	/* --- Load EGL/GL extension function pointers ----------------------*/
-	comp.egl_create_image =
-	    (PFNEGLCREATEIMAGEKHRPROC) eglGetProcAddress("eglCreateImageKHR");
-	comp.egl_destroy_image =
-	    (PFNEGLDESTROYIMAGEKHRPROC) eglGetProcAddress("eglDestroyImageKHR");
-	comp.egl_image_target_tex =
-	    (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC) eglGetProcAddress(
-	        "glEGLImageTargetTexture2DOES");
-
-	if (!comp.egl_create_image || !comp.egl_destroy_image ||
-	    !comp.egl_image_target_tex) {
-		awm_warn("compositor: EGL image extension procs not found, "
-		         "falling back to XRender");
-		eglTerminate(comp.egl_dpy);
-		comp.egl_dpy = EGL_NO_DISPLAY;
-		return -1;
-	}
-
-	/* --- Bind desktop OpenGL API (not GLES) ---------------------------*/
-	if (!eglBindAPI(EGL_OPENGL_API)) {
-		awm_warn("compositor: eglBindAPI(EGL_OPENGL_API) failed (0x%x), "
-		         "falling back to XRender",
-		    (unsigned int) eglGetError());
-		eglTerminate(comp.egl_dpy);
-		comp.egl_dpy = EGL_NO_DISPLAY;
-		return -1;
-	}
-
-	/* --- Choose EGL config --------------------------------------------*/
-	{
-		EGLint attr[] = { EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-			EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_RED_SIZE, 8,
-			EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE };
-		if (!eglChooseConfig(comp.egl_dpy, attr, &cfg, 1, &num_cfg) ||
-		    num_cfg == 0) {
-			/* Retry without alpha requirement */
-			EGLint attr2[] = { EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-				EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_RED_SIZE, 8,
-				EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_NONE };
-			if (!eglChooseConfig(comp.egl_dpy, attr2, &cfg, 1, &num_cfg) ||
-			    num_cfg == 0) {
-				awm_warn("compositor: no suitable EGL config found, "
-				         "falling back to XRender");
-				eglTerminate(comp.egl_dpy);
-				comp.egl_dpy = EGL_NO_DISPLAY;
-				return -1;
-			}
-		}
-	}
-
-	/* --- Create GL context --------------------------------------------*/
-	{
-		EGLint ctx_attr[] = { EGL_CONTEXT_MAJOR_VERSION, 2,
-			EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE };
-		comp.egl_ctx =
-		    eglCreateContext(comp.egl_dpy, cfg, EGL_NO_CONTEXT, ctx_attr);
-	}
-	if (comp.egl_ctx == EGL_NO_CONTEXT) {
-		awm_warn("compositor: eglCreateContext failed (0x%x), "
-		         "falling back to XRender",
-		    (unsigned int) eglGetError());
-		eglTerminate(comp.egl_dpy);
-		comp.egl_dpy = EGL_NO_DISPLAY;
-		return -1;
-	}
-
-	/* --- Create EGL window surface wrapping overlay -------------------*/
-	comp.egl_win = eglCreateWindowSurface(
-	    comp.egl_dpy, cfg, (EGLNativeWindowType) comp.overlay, NULL);
-	if (comp.egl_win == EGL_NO_SURFACE) {
-		awm_warn("compositor: eglCreateWindowSurface failed (0x%x), "
-		         "falling back to XRender",
-		    (unsigned int) eglGetError());
-		eglDestroyContext(comp.egl_dpy, comp.egl_ctx);
-		comp.egl_ctx = EGL_NO_CONTEXT;
-		eglTerminate(comp.egl_dpy);
-		comp.egl_dpy = EGL_NO_DISPLAY;
-		return -1;
-	}
-
-	if (!eglMakeCurrent(
-	        comp.egl_dpy, comp.egl_win, comp.egl_win, comp.egl_ctx)) {
-		awm_warn("compositor: eglMakeCurrent failed (0x%x), "
-		         "falling back to XRender",
-		    (unsigned int) eglGetError());
-		eglDestroySurface(comp.egl_dpy, comp.egl_win);
-		eglDestroyContext(comp.egl_dpy, comp.egl_ctx);
-		comp.egl_win = EGL_NO_SURFACE;
-		comp.egl_ctx = EGL_NO_CONTEXT;
-		eglTerminate(comp.egl_dpy);
-		comp.egl_dpy = EGL_NO_DISPLAY;
-		return -1;
-	}
-
-	/* Enable vsync */
-	eglSwapInterval(comp.egl_dpy, 1);
-
-	/* --- Compile shaders -----------------------------------------------*/
-	vert = gl_compile_shader(GL_VERTEX_SHADER, vert_src);
-	frag = gl_compile_shader(GL_FRAGMENT_SHADER, frag_src);
-	if (!vert || !frag) {
-		if (vert)
-			glDeleteShader(vert);
-		if (frag)
-			glDeleteShader(frag);
-		eglMakeCurrent(
-		    comp.egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-		eglDestroySurface(comp.egl_dpy, comp.egl_win);
-		eglDestroyContext(comp.egl_dpy, comp.egl_ctx);
-		comp.egl_win = EGL_NO_SURFACE;
-		comp.egl_ctx = EGL_NO_CONTEXT;
-		eglTerminate(comp.egl_dpy);
-		comp.egl_dpy = EGL_NO_DISPLAY;
-		return -1;
-	}
-
-	comp.prog = gl_link_program(vert, frag);
-	glDeleteShader(vert);
-	glDeleteShader(frag);
-	if (!comp.prog) {
-		eglMakeCurrent(
-		    comp.egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-		eglDestroySurface(comp.egl_dpy, comp.egl_win);
-		eglDestroyContext(comp.egl_dpy, comp.egl_ctx);
-		comp.egl_win = EGL_NO_SURFACE;
-		comp.egl_ctx = EGL_NO_CONTEXT;
-		eglTerminate(comp.egl_dpy);
-		comp.egl_dpy = EGL_NO_DISPLAY;
-		return -1;
-	}
-
-	/* Cache uniform locations */
-	comp.u_tex     = glGetUniformLocation(comp.prog, "u_tex");
-	comp.u_opacity = glGetUniformLocation(comp.prog, "u_opacity");
-	comp.u_flip_y  = glGetUniformLocation(comp.prog, "u_flip_y");
-	comp.u_solid   = glGetUniformLocation(comp.prog, "u_solid");
-	comp.u_color   = glGetUniformLocation(comp.prog, "u_color");
-	comp.u_rect    = glGetUniformLocation(comp.prog, "u_rect");
-	comp.u_screen  = glGetUniformLocation(comp.prog, "u_screen");
-
-	glUseProgram(comp.prog);
-	glUniform1i(comp.u_tex, 0); /* texture unit 0 */
-	glUseProgram(0);
-
-	/* --- Build unit-quad VBO/VAO ----------------------------------------*/
-	glGenVertexArrays(1, &comp.vao);
-	glGenBuffers(1, &comp.vbo);
-	glBindVertexArray(comp.vao);
-	glBindBuffer(GL_ARRAY_BUFFER, comp.vbo);
-	glBufferData(
-	    GL_ARRAY_BUFFER, (GLsizeiptr) sizeof(quad), quad, GL_STATIC_DRAW);
-	/* a_pos: 2 floats at offset 0, stride 4 floats */
-	glEnableVertexAttribArray(0);
-	glVertexAttribPointer(
-	    0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *) 0);
-	/* a_uv: 2 floats at offset 2 floats */
-	glEnableVertexAttribArray(1);
-	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
-	    (void *) (2 * sizeof(float)));
-	glBindVertexArray(0);
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-	/* --- GL state ---------------------------------------------------------*/
-	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_SCISSOR_TEST);
-	glEnable(GL_BLEND);
-	/* Straight (non-pre-multiplied) alpha blend.  X11 ARGB windows
-	 * (terminals etc.) deliver straight alpha, so SRC_ALPHA is correct.
-	 * Using GL_ONE caused colour fringing on sub-pixel font rendering. */
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glViewport(0, 0, sw, sh);
-
-	comp.use_gl = 1;
-
-	/* Detect EGL_EXT_buffer_age for partial repaints */
-	comp.has_buffer_age =
-	    (egl_exts && strstr(egl_exts, "EGL_EXT_buffer_age") != NULL);
-	memset(comp.damage_ring, 0, sizeof(comp.damage_ring));
-	comp.ring_idx = 0;
-
-	awm_debug("compositor: EGL/GL path initialised (renderer: %s, "
-	          "buffer_age=%d)",
-	    (const char *) glGetString(GL_RENDERER), comp.has_buffer_age);
-	return 0;
-}
-
-/* Create an EGLImageKHR from cw->pixmap and attach it to a GL texture.
- * Fills cw->egl_image and cw->texture.
- * Called after comp_refresh_pixmap() sets cw->pixmap. */
 static void
-comp_bind_tfp(CompWin *cw)
+comp_dirty_add_rect(int x, int y, int w, int h)
 {
-	EGLint img_attr[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
+	xcb_rectangle_t     r;
+	xcb_xfixes_region_t sr;
 
-	if (!comp.use_gl || !cw->pixmap)
+	if (w <= 0 || h <= 0)
 		return;
 
-	/* Release any existing EGL image / texture first */
-	if (cw->texture) {
-		glDeleteTextures(1, &cw->texture);
-		cw->texture = 0;
+	r.x      = (short) x;
+	r.y      = (short) y;
+	r.width  = (uint16_t) w;
+	r.height = (uint16_t) h;
+	sr       = xcb_generate_id(xc);
+	xcb_xfixes_create_region(xc, sr, 1, &r);
+	xcb_xfixes_union_region(xc, comp.dirty, sr, comp.dirty);
+	xcb_xfixes_destroy_region(xc, sr);
+
+	if (!comp.dirty_bbox_valid) {
+		comp.dirty_x1         = x;
+		comp.dirty_y1         = y;
+		comp.dirty_x2         = x + w;
+		comp.dirty_y2         = y + h;
+		comp.dirty_bbox_valid = 1;
+	} else {
+		if (x < comp.dirty_x1)
+			comp.dirty_x1 = x;
+		if (y < comp.dirty_y1)
+			comp.dirty_y1 = y;
+		if (x + w > comp.dirty_x2)
+			comp.dirty_x2 = x + w;
+		if (y + h > comp.dirty_y2)
+			comp.dirty_y2 = y + h;
 	}
-	if (cw->egl_image != EGL_NO_IMAGE_KHR) {
-		comp.egl_destroy_image(comp.egl_dpy, cw->egl_image);
-		cw->egl_image = EGL_NO_IMAGE_KHR;
-	}
-
-	/* Create EGL image from the X pixmap */
-	cw->egl_image = comp.egl_create_image(comp.egl_dpy, EGL_NO_CONTEXT,
-	    EGL_NATIVE_PIXMAP_KHR, (EGLClientBuffer) (uintptr_t) cw->pixmap,
-	    img_attr);
-
-	if (cw->egl_image == EGL_NO_IMAGE_KHR)
-		return;
-
-	/* Allocate GL texture and attach the EGL image */
-	glGenTextures(1, &cw->texture);
-	glBindTexture(GL_TEXTURE_2D, cw->texture);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	comp.egl_image_target_tex(GL_TEXTURE_2D, (GLeglImageOES) cw->egl_image);
-	glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-/* Release EGL image + GL texture for a CompWin.
- * Must be called before comp_free_win() when use_gl==1 so the EGL image
- * is destroyed before the underlying pixmap is freed. */
 static void
-comp_release_tfp(CompWin *cw)
+comp_dirty_full(void)
 {
-	if (!comp.use_gl)
-		return;
-
-	if (cw->texture) {
-		glDeleteTextures(1, &cw->texture);
-		cw->texture = 0;
-	}
-	if (cw->egl_image != EGL_NO_IMAGE_KHR) {
-		comp.egl_destroy_image(comp.egl_dpy, cw->egl_image);
-		cw->egl_image = EGL_NO_IMAGE_KHR;
-	}
+	xcb_rectangle_t full = { 0, 0, (uint16_t) sw, (uint16_t) sh };
+	xcb_xfixes_set_region(xc, comp.dirty, 1, &full);
+	comp.dirty_x1         = 0;
+	comp.dirty_y1         = 0;
+	comp.dirty_x2         = sw;
+	comp.dirty_y2         = sh;
+	comp.dirty_bbox_valid = 1;
 }
 
 /* -------------------------------------------------------------------------
@@ -722,212 +139,284 @@ comp_release_tfp(CompWin *cw)
 int
 compositor_init(GMainContext *ctx)
 {
-	int                      comp_ev, comp_err, render_ev, render_err;
-	int                      xfixes_major = 2, xfixes_minor = 0;
-	int                      damage_major = 1, damage_minor = 1;
-	int                      i;
-	XRenderPictFormat       *fmt;
-	XRenderPictureAttributes pa;
-	XserverRegion            empty;
+	const xcb_query_extension_reply_t *ext;
 
 	memset(&comp, 0, sizeof(comp));
 	comp.ctx = ctx;
 
+	/* --- Query/cache XRender picture formats (needed for all format lookups)
+	 */
+	comp.render_formats = xcb_render_util_query_formats(xc);
+	if (!comp.render_formats) {
+		awm_warn("compositor: xcb_render_util_query_formats failed");
+		return -1;
+	}
+
 	/* --- Check required extensions ----------------------------------------
 	 */
 
-	if (!XCompositeQueryExtension(dpy, &comp_ev, &comp_err)) {
+	ext = xcb_get_extension_data(xc, &xcb_composite_id);
+	if (!ext || !ext->present) {
 		awm_warn("compositor: XComposite extension not available");
 		return -1;
 	}
 	{
-		int major = 0, minor = 2;
-		XCompositeQueryVersion(dpy, &major, &minor);
-		if (major < 0 || (major == 0 && minor < 2)) {
+		xcb_composite_query_version_cookie_t vck;
+		xcb_composite_query_version_reply_t *vr;
+		vck = xcb_composite_query_version(xc, 0, 2);
+		vr  = xcb_composite_query_version_reply(xc, vck, NULL);
+		if (!vr || (vr->major_version == 0 && vr->minor_version < 2)) {
 			awm_warn("compositor: XComposite >= 0.2 required (got %d.%d)",
-			    major, minor);
+			    vr ? (int) vr->major_version : 0,
+			    vr ? (int) vr->minor_version : 0);
+			free(vr);
 			return -1;
 		}
+		free(vr);
 	}
 
-	if (!XDamageQueryExtension(
-	        dpy, &comp.damage_ev_base, &comp.damage_err_base)) {
+	ext = xcb_get_extension_data(xc, &xcb_damage_id);
+	if (!ext || !ext->present) {
 		awm_warn("compositor: XDamage extension not available");
 		return -1;
 	}
-	XDamageQueryVersion(dpy, &damage_major, &damage_minor);
+	comp.damage_ev_base  = ext->first_event;
+	comp.damage_err_base = ext->first_error;
+	comp.damage_req_base = ext->major_opcode;
+	{
+		xcb_damage_query_version_cookie_t dvck;
+		xcb_damage_query_version_reply_t *dvr;
+		dvck = xcb_damage_query_version(xc, 1, 1);
+		dvr  = xcb_damage_query_version_reply(xc, dvck, NULL);
+		free(dvr);
+	}
 
-	if (!XFixesQueryExtension(
-	        dpy, &comp.xfixes_ev_base, &comp.xfixes_err_base)) {
+	ext = xcb_get_extension_data(xc, &xcb_xfixes_id);
+	if (!ext || !ext->present) {
 		awm_warn("compositor: XFixes extension not available");
 		return -1;
 	}
-	XFixesQueryVersion(dpy, &xfixes_major, &xfixes_minor);
+	comp.xfixes_ev_base  = ext->first_event;
+	comp.xfixes_err_base = ext->first_error;
+	{
+		xcb_xfixes_query_version_cookie_t fvck;
+		xcb_xfixes_query_version_reply_t *fvr;
+		fvck = xcb_xfixes_query_version(xc, 2, 0);
+		fvr  = xcb_xfixes_query_version_reply(xc, fvck, NULL);
+		free(fvr);
+	}
 
-	if (!XRenderQueryExtension(dpy, &render_ev, &render_err)) {
+	ext = xcb_get_extension_data(xc, &xcb_render_id);
+	if (!ext || !ext->present) {
 		awm_warn("compositor: XRender extension not available");
 		return -1;
 	}
-	comp.render_err_base = render_err;
-	{
-		int op, ev_dummy, err_dummy;
-		if (XQueryExtension(dpy, "RENDER", &op, &ev_dummy, &err_dummy))
-			comp.render_request_base = op;
-	}
+	comp.render_err_base     = ext->first_error;
+	comp.render_request_base = ext->major_opcode;
+
 	/* Query GLX extension opcode for error whitelisting — EGL has no X
 	 * request codes, but the glx_errors stub in compositor.h still exists
 	 * to avoid changing events.c; it will always return -1 after this. */
 
-	if (XShapeQueryExtension(dpy, &comp.shape_ev_base, &comp.shape_err_base))
-		comp.has_xshape = 1;
+	ext = xcb_get_extension_data(xc, &xcb_shape_id);
+	if (ext && ext->present) {
+		comp.has_xshape     = 1;
+		comp.shape_ev_base  = ext->first_event;
+		comp.shape_err_base = ext->first_error;
+	}
 
 	/* --- Query X Present extension (optional) ----------------------------
-	 * Used to subscribe to PresentCompleteNotify so DRI3/Present GPU frames
-	 * from Chrome/Chromium trigger a pixmap refresh and repaint rather than
-	 * showing a frozen frame when the window is re-redirected after
-	 * fullscreen bypass.
 	 */
 	{
-		xcb_connection_t                  *xconn = XGetXCBConnection(dpy);
 		const xcb_query_extension_reply_t *pext =
-		    xcb_get_extension_data(xconn, &xcb_present_id);
+		    xcb_get_extension_data(xc, &xcb_present_id);
 		if (pext && pext->present) {
 			comp.has_present      = 1;
 			comp.present_opcode   = pext->major_opcode;
-			comp.present_eid_next = 1; /* start EID allocation at 1 */
+			comp.present_eid_next = 1;
 			awm_debug("compositor: X Present extension available "
 			          "(opcode=%d)",
 			    comp.present_opcode);
 		}
 	}
 
+	/* Reserve event id 0 as "unset"; per-window ids start at 1. */
+
 	/* --- Redirect all root children ---------------------------------------
 	 */
-
-	xerror_push_ignore();
-	XCompositeRedirectSubwindows(dpy, root, CompositeRedirectManual);
-	XSync(dpy, False);
-	xerror_pop();
+	xcb_composite_redirect_subwindows(
+	    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
+	xcb_flush(xc);
 
 	/* --- Overlay window ---------------------------------------------------
 	 */
-
-	comp.overlay = XCompositeGetOverlayWindow(dpy, root);
+	{
+		xcb_composite_get_overlay_window_cookie_t owck;
+		xcb_composite_get_overlay_window_reply_t *owr;
+		owck = xcb_composite_get_overlay_window(xc, (xcb_window_t) root);
+		owr  = xcb_composite_get_overlay_window_reply(xc, owck, NULL);
+		comp.overlay = owr ? owr->overlay_win : 0;
+		free(owr);
+	}
 	if (!comp.overlay) {
 		awm_warn("compositor: failed to get overlay window");
-		XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
+		xcb_composite_unredirect_subwindows(
+		    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
 		return -1;
 	}
 
 	/* Make the overlay click-through */
-	empty = XFixesCreateRegion(dpy, NULL, 0);
-	XFixesSetWindowShapeRegion(dpy, comp.overlay, ShapeInput, 0, 0, empty);
-	XFixesDestroyRegion(dpy, empty);
-
-	/* --- Try to initialise the EGL/GL path --------------------------------
-	 * A dedicated Display* (gl_dpy) is opened for all EGL/Mesa operations.
-	 * XSetEventQueueOwner hands XCB ownership of its event queue so Mesa's
-	 * DRI3 XCB calls don't corrupt the main dpy's Xlib sequence counter.
-	 * EGL wraps gl_dpy; pixmap XIDs are server-side and valid on both
-	 * connections (same X server), so EGLImageKHR creation works unchanged.
-	 */
-	comp.gl_dpy = XOpenDisplay(NULL);
-	if (!comp.gl_dpy) {
-		awm_warn("compositor: XOpenDisplay for GL failed, "
-		         "GL path unavailable");
-	} else {
-		XSetEventQueueOwner(comp.gl_dpy, XCBOwnsEventQueue);
+	{
+		xcb_xfixes_region_t empty = xcb_generate_id(xc);
+		xcb_xfixes_create_region(xc, empty, 0, NULL);
+		xcb_xfixes_set_window_shape_region(
+		    xc, (xcb_window_t) comp.overlay, XCB_SHAPE_SK_INPUT, 0, 0, empty);
+		xcb_xfixes_destroy_region(xc, empty);
 	}
 
-	if (comp.gl_dpy && comp_init_gl() != 0) {
-		/* GL path unavailable — set up XRender back-buffer + target */
-		fmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-		pa.subwindow_mode = IncludeInferiors;
-		comp.target =
-		    XRenderCreatePicture(dpy, comp.overlay, fmt, CPSubwindowMode, &pa);
-		comp.back_pixmap = XCreatePixmap(dpy, root, (unsigned int) sw,
-		    (unsigned int) sh, (unsigned int) DefaultDepth(dpy, screen));
-		comp.back        = XRenderCreatePicture(
-            dpy, comp.back_pixmap, fmt, CPSubwindowMode, &pa);
-		for (i = 0; i < 256; i++)
-			comp.alpha_pict[i] = make_alpha_picture((double) i / 255.0);
+	/* --- Initialise backend -----------------------------------------------
+	 * Try EGL first; fall back to XRender.
+	 */
+	if (comp_backend_egl.init() == 0) {
+		comp.backend = &comp_backend_egl;
+		awm_debug("compositor: using EGL/GL backend");
+	} else if (comp_backend_xrender.init() == 0) {
+		comp.backend = &comp_backend_xrender;
+		awm_debug("compositor: using XRender fallback backend");
+	} else {
+		awm_warn("compositor: all backends failed — compositor disabled");
+		xcb_composite_release_overlay_window(xc, (xcb_window_t) root);
+		xcb_composite_unredirect_subwindows(
+		    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
+		return -1;
 	}
 
 	/* --- Dirty region (starts as full screen) -----------------------------
 	 */
-
 	{
-		XRectangle full = { 0, 0, (unsigned short) sw, (unsigned short) sh };
-		comp.dirty      = XFixesCreateRegion(dpy, &full, 1);
+		comp.dirty = xcb_generate_id(xc);
+		xcb_xfixes_create_region(xc, comp.dirty, 0, NULL);
+		/* Use comp_dirty_full() so the CPU bbox is also initialised. */
+		comp_dirty_full();
+	}
+
+	/* --- Subscribe overlay to Present for vsync vblank notifications -----
+	 * We use a dedicated event id distinct from per-window ids.
+	 * Event id 0 is reserved as "overlay vblank channel" so we allocate
+	 * it first; per-window Present ids start at 1.
+	 */
+	if (comp.has_present) {
+		comp.vblank_eid       = 0; /* overlay uses eid=0 */
+		comp.present_eid_next = 1; /* per-window ids start at 1 */
+		xcb_present_select_input(xc, comp.vblank_eid,
+		    (xcb_window_t) comp.overlay,
+		    XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY);
+		xcb_flush(xc);
+		awm_debug("compositor: subscribed overlay to Present "
+		          "CompleteNotify (eid=0)");
 	}
 
 	/* --- Claim _NET_WM_CM_S<n> composite manager selection ---------------
-	 * Required by ICCCM/EWMH: signals to applications that a compositor is
-	 * running and lets us detect if another compositor starts
-	 * (SelectionClear).
 	 */
 	{
-		char sel_name[32];
+		char                     sel_name[32];
+		xcb_intern_atom_cookie_t ck;
+		xcb_intern_atom_reply_t *r;
 		snprintf(sel_name, sizeof(sel_name), "_NET_WM_CM_S%d", screen);
-		comp.atom_cm_sn = XInternAtom(dpy, sel_name, False);
+		ck = xcb_intern_atom(xc, 0, (uint16_t) strlen(sel_name), sel_name);
+		r  = xcb_intern_atom_reply(xc, ck, NULL);
+		comp.atom_cm_sn = r ? r->atom : XCB_ATOM_NONE;
+		free(r);
 
-		/* Create a small, invisible utility window to hold the selection. */
-		comp.cm_owner_win =
-		    XCreateSimpleWindow(dpy, root, -1, -1, 1, 1, 0, 0, 0);
-
-		XSetSelectionOwner(
-		    dpy, comp.atom_cm_sn, comp.cm_owner_win, CurrentTime);
-
-		if (XGetSelectionOwner(dpy, comp.atom_cm_sn) != comp.cm_owner_win) {
-			awm_warn("compositor: could not claim _NET_WM_CM_S%d — "
-			         "another compositor may be running",
-			    screen);
-			/* Non-fatal: proceed anyway, but log the warning. */
-		} else {
-			awm_debug("compositor: claimed _NET_WM_CM_S%d selection", screen);
+		{
+			xcb_window_t win = xcb_generate_id(xc);
+			xcb_create_window(xc, XCB_COPY_FROM_PARENT, win,
+			    (xcb_window_t) root, -1, -1, 1, 1, 0,
+			    XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, 0, NULL);
+			comp.cm_owner_win = win;
 		}
 
-		/* Select SelectionClear on the owner window so we are notified
-		 * if another program takes the selection from us. */
-		XSelectInput(dpy, comp.cm_owner_win, StructureNotifyMask);
+		xcb_set_selection_owner(xc, comp.cm_owner_win,
+		    (xcb_atom_t) comp.atom_cm_sn, XCB_CURRENT_TIME);
+
+		{
+			xcb_get_selection_owner_cookie_t gck;
+			xcb_get_selection_owner_reply_t *gr;
+			gck = xcb_get_selection_owner(xc, (xcb_atom_t) comp.atom_cm_sn);
+			gr  = xcb_get_selection_owner_reply(xc, gck, NULL);
+			if (!gr || gr->owner != comp.cm_owner_win) {
+				awm_warn("compositor: could not claim _NET_WM_CM_S%d — "
+				         "another compositor may be running",
+				    screen);
+			} else {
+				awm_debug(
+				    "compositor: claimed _NET_WM_CM_S%d selection", screen);
+			}
+			free(gr);
+		}
+
+		{
+			uint32_t evmask = XCB_EVENT_MASK_STRUCTURE_NOTIFY;
+			xcb_change_window_attributes(
+			    xc, comp.cm_owner_win, XCB_CW_EVENT_MASK, &evmask);
+		}
 	}
 
 	/* --- Scan existing windows --------------------------------------------
 	 */
-
 	{
-		Window       root_ret, parent_ret;
-		Window      *children  = NULL;
-		unsigned int nchildren = 0;
-		unsigned int j;
+		xcb_query_tree_cookie_t qtck;
+		xcb_query_tree_reply_t *qtr;
+		uint32_t                j;
 
-		if (XQueryTree(
-		        dpy, root, &root_ret, &parent_ret, &children, &nchildren)) {
-			for (j = 0; j < nchildren; j++)
-				comp_add_by_xid(children[j]);
-			if (children)
-				XFree(children);
+		qtck = xcb_query_tree(xc, root);
+		qtr  = xcb_query_tree_reply(xc, qtck, NULL);
+		if (qtr) {
+			xcb_window_t *ch = xcb_query_tree_children(qtr);
+			int           nc = xcb_query_tree_children_length(qtr);
+			for (j = 0; j < (uint32_t) nc; j++)
+				comp_add_by_xid(ch[j]);
+			free(qtr);
+		} else {
+			awm_warn("compositor: xcb_query_tree failed on root during scan");
 		}
 	}
 
 	/* --- Intern wallpaper atoms and read initial wallpaper ---------------
 	 */
-
-	comp.atom_rootpmap = XInternAtom(dpy, "_XROOTPMAP_ID", False);
-	comp.atom_esetroot = XInternAtom(dpy, "ESETROOT_PMAP_ID", False);
-	comp.atom_net_wm_opacity =
-	    XInternAtom(dpy, "_NET_WM_WINDOW_OPACITY", False);
+	{
+		xcb_intern_atom_cookie_t ck0 =
+		    xcb_intern_atom(xc, 0, 13, "_XROOTPMAP_ID");
+		xcb_intern_atom_cookie_t ck1 =
+		    xcb_intern_atom(xc, 0, 16, "ESETROOT_PMAP_ID");
+		xcb_intern_atom_cookie_t ck2 =
+		    xcb_intern_atom(xc, 0, 24, "_NET_WM_WINDOW_OPACITY");
+		xcb_intern_atom_reply_t *r0 = xcb_intern_atom_reply(xc, ck0, NULL);
+		xcb_intern_atom_reply_t *r1 = xcb_intern_atom_reply(xc, ck1, NULL);
+		xcb_intern_atom_reply_t *r2 = xcb_intern_atom_reply(xc, ck2, NULL);
+		comp.atom_rootpmap          = r0 ? r0->atom : XCB_ATOM_NONE;
+		comp.atom_esetroot          = r1 ? r1->atom : XCB_ATOM_NONE;
+		comp.atom_net_wm_opacity    = r2 ? r2->atom : XCB_ATOM_NONE;
+		free(r0);
+		free(r1);
+		free(r2);
+	}
 	comp_update_wallpaper();
 
 	comp.active = 1;
 
 	/* Raise overlay so it sits above all windows */
-	XRaiseWindow(dpy, comp.overlay);
-	XMapWindow(dpy, comp.overlay);
+	{
+		uint32_t stack = XCB_STACK_MODE_ABOVE;
+		xcb_configure_window(
+		    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		xcb_map_window(xc, comp.overlay);
+	}
 
 	schedule_repaint();
 
-	awm_debug("compositor: initialised (gl=%d damage_ev_base=%d)", comp.use_gl,
+	awm_debug("compositor: initialised (backend=%s damage_ev_base=%d)",
+	    (comp.backend == &comp_backend_egl) ? "egl" : "xrender",
 	    comp.damage_ev_base);
 	return 0;
 }
@@ -939,7 +428,6 @@ compositor_init(GMainContext *ctx)
 void
 compositor_cleanup(void)
 {
-	int      i;
 	CompWin *cw, *next;
 
 	if (!comp.active)
@@ -950,75 +438,46 @@ compositor_cleanup(void)
 		comp.repaint_id = 0;
 	}
 
-	/* Free all tracked windows */
+	/* Unsubscribe the overlay from Present vblank notifications */
+	if (comp.has_present && comp.overlay) {
+		xcb_present_select_input(xc, comp.vblank_eid,
+		    (xcb_window_t) comp.overlay, XCB_PRESENT_EVENT_MASK_NO_EVENT);
+	}
+	comp.vblank_armed    = 0;
+	comp.repaint_pending = 0;
+
+	/* Free all tracked windows — release backend resources first */
 	for (cw = comp.windows; cw; cw = next) {
 		next = cw->next;
-		if (comp.use_gl)
-			comp_release_tfp(cw);
+		comp.backend->release_pixmap(cw);
 		comp_free_win(cw);
 		free(cw);
 	}
 	comp.windows = NULL;
 
-	if (comp.use_gl) {
-		/* Destroy GL resources */
-		if (comp.prog)
-			glDeleteProgram(comp.prog);
-		if (comp.vao)
-			glDeleteVertexArrays(1, &comp.vao);
-		if (comp.vbo)
-			glDeleteBuffers(1, &comp.vbo);
-		eglMakeCurrent(
-		    comp.egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-		if (comp.egl_win != EGL_NO_SURFACE)
-			eglDestroySurface(comp.egl_dpy, comp.egl_win);
-		if (comp.egl_ctx != EGL_NO_CONTEXT)
-			eglDestroyContext(comp.egl_dpy, comp.egl_ctx);
-		if (comp.egl_dpy != EGL_NO_DISPLAY)
-			eglTerminate(comp.egl_dpy);
-	} else {
-		/* XRender path cleanup */
-		for (i = 0; i < 256; i++)
-			if (comp.alpha_pict[i])
-				XRenderFreePicture(dpy, comp.alpha_pict[i]);
-		if (comp.back)
-			XRenderFreePicture(dpy, comp.back);
-		if (comp.back_pixmap)
-			XFreePixmap(dpy, comp.back_pixmap);
-		if (comp.target)
-			XRenderFreePicture(dpy, comp.target);
-	}
-
-	if (comp.wallpaper_pict)
-		XRenderFreePicture(dpy, comp.wallpaper_pict);
-
-	/* Release cached GL wallpaper resources */
-	if (comp.use_gl) {
-		if (comp.wallpaper_texture)
-			glDeleteTextures(1, &comp.wallpaper_texture);
-		if (comp.wallpaper_egl_image != EGL_NO_IMAGE_KHR)
-			comp.egl_destroy_image(comp.egl_dpy, comp.wallpaper_egl_image);
-	}
+	/* Tear down backend */
+	comp.backend->release_wallpaper();
+	comp.backend->cleanup();
+	comp.backend = NULL;
 
 	if (comp.overlay)
-		XCompositeReleaseOverlayWindow(dpy, comp.overlay);
+		xcb_composite_release_overlay_window(xc, (xcb_window_t) root);
 
 	/* Release _NET_WM_CM_Sn selection */
 	if (comp.cm_owner_win) {
-		XDestroyWindow(dpy, comp.cm_owner_win);
+		xcb_destroy_window(xc, comp.cm_owner_win);
 		comp.cm_owner_win = 0;
 	}
 
 	if (comp.dirty)
-		XFixesDestroyRegion(dpy, comp.dirty);
+		xcb_xfixes_destroy_region(xc, comp.dirty);
 
-	XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
-	XFlush(dpy);
+	xcb_composite_unredirect_subwindows(
+	    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
 
-	/* Close the dedicated EGL/GL display connection last — after all EGL
-	 * objects have been destroyed by eglTerminate above. */
-	if (comp.gl_dpy)
-		XCloseDisplay(comp.gl_dpy);
+	xcb_render_util_disconnect(xc);
+
+	xflush();
 
 	comp.active = 0;
 }
@@ -1028,7 +487,7 @@ compositor_cleanup(void)
  * ---------------------------------------------------------------------- */
 
 static CompWin *
-comp_find_by_xid(Window w)
+comp_find_by_xid(xcb_window_t w)
 {
 	CompWin *cw;
 	for (cw = comp.windows; cw; cw = cw->next)
@@ -1047,288 +506,175 @@ comp_find_by_client(Client *c)
 	return NULL;
 }
 
-/* Subscribe cw to XPresent CompleteNotify events so that GPU-rendered
- * frames via DRI3/Present (e.g. Chrome video) are detected even when
- * XDamageNotify is not generated.
- *
- * Each subscription needs a unique 32-bit event ID (eid).  We allocate
- * one from comp.present_eid_next.  The eid is stored in cw->present_eid
- * so we can unsubscribe later with the same value.
- *
- * Called when a CompWin is first created and when it is re-redirected
- * after fullscreen bypass (compositor_check_unredirect resume path). */
+/* Subscribe cw to XPresent CompleteNotify events. */
 static void
 comp_subscribe_present(CompWin *cw)
 {
-	xcb_connection_t *xconn;
-
 	if (!comp.has_present || cw->present_eid)
-		return; /* already subscribed or extension absent */
+		return;
 
-	xconn           = XGetXCBConnection(dpy);
 	cw->present_eid = comp.present_eid_next++;
 
-	xcb_present_select_input(xconn, cw->present_eid, (xcb_window_t) cw->win,
+	xcb_present_select_input(xc, cw->present_eid, (xcb_window_t) cw->win,
 	    XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY);
-	xcb_flush(xconn);
+	xcb_flush(xc);
 
 	awm_debug("compositor: subscribed Present CompleteNotify for "
 	          "window 0x%lx (eid=%u)",
 	    cw->win, cw->present_eid);
 }
 
-/* Unsubscribe from Present events for cw.  Safe to call on destroyed
- * windows — the server ignores requests on dead XIDs. */
+/* Unsubscribe from Present events for cw. */
 static void
 comp_unsubscribe_present(CompWin *cw)
 {
-	xcb_connection_t *xconn;
-
 	if (!comp.has_present || !cw->present_eid)
 		return;
 
-	xconn = XGetXCBConnection(dpy);
-	xcb_present_select_input(xconn, cw->present_eid, (xcb_window_t) cw->win,
+	xcb_present_select_input(xc, cw->present_eid, (xcb_window_t) cw->win,
 	    XCB_PRESENT_EVENT_MASK_NO_EVENT);
-	xcb_flush(xconn);
+	xcb_flush(xc);
 	cw->present_eid = 0;
 }
 
 static void
 comp_free_win(CompWin *cw)
 {
-	/* Deregister shape event mask before releasing other resources.
-	 * This is a no-op if the window is already destroyed (X ignores it),
-	 * but prevents a leak when comp_free_win is called on live windows
-	 * (e.g. unmap of non-client override-redirect windows). */
 	if (comp.has_xshape) {
-		xerror_push_ignore();
-		XShapeSelectInput(dpy, cw->win, 0);
-		XSync(dpy, False);
-		xerror_pop();
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
+		ck = xcb_shape_select_input_checked(xc, (xcb_window_t) cw->win, 0);
+		xcb_flush(xc);
+		err = xcb_request_check(xc, ck);
+		free(err);
 	}
 
-	/* Unsubscribe Present events (no-op on dead windows). */
 	comp_unsubscribe_present(cw);
 
 	if (cw->damage) {
-		xerror_push_ignore();
-		XDamageDestroy(dpy, cw->damage);
-		XSync(dpy, False);
-		xerror_pop();
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
+		ck = xcb_damage_destroy_checked(xc, cw->damage);
+		xcb_flush(xc);
+		err = xcb_request_check(xc, ck);
+		free(err);
 		cw->damage = 0;
 	}
+	/* picture is owned by the XRender backend; it is freed and zeroed by
+	 * release_pixmap() (a vtable contract requirement — every backend's
+	 * release_pixmap must zero cw->picture before returning).  For the EGL
+	 * backend cw->picture is always 0.  This block is a defensive last-resort
+	 * for windows that were never fully initialised (no prior release_pixmap
+	 * call), but must NOT fire in normal operation. */
 	if (cw->picture) {
-		XRenderFreePicture(dpy, cw->picture);
-		cw->picture = None;
+		awm_warn("compositor: comp_free_win: cw->picture non-zero without "
+		         "prior release_pixmap — freeing defensively (window 0x%x)",
+		    (unsigned) cw->win);
+		xcb_render_free_picture(xc, cw->picture);
+		cw->picture = 0;
 	}
 	if (cw->pixmap) {
-		XFreePixmap(dpy, cw->pixmap);
-		cw->pixmap = None;
+		xcb_free_pixmap(xc, cw->pixmap);
+		cw->pixmap = 0;
 	}
 }
 
 static void
 comp_refresh_pixmap(CompWin *cw)
 {
-	XRenderPictFormat       *fmt;
-	XRenderPictureAttributes pa;
+	/* Release backend resources before freeing the pixmap */
+	comp.backend->release_pixmap(cw);
 
-	/* Release TFP resources before freeing the pixmap */
-	if (comp.use_gl)
-		comp_release_tfp(cw);
-
-	if (cw->picture) {
-		XRenderFreePicture(dpy, cw->picture);
-		cw->picture = None;
-	}
 	if (cw->pixmap) {
-		XFreePixmap(dpy, cw->pixmap);
-		cw->pixmap = None;
+		xcb_free_pixmap(xc, cw->pixmap);
+		cw->pixmap = 0;
 	}
 
 	/* New pixmap — require a full dirty on its first damage notification. */
 	cw->ever_damaged = 0;
 
-	xerror_push_ignore();
-	cw->pixmap = XCompositeNameWindowPixmap(dpy, cw->win);
-	XSync(dpy, False);
-	xerror_pop();
+	{
+		xcb_pixmap_t         pix = xcb_generate_id(xc);
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
+		ck = xcb_composite_name_window_pixmap_checked(
+		    xc, (xcb_window_t) cw->win, pix);
+		xcb_flush(xc);
+		err = xcb_request_check(xc, ck);
+		if (err) {
+			/* NameWindowPixmap failed (window unmapped/destroyed);
+			 * do not assign pix — it was never created on the server. */
+			free(err);
+			return;
+		}
+		cw->pixmap = pix;
+	}
 
 	if (!cw->pixmap)
 		return;
 
 	{
-		Window       root_ret;
-		int          x, y;
-		unsigned int w, h, bw, depth;
-		if (!XGetGeometry(
-		        dpy, cw->pixmap, &root_ret, &x, &y, &w, &h, &bw, &depth)) {
-			XFreePixmap(dpy, cw->pixmap);
-			cw->pixmap = None;
+		xcb_get_geometry_cookie_t gck;
+		xcb_get_geometry_reply_t *gr;
+		gck = xcb_get_geometry(xc, (xcb_drawable_t) cw->pixmap);
+		gr  = xcb_get_geometry_reply(xc, gck, NULL);
+		if (!gr) {
+			awm_warn("compositor: pixmap geometry query failed — "
+			         "releasing stale pixmap");
+			xcb_free_pixmap(xc, cw->pixmap);
+			cw->pixmap = 0;
 			return;
 		}
+		free(gr);
 	}
 
-	if (comp.use_gl) {
-		/* Bind as GL texture via TFP */
-		comp_bind_tfp(cw);
-	} else {
-		/* XRender fallback: create an XRender Picture */
-		xerror_push_ignore();
-		fmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-		if (cw->argb)
-			fmt = XRenderFindStandardFormat(dpy, PictStandardARGB32);
-		pa.subwindow_mode = IncludeInferiors;
-		cw->picture =
-		    XRenderCreatePicture(dpy, cw->pixmap, fmt, CPSubwindowMode, &pa);
-		XSync(dpy, False);
-		xerror_pop();
-		comp_apply_shape(cw);
-	}
+	comp.backend->bind_pixmap(cw);
 }
 
-/* Apply the window's ShapeBounding clip region to cw->picture.
- * Only used by the XRender fallback path. */
-static void
-comp_apply_shape(CompWin *cw)
-{
-	int         nrects, ordering;
-	XRectangle *rects;
-
-	if (!cw->picture)
-		return;
-
-	if (!comp.has_xshape) {
-		XFixesSetPictureClipRegion(dpy, cw->picture, 0, 0, None);
-		return;
-	}
-
-	rects =
-	    XShapeGetRectangles(dpy, cw->win, ShapeBounding, &nrects, &ordering);
-
-	if (!rects || nrects == 0) {
-		if (rects)
-			XFree(rects);
-		XFixesSetPictureClipRegion(dpy, cw->picture, 0, 0, None);
-		return;
-	}
-
-	{
-		XserverRegion region =
-		    XFixesCreateRegion(dpy, rects, (unsigned int) nrects);
-		XFixesSetPictureClipRegion(dpy, cw->picture, 0, 0, region);
-		XFixesDestroyRegion(dpy, region);
-	}
-	XFree(rects);
-}
-
-/* Read _XROOTPMAP_ID (or ESETROOT_PMAP_ID fallback) and rebuild wallpaper.
- * For the GL path we read the wallpaper pixmap into a GL texture.
- * For the XRender path we keep an XRender Picture. */
+/* Read _XROOTPMAP_ID (or ESETROOT_PMAP_ID fallback) and rebuild wallpaper. */
 static void
 comp_update_wallpaper(void)
 {
-	Atom           actual_type;
-	int            actual_fmt;
-	unsigned long  nitems, bytes_after;
-	unsigned char *prop = NULL;
-	Pixmap         pmap = None;
-	Atom           atoms[2];
-	int            i;
+	xcb_pixmap_t              pmap = 0;
+	xcb_atom_t                atoms[2];
+	int                       i;
+	xcb_get_property_cookie_t ck;
+	xcb_get_property_reply_t *r;
 
-	/* Release previous wallpaper resources */
-	if (comp.wallpaper_pict) {
-		XRenderFreePicture(dpy, comp.wallpaper_pict);
-		comp.wallpaper_pict   = None;
-		comp.wallpaper_pixmap = None;
-	}
-	/* Release cached GL wallpaper resources if any */
-	if (comp.use_gl) {
-		if (comp.wallpaper_texture) {
-			glDeleteTextures(1, &comp.wallpaper_texture);
-			comp.wallpaper_texture = 0;
-		}
-		if (comp.wallpaper_egl_image != EGL_NO_IMAGE_KHR) {
-			comp.egl_destroy_image(comp.egl_dpy, comp.wallpaper_egl_image);
-			comp.wallpaper_egl_image = EGL_NO_IMAGE_KHR;
-		}
-	}
+	/* Release previous wallpaper resources in the backend */
+	comp.backend->release_wallpaper();
+	comp.wallpaper_pixmap = 0;
 
 	atoms[0] = comp.atom_rootpmap;
 	atoms[1] = comp.atom_esetroot;
 
-	for (i = 0; i < 2 && pmap == None; i++) {
-		prop = NULL;
-		if (XGetWindowProperty(dpy, root, atoms[i], 0, 1, False, XA_PIXMAP,
-		        &actual_type, &actual_fmt, &nitems, &bytes_after,
-		        &prop) == Success &&
-		    prop && actual_type == XA_PIXMAP && actual_fmt == 32 &&
-		    nitems == 1) {
-			pmap = *(Pixmap *) prop;
-		}
-		if (prop)
-			XFree(prop);
+	for (i = 0; i < 2 && pmap == 0; i++) {
+		ck = xcb_get_property(xc, 0, (xcb_window_t) root,
+		    (xcb_atom_t) atoms[i], XCB_ATOM_PIXMAP, 0, 1);
+		r  = xcb_get_property_reply(xc, ck, NULL);
+		if (r &&
+		    xcb_get_property_value_length(r) >= (int) sizeof(xcb_pixmap_t))
+			pmap = (xcb_pixmap_t) * (xcb_pixmap_t *) xcb_get_property_value(r);
+		free(r);
 	}
 
-	if (pmap == None)
+	if (pmap == 0)
 		return;
 
-	/* Always build the XRender picture — used by the XRender fallback path
-	 * and as a sentinel meaning "we have a wallpaper" in the GL path. */
-	{
-		XRenderPictFormat       *fmt;
-		XRenderPictureAttributes pa;
-
-		fmt       = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-		pa.repeat = RepeatNormal;
-		xerror_push_ignore();
-		comp.wallpaper_pict =
-		    XRenderCreatePicture(dpy, pmap, fmt, CPRepeat, &pa);
-		XSync(dpy, False);
-		xerror_pop();
-
-		if (comp.wallpaper_pict)
-			comp.wallpaper_pixmap = pmap;
-	}
-
-	/* For the GL path, build an EGL image from the wallpaper pixmap.
-	 * EGLImageKHR is a live mapping — the GPU always sees the current
-	 * pixmap contents, so no per-frame rebind is needed. */
-	if (comp.use_gl && comp.wallpaper_pixmap) {
-		EGLint img_attr[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
-
-		comp.wallpaper_egl_image = comp.egl_create_image(comp.egl_dpy,
-		    EGL_NO_CONTEXT, EGL_NATIVE_PIXMAP_KHR,
-		    (EGLClientBuffer) (uintptr_t) comp.wallpaper_pixmap, img_attr);
-
-		if (comp.wallpaper_egl_image != EGL_NO_IMAGE_KHR) {
-			glGenTextures(1, &comp.wallpaper_texture);
-			glBindTexture(GL_TEXTURE_2D, comp.wallpaper_texture);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-			glTexParameteri(
-			    GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-			glTexParameteri(
-			    GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-			comp.egl_image_target_tex(
-			    GL_TEXTURE_2D, (GLeglImageOES) comp.wallpaper_egl_image);
-			glBindTexture(GL_TEXTURE_2D, 0);
-		}
-	}
+	comp.wallpaper_pixmap = pmap;
+	comp.backend->update_wallpaper();
 }
 
-/* Move cw to just above the window with XID `above_xid` in the stacking
- * order maintained in comp.windows (bottom-to-top linked list).
- * `above_xid == None` means place cw at the bottom of the stack. */
 static void
-comp_restack_above(CompWin *cw, Window above_xid)
+comp_restack_above(CompWin *cw, xcb_window_t above_xid)
 {
 	CompWin *prev = NULL, *cur;
 	CompWin *above_cw;
-	CompWin *ins_prev; /* node after which we insert cw */
+	CompWin *ins_prev;
 
-	/* Remove cw from its current position */
 	for (cur = comp.windows; cur; cur = cur->next) {
 		if (cur == cw) {
 			if (prev)
@@ -1341,17 +687,14 @@ comp_restack_above(CompWin *cw, Window above_xid)
 		prev = cur;
 	}
 
-	if (above_xid == None) {
-		/* Place at the bottom (head of the list) */
+	if (above_xid == 0) {
 		cw->next     = comp.windows;
 		comp.windows = cw;
 		return;
 	}
 
-	/* Find the node for above_xid; insert cw immediately after it */
 	above_cw = comp_find_by_xid(above_xid);
 	if (!above_cw) {
-		/* Unknown sibling — place at top (append to tail) */
 		ins_prev = NULL;
 		for (cur = comp.windows; cur; cur = cur->next)
 			ins_prev = cur;
@@ -1369,12 +712,10 @@ comp_restack_above(CompWin *cw, Window above_xid)
 	above_cw->next = cw;
 }
 
-/* Add window by X ID */
 static void
-comp_add_by_xid(Window w)
+comp_add_by_xid(xcb_window_t w)
 {
-	XWindowAttributes wa;
-	CompWin          *cw;
+	CompWin *cw;
 
 	if (comp_find_by_xid(w))
 		return;
@@ -1382,34 +723,52 @@ comp_add_by_xid(Window w)
 	if (w == comp.overlay)
 		return;
 
-	xerror_push_ignore();
-	int ok = XGetWindowAttributes(dpy, w, &wa);
-	XSync(dpy, False);
-	xerror_pop();
+	{
+		xcb_get_window_attributes_cookie_t wac =
+		    xcb_get_window_attributes(xc, (xcb_window_t) w);
+		xcb_get_geometry_cookie_t gc =
+		    xcb_get_geometry(xc, (xcb_drawable_t) w);
+		xcb_get_window_attributes_reply_t *war =
+		    xcb_get_window_attributes_reply(xc, wac, NULL);
+		xcb_get_geometry_reply_t *gr = xcb_get_geometry_reply(xc, gc, NULL);
 
-	if (!ok)
-		return;
+		if (!war || !gr) {
+			free(war);
+			free(gr);
+			return;
+		}
+		if (war->_class == XCB_WINDOW_CLASS_INPUT_ONLY) {
+			free(war);
+			free(gr);
+			return;
+		}
+		if (war->map_state != XCB_MAP_STATE_VIEWABLE) {
+			free(war);
+			free(gr);
+			return;
+		}
 
-	if (wa.class == InputOnly)
-		return;
+		cw = (CompWin *) calloc(1, sizeof(CompWin));
+		if (!cw) {
+			free(war);
+			free(gr);
+			return;
+		}
 
-	if (wa.map_state != IsViewable)
-		return;
-
-	cw = (CompWin *) calloc(1, sizeof(CompWin));
-	if (!cw)
-		return;
-
-	cw->win        = w;
-	cw->x          = wa.x;
-	cw->y          = wa.y;
-	cw->w          = wa.width;
-	cw->h          = wa.height;
-	cw->bw         = wa.border_width;
-	cw->depth      = wa.depth;
-	cw->argb       = (wa.depth == 32);
+		cw->win   = w;
+		cw->x     = gr->x;
+		cw->y     = gr->y;
+		cw->w     = gr->width;
+		cw->h     = gr->height;
+		cw->bw    = gr->border_width;
+		cw->depth = gr->depth;
+		cw->argb  = (gr->depth == 32);
+		free(war);
+		free(gr);
+	}
 	cw->opacity    = 1.0;
 	cw->redirected = 1;
+	cw->egl_image  = EGL_NO_IMAGE_KHR;
 
 	{
 		Client  *c;
@@ -1428,20 +787,22 @@ comp_add_by_xid(Window w)
 	comp_refresh_pixmap(cw);
 
 	if (cw->pixmap) {
-		xerror_push_ignore();
-		cw->damage = XDamageCreate(dpy, w, XDamageReportNonEmpty);
-		XSync(dpy, False);
-		xerror_pop();
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
+		cw->damage = xcb_generate_id(xc);
+		ck = xcb_damage_create_checked(xc, cw->damage, (xcb_drawable_t) w,
+		    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
+		xcb_flush(xc);
+		err = xcb_request_check(xc, ck);
+		free(err);
 	}
 
-	/* Subscribe to X Present CompleteNotify so DRI3/Present GPU frames
-	 * (e.g. Chrome video) trigger repaints even without XDamageNotify. */
 	comp_subscribe_present(cw);
 
 	if (comp.has_xshape)
-		XShapeSelectInput(dpy, w, ShapeNotifyMask);
+		xcb_shape_select_input(xc, (xcb_window_t) w, 1);
 
-	/* Insert at the tail (topmost position in bottom-to-top ordering) */
 	if (!comp.windows) {
 		cw->next     = NULL;
 		comp.windows = cw;
@@ -1495,23 +856,13 @@ compositor_remove_window(Client *c)
 	prev = NULL;
 	for (cw = comp.windows; cw; cw = cw->next) {
 		if (cw->client == c || cw->win == c->win) {
-			{
-				XRectangle    r;
-				XserverRegion sr;
-				r.x      = (short) cw->x;
-				r.y      = (short) cw->y;
-				r.width  = (unsigned short) (cw->w + 2 * cw->bw);
-				r.height = (unsigned short) (cw->h + 2 * cw->bw);
-				sr       = XFixesCreateRegion(dpy, &r, 1);
-				XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-				XFixesDestroyRegion(dpy, sr);
-			}
+			comp_dirty_add_rect(
+			    cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
 			if (prev)
 				prev->next = cw->next;
 			else
 				comp.windows = cw->next;
-			if (comp.use_gl)
-				comp_release_tfp(cw);
+			comp.backend->release_pixmap(cw);
 			comp_free_win(cw);
 			free(cw);
 			schedule_repaint();
@@ -1524,10 +875,8 @@ compositor_remove_window(Client *c)
 void
 compositor_configure_window(Client *c, int actual_bw)
 {
-	CompWin      *cw;
-	int           resized;
-	XRectangle    old_rect;
-	XserverRegion old_r;
+	CompWin *cw;
+	int      resized;
 
 	if (!comp.active || !c)
 		return;
@@ -1536,13 +885,8 @@ compositor_configure_window(Client *c, int actual_bw)
 	if (!cw)
 		return;
 
-	old_rect.x      = (short) cw->x;
-	old_rect.y      = (short) cw->y;
-	old_rect.width  = (unsigned short) (cw->w + 2 * cw->bw);
-	old_rect.height = (unsigned short) (cw->h + 2 * cw->bw);
-	old_r           = XFixesCreateRegion(dpy, &old_rect, 1);
-	XFixesUnionRegion(dpy, comp.dirty, comp.dirty, old_r);
-	XFixesDestroyRegion(dpy, old_r);
+	/* Dirty old position */
+	comp_dirty_add_rect(cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
 
 	resized = (c->w != cw->w || c->h != cw->h);
 
@@ -1552,17 +896,8 @@ compositor_configure_window(Client *c, int actual_bw)
 	cw->h  = c->h;
 	cw->bw = actual_bw;
 
-	{
-		XRectangle    new_rect;
-		XserverRegion new_r;
-		new_rect.x      = (short) cw->x;
-		new_rect.y      = (short) cw->y;
-		new_rect.width  = (unsigned short) (cw->w + 2 * cw->bw);
-		new_rect.height = (unsigned short) (cw->h + 2 * cw->bw);
-		new_r           = XFixesCreateRegion(dpy, &new_rect, 1);
-		XFixesUnionRegion(dpy, comp.dirty, comp.dirty, new_r);
-		XFixesDestroyRegion(dpy, new_r);
-	}
+	/* Dirty new position */
+	comp_dirty_add_rect(cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
 
 	if (cw->redirected && resized)
 		comp_refresh_pixmap(cw);
@@ -1585,25 +920,102 @@ compositor_bypass_window(Client *c, int bypass)
 	if (bypass == !cw->redirected)
 		return;
 
-	xerror_push_ignore();
 	if (bypass) {
-		XCompositeUnredirectWindow(dpy, c->win, CompositeRedirectManual);
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
+		ck = xcb_composite_unredirect_window_checked(
+		    xc, (xcb_window_t) c->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+		err = xcb_request_check(xc, ck);
+		free(err);
 		cw->redirected = 0;
-		if (comp.use_gl)
-			comp_release_tfp(cw);
+		comp.backend->release_pixmap(cw);
 		comp_free_win(cw);
 	} else {
-		XCompositeRedirectWindow(dpy, c->win, CompositeRedirectManual);
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+
+		ck = xcb_composite_redirect_window_checked(
+		    xc, (xcb_window_t) c->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+		err = xcb_request_check(xc, ck);
+		free(err);
 		cw->redirected = 1;
 		comp_refresh_pixmap(cw);
-		if (cw->pixmap && !cw->damage)
-			cw->damage = XDamageCreate(dpy, c->win, XDamageReportNonEmpty);
+		if (cw->pixmap && !cw->damage) {
+			cw->damage = xcb_generate_id(xc);
+			xcb_damage_create(xc, cw->damage, (xcb_drawable_t) c->win,
+			    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
+		}
 		comp_subscribe_present(cw);
 	}
-	XSync(dpy, False);
-	xerror_pop();
 
 	schedule_repaint();
+}
+
+/*
+ * State for the deferred fullscreen bypass callback.
+ */
+static xcb_window_t comp_pending_bypass_win = XCB_NONE;
+static guint        comp_pending_bypass_id  = 0;
+
+static gboolean
+comp_fullscreen_bypass_cb(gpointer data)
+{
+	xcb_window_t win = (xcb_window_t) (uintptr_t) data;
+	Client      *c   = NULL;
+	Monitor     *m;
+
+	comp_pending_bypass_id  = 0;
+	comp_pending_bypass_win = XCB_NONE;
+
+	if (!comp.active)
+		return G_SOURCE_REMOVE;
+
+	for (m = mons; m; m = m->next) {
+		Client *tc;
+		for (tc = m->cl->clients; tc; tc = tc->next) {
+			if (tc->win == win) {
+				c = tc;
+				break;
+			}
+		}
+		if (c)
+			break;
+	}
+
+	if (!c || !c->isfullscreen)
+		return G_SOURCE_REMOVE;
+
+	compositor_bypass_window(c, 1);
+
+	{
+		uint32_t vals[2] = { (uint32_t) c->mon->barwin, XCB_STACK_MODE_ABOVE };
+		xcb_configure_window(xc, c->win,
+		    XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, vals);
+	}
+
+	compositor_check_unredirect();
+	xcb_clear_area(xc, 1, (xcb_window_t) c->win, 0, 0, 0, 0);
+	xcb_flush(xc);
+
+	return G_SOURCE_REMOVE;
+}
+
+void
+compositor_defer_fullscreen_bypass(Client *c)
+{
+	if (!comp.active || !c)
+		return;
+
+	if (comp_pending_bypass_id) {
+		g_source_remove(comp_pending_bypass_id);
+		comp_pending_bypass_id  = 0;
+		comp_pending_bypass_win = XCB_NONE;
+	}
+
+	comp_pending_bypass_win = c->win;
+	comp_pending_bypass_id  = g_timeout_add(
+        40, comp_fullscreen_bypass_cb, (gpointer) (uintptr_t) c->win);
 }
 
 void
@@ -1626,9 +1038,7 @@ compositor_set_opacity(Client *c, unsigned long raw)
 void
 compositor_focus_window(Client *c)
 {
-	CompWin      *cw;
-	XRectangle    r;
-	XserverRegion sr;
+	CompWin *cw;
 
 	if (!comp.active || !c)
 		return;
@@ -1637,13 +1047,7 @@ compositor_focus_window(Client *c)
 	if (!cw || cw->bw <= 0)
 		return;
 
-	r.x      = (short) cw->x;
-	r.y      = (short) cw->y;
-	r.width  = (unsigned short) (cw->w + 2 * cw->bw);
-	r.height = (unsigned short) (cw->h + 2 * cw->bw);
-	sr       = XFixesCreateRegion(dpy, &r, 1);
-	XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-	XFixesDestroyRegion(dpy, sr);
+	comp_dirty_add_rect(cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
 	schedule_repaint();
 }
 
@@ -1663,77 +1067,27 @@ compositor_set_hidden(Client *c, int hidden)
 		return;
 
 	cw->hidden = hidden;
-
-	/* Dirty the window region so the vacated area gets repainted */
-	{
-		XRectangle    r;
-		XserverRegion sr;
-		r.x      = (short) cw->x;
-		r.y      = (short) cw->y;
-		r.width  = (unsigned short) (cw->w + 2 * cw->bw);
-		r.height = (unsigned short) (cw->h + 2 * cw->bw);
-		sr       = XFixesCreateRegion(dpy, &r, 1);
-		XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-		XFixesDestroyRegion(dpy, sr);
-	}
+	comp_dirty_add_rect(cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
 	schedule_repaint();
 }
 
 void
 compositor_damage_all(void)
 {
-	XRectangle full;
-
 	if (!comp.active)
 		return;
 
-	full.x = full.y = 0;
-	full.width      = (unsigned short) sw;
-	full.height     = (unsigned short) sh;
-	XFixesSetRegion(dpy, comp.dirty, &full, 1);
+	comp_dirty_full();
 	schedule_repaint();
 }
 
-/*
- * Called from the root ConfigureNotify handler (events.c) after sw/sh have
- * been updated to reflect a screen resize (xrandr).  Updates the GL viewport,
- * resizes the XRender back-buffer, resets the damage ring (all old bboxes are
- * now stale), and forces a full repaint.
- */
 void
 compositor_notify_screen_resize(void)
 {
 	if (!comp.active)
 		return;
 
-	if (comp.use_gl) {
-		glViewport(0, 0, sw, sh);
-		/* Old damage ring entries are in the old coordinate space —
-		 * invalidate them so the next frame does a full repaint. */
-		memset(comp.damage_ring, 0, sizeof(comp.damage_ring));
-		comp.ring_idx = 0;
-	} else {
-		/* XRender: rebuild back pixmap at new size */
-		if (comp.back) {
-			XRenderFreePicture(dpy, comp.back);
-			comp.back = None;
-		}
-		if (comp.back_pixmap) {
-			XFreePixmap(dpy, comp.back_pixmap);
-			comp.back_pixmap = None;
-		}
-		comp.back_pixmap = XCreatePixmap(dpy, root, (unsigned int) sw,
-		    (unsigned int) sh, (unsigned int) DefaultDepth(dpy, screen));
-		if (comp.back_pixmap) {
-			XRenderPictFormat *fmt =
-			    XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-			XRenderPictureAttributes pa = { 0 };
-			pa.subwindow_mode           = IncludeInferiors;
-			comp.back                   = XRenderCreatePicture(
-                dpy, comp.back_pixmap, fmt, CPSubwindowMode, &pa);
-		}
-	}
-
+	comp.backend->notify_resize();
 	compositor_damage_all();
 }
 
@@ -1742,30 +1096,20 @@ compositor_raise_overlay(void)
 {
 	if (!comp.active)
 		return;
-	XRaiseWindow(dpy, comp.overlay);
+	{
+		uint32_t stack = XCB_STACK_MODE_ABOVE;
+		xcb_configure_window(
+		    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+	}
 }
 
-/*
- * Evaluate whether the topmost visible window warrants suspending all
- * compositing.  Called from focus() and setfullscreen() whenever the
- * window stack or fullscreen state changes.
- *
- * Suspend criteria (all must hold):
- *   - compositor is active and using the GL path
- *   - the focused window is fullscreen
- *   - it covers the entire monitor geometry
- *   - it is opaque (opacity == 1.0)
- *
- * On suspend  : lower the overlay below all windows and cancel repaints.
- * On resume   : raise the overlay, force a full dirty, schedule repaint.
- */
 void
 compositor_check_unredirect(void)
 {
 	Client *sel;
 	int     should_pause;
 
-	if (!comp.active || !comp.use_gl)
+	if (!comp.active)
 		return;
 
 	sel          = selmon ? selmon->sel : NULL;
@@ -1778,69 +1122,80 @@ compositor_check_unredirect(void)
 	}
 
 	if (should_pause == comp.paused)
-		return; /* no change */
+		return;
 
 	comp.paused = should_pause;
 
 	if (comp.paused) {
-		/* Unredirect the fullscreen window and hide the overlay so that
-		 * the window can do DRI3/Present page-flips directly to the
-		 * display without the X server downgrading them to copies.
-		 * Without XCompositeUnredirectWindow the window is still
-		 * redirected into a backing pixmap, DRI3 flips stall, and
-		 * GPU-rendered video (Chrome, mpv) freezes. */
 		if (comp.repaint_id) {
 			g_source_remove(comp.repaint_id);
 			comp.repaint_id = 0;
 		}
+
+		/* Cancel any deferred fullscreen bypass that may fire after teardown.
+		 */
+		if (comp_pending_bypass_id) {
+			g_source_remove(comp_pending_bypass_id);
+			comp_pending_bypass_id  = 0;
+			comp_pending_bypass_win = XCB_NONE;
+		}
+		comp.vblank_armed    = 0;
+		comp.repaint_pending = 0;
 		{
 			CompWin *cw;
 			for (cw = comp.windows; cw; cw = cw->next) {
 				if (cw->client && cw->client->isfullscreen && cw->redirected) {
-					xerror_push_ignore();
-					XCompositeUnredirectWindow(
-					    dpy, cw->win, CompositeRedirectManual);
-					XSync(dpy, False);
-					xerror_pop();
+					xcb_void_cookie_t    ck;
+					xcb_generic_error_t *err;
+
+					ck  = xcb_composite_unredirect_window_checked(xc,
+					     (xcb_window_t) cw->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+					err = xcb_request_check(xc, ck);
+					free(err);
 					cw->redirected = 0;
-					/* Release TFP/pixmap — they'll be rebuilt on resume */
-					if (comp.use_gl)
-						comp_release_tfp(cw);
-					comp_free_win(cw); /* also unsubscribes Present */
+					comp.backend->release_pixmap(cw);
+					comp_free_win(cw);
 				}
 			}
 		}
-		XLowerWindow(dpy, comp.overlay);
+		{
+			uint32_t stack = XCB_STACK_MODE_BELOW;
+			xcb_configure_window(
+			    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		}
 		awm_debug("compositor: suspended (fullscreen unredirect)");
 	} else {
-		/* Resume: re-redirect any fullscreen windows that were bypassed
-		 * while the compositor was paused.  Without this, focusing away
-		 * from a fullscreen window raises the overlay but leaves the
-		 * fullscreen window unredirected (cw->redirected==0), so the
-		 * compositor skips it and paints the wallpaper over it instead. */
 		CompWin *cw;
 		for (cw = comp.windows; cw; cw = cw->next) {
-			if (cw->client && cw->client->isfullscreen && !cw->redirected) {
-				xerror_push_ignore();
-				XCompositeRedirectWindow(
-				    dpy, cw->win, CompositeRedirectManual);
+			if (cw->client && !cw->redirected) {
+				xcb_void_cookie_t    ck;
+				xcb_generic_error_t *err;
+
+				if (cw->client->bypass_compositor == 1)
+					continue;
+
+				ck = xcb_composite_redirect_window_checked(
+				    xc, (xcb_window_t) cw->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+				err = xcb_request_check(xc, ck);
+				free(err);
 				cw->redirected = 1;
 				comp_refresh_pixmap(cw);
-				if (cw->pixmap && !cw->damage)
-					cw->damage =
-					    XDamageCreate(dpy, cw->win, XDamageReportNonEmpty);
-				XSync(dpy, False);
-				xerror_pop();
-				/* Re-subscribe Present events — the eid was cleared by
-				 * comp_unsubscribe_present() when we unredirected earlier. */
+				if (cw->pixmap && !cw->damage) {
+					cw->damage = xcb_generate_id(xc);
+					xcb_damage_create(xc, cw->damage, (xcb_drawable_t) cw->win,
+					    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
+				}
 				comp_subscribe_present(cw);
 				awm_debug("compositor: re-redirected fullscreen "
 				          "window 0x%lx on resume",
 				    cw->win);
 			}
 		}
-		/* Raise overlay and repaint everything. */
-		XRaiseWindow(dpy, comp.overlay);
+		{
+			uint32_t stack = XCB_STACK_MODE_ABOVE;
+			xcb_configure_window(
+			    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		}
 		compositor_damage_all();
 		awm_debug("compositor: resumed");
 	}
@@ -1859,22 +1214,28 @@ compositor_xrender_errors(int *req_base, int *err_base)
 }
 
 void
-compositor_damage_errors(int *err_base)
+compositor_damage_errors(int *req_base, int *err_base)
 {
 	if (!comp.active) {
-		*err_base = -1;
+		*req_base = 0;
+		*err_base = 0;
 		return;
 	}
+	*req_base = comp.damage_req_base;
 	*err_base = comp.damage_err_base;
 }
 
 void
 compositor_glx_errors(int *req_base, int *err_base)
 {
-	/* EGL has no X request codes — always return sentinel values so
-	 * the error-whitelisting logic in events.c is always a no-op. */
 	*req_base = -1;
 	*err_base = -1;
+}
+
+void
+compositor_present_errors(int *req_base)
+{
+	*req_base = (int) (uint8_t) comp.present_opcode;
 }
 
 void
@@ -1894,292 +1255,254 @@ compositor_repaint_now(void)
  * ---------------------------------------------------------------------- */
 
 void
-compositor_handle_event(XEvent *ev)
+compositor_handle_event(xcb_generic_event_t *ev)
 {
 	if (!comp.active)
 		return;
 
-	/* Apply the XESetWireToEvent workaround before dispatching.
-	 * See compositor_fix_wire_to_event() for a full explanation. */
-	compositor_fix_wire_to_event(ev);
-
-	if (ev->type == comp.damage_ev_base + XDamageNotify) {
-		XDamageNotifyEvent *dev = (XDamageNotifyEvent *) ev;
-		CompWin            *dcw = comp_find_by_xid(dev->drawable);
+	if ((ev->response_type & ~0x80) ==
+	    (uint8_t) (comp.damage_ev_base + XCB_DAMAGE_NOTIFY)) {
+		xcb_damage_notify_event_t *dev =
+		    (xcb_damage_notify_event_t *) (void *) ev;
+		CompWin *dcw = comp_find_by_xid(dev->drawable);
 
 		if (!dcw) {
-			/* Unknown window — just ack the damage and ignore. */
-			xerror_push_ignore();
-			XDamageSubtract(dpy, dev->damage, None, None);
-			xerror_pop();
+			xcb_void_cookie_t    ck;
+			xcb_generic_error_t *err;
+
+			ck = xcb_damage_subtract_checked(
+			    xc, dev->damage, XCB_NONE, XCB_NONE);
+			err = xcb_request_check(xc, ck);
+			free(err);
 			schedule_repaint();
 			return;
 		}
 
 		if (!dcw->ever_damaged) {
-			/* First damage since (re)map or pixmap refresh: dirty the
-			 * entire window rect rather than the (possibly partial) area
-			 * reported in the notify.  Ack by discarding the region. */
+			xcb_void_cookie_t    ck;
+			xcb_generic_error_t *err;
+
 			dcw->ever_damaged = 1;
-			xerror_push_ignore();
-			XDamageSubtract(dpy, dev->damage, None, None);
-			xerror_pop();
-			{
-				XRectangle    r;
-				XserverRegion sr;
-				r.x      = (short) dcw->x;
-				r.y      = (short) dcw->y;
-				r.width  = (unsigned short) (dcw->w + 2 * dcw->bw);
-				r.height = (unsigned short) (dcw->h + 2 * dcw->bw);
-				sr       = XFixesCreateRegion(dpy, &r, 1);
-				XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-				XFixesDestroyRegion(dpy, sr);
-			}
+			ck                = xcb_damage_subtract_checked(
+                xc, dev->damage, XCB_NONE, XCB_NONE);
+			err = xcb_request_check(xc, ck);
+			free(err);
+			comp_dirty_add_rect(
+			    dcw->x, dcw->y, dcw->w + 2 * dcw->bw, dcw->h + 2 * dcw->bw);
 		} else {
-			/* Subsequent damage: fetch the exact damage region from the
-			 * server via XDamageSubtract so we can dirty only what changed.
-			 * dev->area is only the bounding box of the event's inline area,
-			 * not the full accumulated server-side damage region. */
-			XserverRegion dmg_region = XFixesCreateRegion(dpy, NULL, 0);
-			xerror_push_ignore();
-			XDamageSubtract(dpy, dev->damage, None, dmg_region);
-			xerror_pop();
-			/* Translate from window-local to screen coordinates */
-			XFixesTranslateRegion(dpy, dmg_region, dcw->x, dcw->y);
-			XFixesUnionRegion(dpy, comp.dirty, comp.dirty, dmg_region);
-			XFixesDestroyRegion(dpy, dmg_region);
+			xcb_xfixes_region_t  dmg_region = xcb_generate_id(xc);
+			xcb_void_cookie_t    ck;
+			xcb_generic_error_t *err;
+
+			xcb_xfixes_create_region(xc, dmg_region, 0, NULL);
+			ck = xcb_damage_subtract_checked(
+			    xc, dev->damage, XCB_NONE, dmg_region);
+			err = xcb_request_check(xc, ck);
+			free(err);
+			/* Translate damage region to screen coords and union into
+			 * comp.dirty (server-side).  The CPU bbox will be conservatively
+			 * expanded to the whole window below — precise per-damage bbox
+			 * tracking would require another round-trip. */
+			xcb_xfixes_translate_region(
+			    xc, dmg_region, (int16_t) dcw->x, (int16_t) dcw->y);
+			xcb_xfixes_union_region(xc, comp.dirty, dmg_region, comp.dirty);
+			xcb_xfixes_destroy_region(xc, dmg_region);
+			/* Extend CPU bbox by the window rect (conservative) */
+			comp_dirty_add_rect(
+			    dcw->x, dcw->y, dcw->w + 2 * dcw->bw, dcw->h + 2 * dcw->bw);
 		}
 
 		schedule_repaint();
 		return;
 	}
 
-	if (ev->type == MapNotify) {
-		XMapEvent *mev = (XMapEvent *) ev;
-		if (mev->event == root)
-			comp_add_by_xid(mev->window);
-		schedule_repaint();
-		return;
-	}
+	{
+		uint8_t type = ev->response_type & ~0x80;
 
-	if (ev->type == UnmapNotify) {
-		XUnmapEvent *uev = (XUnmapEvent *) ev;
-		CompWin     *cw  = comp_find_by_xid(uev->window);
-		if (cw && !cw->client) {
-			CompWin *prev = NULL, *cur;
-			{
-				XRectangle    r;
-				XserverRegion sr;
-				r.x      = (short) cw->x;
-				r.y      = (short) cw->y;
-				r.width  = (unsigned short) (cw->w + 2 * cw->bw);
-				r.height = (unsigned short) (cw->h + 2 * cw->bw);
-				sr       = XFixesCreateRegion(dpy, &r, 1);
-				XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-				XFixesDestroyRegion(dpy, sr);
+		if (type == XCB_MAP_NOTIFY) {
+			xcb_map_notify_event_t *mev = (xcb_map_notify_event_t *) ev;
+			if (mev->event == root)
+				comp_add_by_xid(mev->window);
+			schedule_repaint();
+			return;
+		}
+
+		if (type == XCB_UNMAP_NOTIFY) {
+			xcb_unmap_notify_event_t *uev = (xcb_unmap_notify_event_t *) ev;
+			CompWin                  *cw  = comp_find_by_xid(uev->window);
+			if (cw && !cw->client) {
+				CompWin *prev = NULL, *cur;
+				comp_dirty_add_rect(
+				    cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
+				for (cur = comp.windows; cur; cur = cur->next) {
+					if (cur == cw) {
+						if (prev)
+							prev->next = cw->next;
+						else
+							comp.windows = cw->next;
+						comp.backend->release_pixmap(cw);
+						comp_free_win(cw);
+						free(cw);
+						break;
+					}
+					prev = cur;
+				}
 			}
-			for (cur = comp.windows; cur; cur = cur->next) {
-				if (cur == cw) {
+			schedule_repaint();
+			return;
+		}
+
+		if (type == XCB_CONFIGURE_NOTIFY) {
+			xcb_configure_notify_event_t *cev =
+			    (xcb_configure_notify_event_t *) ev;
+			CompWin *cw = comp_find_by_xid(cev->window);
+			if (cw) {
+				if (cw->client) {
+					comp_restack_above(cw, cev->above_sibling);
+					schedule_repaint();
+					return;
+				}
+
+				int resized = (cev->width != cw->w || cev->height != cw->h);
+
+				comp_dirty_add_rect(
+				    cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
+
+				cw->x  = cev->x;
+				cw->y  = cev->y;
+				cw->w  = cev->width;
+				cw->h  = cev->height;
+				cw->bw = cev->border_width;
+
+				comp_restack_above(cw, cev->above_sibling);
+
+				if (cw->redirected && resized)
+					comp_refresh_pixmap(cw);
+
+				schedule_repaint();
+			}
+			return;
+		}
+
+		if (type == XCB_DESTROY_NOTIFY) {
+			xcb_destroy_notify_event_t *dev =
+			    (xcb_destroy_notify_event_t *) ev;
+			CompWin *prev = NULL, *cw;
+			for (cw = comp.windows; cw; cw = cw->next) {
+				if (cw->win == dev->window) {
+					comp_dirty_add_rect(
+					    cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
 					if (prev)
 						prev->next = cw->next;
 					else
 						comp.windows = cw->next;
-					if (comp.use_gl)
-						comp_release_tfp(cw);
+					comp.backend->release_pixmap(cw);
 					comp_free_win(cw);
 					free(cw);
-					break;
+					schedule_repaint();
+					return;
 				}
-				prev = cur;
+				prev = cw;
 			}
+			return;
 		}
-		schedule_repaint();
-		return;
-	}
 
-	if (ev->type == ConfigureNotify) {
-		XConfigureEvent *cev = (XConfigureEvent *) ev;
-		CompWin         *cw  = comp_find_by_xid(cev->window);
-		if (cw) {
-			if (cw->client) {
-				/* Geometry for managed clients is tracked by
-				 * compositor_configure_window() (called from resizeclient()).
-				 * We only need to update the Z-order in our internal list so
-				 * the painter's algorithm draws them correctly. Without this,
-				 * comp.windows ordering is frozen at map time and monocle /
-				 * floating windows appear in the wrong layer. */
-				comp_restack_above(cw, cev->above);
-				schedule_repaint();
-				return;
-			}
+		if (type == XCB_PROPERTY_NOTIFY) {
+			xcb_property_notify_event_t *pev =
+			    (xcb_property_notify_event_t *) ev;
+			if (pev->window == root &&
+			    (pev->atom == comp.atom_rootpmap ||
+			        pev->atom == comp.atom_esetroot)) {
+				comp_update_wallpaper();
+				compositor_damage_all();
+			} else if (pev->atom == comp.atom_net_wm_opacity &&
+			    pev->window != root) {
+				CompWin *cw = comp_find_by_xid(pev->window);
+				if (cw && cw->client) {
+					xcb_get_property_cookie_t ck2;
+					xcb_get_property_reply_t *r2;
 
-			int resized = (cev->width != cw->w || cev->height != cw->h);
-
-			{
-				XRectangle    old_rect;
-				XserverRegion old_r;
-				old_rect.x      = (short) cw->x;
-				old_rect.y      = (short) cw->y;
-				old_rect.width  = (unsigned short) (cw->w + 2 * cw->bw);
-				old_rect.height = (unsigned short) (cw->h + 2 * cw->bw);
-				old_r           = XFixesCreateRegion(dpy, &old_rect, 1);
-				XFixesUnionRegion(dpy, comp.dirty, comp.dirty, old_r);
-				XFixesDestroyRegion(dpy, old_r);
-			}
-
-			cw->x  = cev->x;
-			cw->y  = cev->y;
-			cw->w  = cev->width;
-			cw->h  = cev->height;
-			cw->bw = cev->border_width;
-
-			/* Restack in our internal list to match the X stacking order.
-			 * cev->above is the sibling directly below this window. */
-			comp_restack_above(cw, cev->above);
-
-			if (cw->redirected && resized)
-				comp_refresh_pixmap(cw);
-
-			schedule_repaint();
-		}
-		return;
-	}
-
-	if (ev->type == DestroyNotify) {
-		XDestroyWindowEvent *dev  = (XDestroyWindowEvent *) ev;
-		CompWin             *prev = NULL, *cw;
-		for (cw = comp.windows; cw; cw = cw->next) {
-			if (cw->win == dev->window) {
-				{
-					XRectangle    r;
-					XserverRegion sr;
-					r.x      = (short) cw->x;
-					r.y      = (short) cw->y;
-					r.width  = (unsigned short) (cw->w + 2 * cw->bw);
-					r.height = (unsigned short) (cw->h + 2 * cw->bw);
-					sr       = XFixesCreateRegion(dpy, &r, 1);
-					XFixesUnionRegion(dpy, comp.dirty, comp.dirty, sr);
-					XFixesDestroyRegion(dpy, sr);
+					ck2 = xcb_get_property(xc, 0, (xcb_window_t) pev->window,
+					    (xcb_atom_t) comp.atom_net_wm_opacity,
+					    XCB_ATOM_CARDINAL, 0, 1);
+					r2  = xcb_get_property_reply(xc, ck2, NULL);
+					if (r2 &&
+					    xcb_get_property_value_length(r2) >=
+					        (int) sizeof(uint32_t)) {
+						unsigned long raw =
+						    *(uint32_t *) xcb_get_property_value(r2);
+						compositor_set_opacity(cw->client, raw);
+					} else {
+						compositor_set_opacity(cw->client, 0xFFFFFFFFUL);
+					}
+					free(r2);
 				}
-				if (prev)
-					prev->next = cw->next;
-				else
-					comp.windows = cw->next;
-				if (comp.use_gl)
-					comp_release_tfp(cw);
-				comp_free_win(cw);
-				free(cw);
-				schedule_repaint();
-				return;
 			}
-			prev = cw;
+			return;
 		}
-		return;
-	}
 
-	if (ev->type == PropertyNotify) {
-		XPropertyEvent *pev = (XPropertyEvent *) ev;
-		if (pev->window == root &&
-		    (pev->atom == comp.atom_rootpmap ||
-		        pev->atom == comp.atom_esetroot)) {
-			comp_update_wallpaper();
-			compositor_damage_all();
-		} else if (pev->atom == comp.atom_net_wm_opacity &&
-		    pev->window != root) {
-			/* _NET_WM_WINDOW_OPACITY changed on a client window.
-			 * Read the new value and propagate it to the CompWin. */
-			CompWin *cw = comp_find_by_xid(pev->window);
-			if (cw && cw->client) {
-				Atom           actual_type;
-				int            actual_fmt;
-				unsigned long  nitems, bytes_after;
-				unsigned char *prop = NULL;
-
-				if (XGetWindowProperty(dpy, pev->window,
-				        comp.atom_net_wm_opacity, 0, 1, False, XA_CARDINAL,
-				        &actual_type, &actual_fmt, &nitems, &bytes_after,
-				        &prop) == Success &&
-				    prop && actual_type == XA_CARDINAL && actual_fmt == 32 &&
-				    nitems == 1) {
-					unsigned long raw = *(unsigned long *) prop;
-					compositor_set_opacity(cw->client, raw);
-				} else {
-					/* Property deleted — restore to fully opaque */
-					compositor_set_opacity(cw->client, 0xFFFFFFFFUL);
+		if (comp.has_xshape &&
+		    type == (uint8_t) (comp.shape_ev_base + XCB_SHAPE_NOTIFY)) {
+			xcb_shape_notify_event_t *sev =
+			    (xcb_shape_notify_event_t *) (void *) ev;
+			if (sev->shape_kind == XCB_SHAPE_SK_BOUNDING) {
+				CompWin *cw = comp_find_by_xid(sev->affected_window);
+				if (cw) {
+					if (comp.backend == &comp_backend_egl) {
+						/* GL path: re-acquire pixmap so TFP reflects
+						 * the new shape. */
+						if (cw->redirected)
+							comp_refresh_pixmap(cw);
+					} else if (comp.backend->apply_shape) {
+						comp.backend->apply_shape(cw);
+					}
+					schedule_repaint();
 				}
-				if (prop)
-					XFree(prop);
 			}
+			return;
 		}
-		return;
-	}
 
-	if (comp.has_xshape && ev->type == comp.shape_ev_base + ShapeNotify) {
-		XShapeEvent *sev = (XShapeEvent *) ev;
-		if (sev->kind == ShapeBounding) {
-			CompWin *cw = comp_find_by_xid(sev->window);
-			if (cw) {
-				if (comp.use_gl) {
-					/* In the GL path there's no per-picture clip region;
-					 * the shape is handled by re-acquiring the pixmap so
-					 * TFP naturally masks via the window's shape. */
-					if (cw->redirected)
-						comp_refresh_pixmap(cw);
-				} else if (cw->picture) {
-					comp_apply_shape(cw);
-				}
-				schedule_repaint();
+		if (type == XCB_SELECTION_CLEAR) {
+			xcb_selection_clear_event_t *sce =
+			    (xcb_selection_clear_event_t *) ev;
+			if (sce->selection == comp.atom_cm_sn) {
+				awm_warn(
+				    "compositor: lost _NET_WM_CM_S%d selection to another "
+				    "compositor; disabling compositing",
+				    screen);
+				compositor_cleanup();
 			}
+			return;
 		}
-		return;
-	}
 
-	if (ev->type == SelectionClear) {
-		XSelectionClearEvent *sce = (XSelectionClearEvent *) ev;
-		if (sce->selection == comp.atom_cm_sn) {
-			/* Another compositor has claimed our selection — shut down. */
-			awm_warn("compositor: lost _NET_WM_CM_S%d selection to another "
-			         "compositor; disabling compositing",
-			    screen);
-			compositor_cleanup();
-		}
-		return;
-	}
-
-	/* ---- X Present CompleteNotify -----------------------------------------
-	 * Chrome/Chromium and other DRI3/Present clients submit GPU video frames
-	 * via xcb_present_pixmap rather than triggering XDamageNotify.  Without
-	 * this handler the compositor would paint one static frame on resume from
-	 * fullscreen bypass and then freeze.
-	 *
-	 * Present events arrive as Xlib GenericEvent (type 35).  We call
-	 * XGetEventData to get the xcb_ge_generic_event_t cookie, check that its
-	 * extension field matches the Present major opcode, and for a
-	 * CompleteNotify we force a pixmap refresh + full damage + repaint on the
-	 * originating window.
-	 */
-	if (comp.has_present && ev->type == GenericEvent) {
-		XGenericEventCookie *cookie = &ev->xcookie;
-		if (XGetEventData(dpy, cookie)) {
-			if (cookie->extension == (int) comp.present_opcode &&
-			    cookie->evtype == XCB_PRESENT_COMPLETE_NOTIFY) {
+		if (comp.has_present && type == XCB_GE_GENERIC) {
+			xcb_ge_generic_event_t *ge = (xcb_ge_generic_event_t *) ev;
+			if (ge->extension == (uint8_t) comp.present_opcode &&
+			    ge->event_type == XCB_PRESENT_COMPLETE_NOTIFY) {
 				xcb_present_complete_notify_event_t *pev =
-				    (xcb_present_complete_notify_event_t *) cookie->data;
-				/* Only react to pixmap presents (kind==0), not MSC queries */
+				    (xcb_present_complete_notify_event_t *) ev;
+
+				/* --- Overlay vblank notification (eid=0) ----------------
+				 * The vblank just fired.  If there is pending damage, paint
+				 * now and re-arm.  Otherwise stop the vblank loop — it will
+				 * restart when schedule_repaint() is next called.
+				 */
+				if (pev->event == comp.vblank_eid) {
+					comp.vblank_armed = 0;
+					if (!comp.paused && comp.repaint_pending) {
+						comp.repaint_pending = 0;
+						comp_do_repaint();
+						/* Re-arm immediately for the next vblank so any
+						 * damage that arrived during rendering is caught. */
+						comp_arm_vblank();
+					}
+					return;
+				}
+
+				/* --- Per-window Present CompleteNotify (TFP refresh) ---- */
 				if (pev->kind == XCB_PRESENT_COMPLETE_KIND_PIXMAP) {
-					CompWin *cw = comp_find_by_xid((Window) pev->window);
-					/* Skip while paused (fullscreen bypass): the window
-					 * draws directly to the display and the compositor is
-					 * not painting.  Calling comp_refresh_pixmap here at
-					 * video frame rate would issue XSync on every frame,
-					 * stalling Chrome's rendering pipeline and causing the
-					 * "freezes when focused" symptom. */
+					CompWin *cw = comp_find_by_xid(pev->window);
 					if (cw && cw->redirected && !comp.paused) {
-						/* Grab a fresh pixmap snapshot — the DRI3/Present
-						 * buffer Chromium rendered into may not be the same
-						 * pixmap we already have a TFP binding for.  A new
-						 * XCompositeNameWindowPixmap call retrieves the
-						 * current backing store. */
 						comp_refresh_pixmap(cw);
 						compositor_damage_all();
 						schedule_repaint();
@@ -2189,406 +1512,87 @@ compositor_handle_event(XEvent *ev)
 					}
 				}
 			}
-			XFreeEventData(dpy, cookie);
+			return;
 		}
-		return;
-	}
+
+	} /* end type switch block */
 }
 
 /* -------------------------------------------------------------------------
- * Repaint scheduler
+ * Repaint scheduler and vblank loop
  * ---------------------------------------------------------------------- */
+
+/*
+ * Arm one vblank notification via xcb_present_notify_msc.
+ *
+ * We request the very next MSC (target_msc=0, divisor=0, remainder=0 means
+ * "fire at the next vblank").  When the server sends PresentCompleteNotify
+ * with event_id == comp.vblank_eid, we paint and re-arm if needed.
+ *
+ * Falls back to the legacy g_idle_add path if X Present is unavailable.
+ */
+static void
+comp_arm_vblank(void)
+{
+	if (!comp.active || comp.paused)
+		return;
+
+	if (comp.has_present && !comp.vblank_armed) {
+		xcb_present_notify_msc(xc, (xcb_window_t) comp.overlay,
+		    comp.vblank_eid,
+		    /* target_msc */ 0,
+		    /* divisor    */ 0,
+		    /* remainder  */ 0);
+		xcb_flush(xc);
+		comp.vblank_armed = 1;
+		return;
+	}
+
+	/* No Present: fall back to an immediate idle repaint */
+	if (!comp.repaint_id) {
+		comp.repaint_id = g_idle_add_full(
+		    G_PRIORITY_HIGH_IDLE, comp_repaint_idle, NULL, NULL);
+	}
+}
 
 static void
 schedule_repaint(void)
 {
-	if (!comp.active || comp.paused || comp.repaint_id)
+	if (!comp.active || comp.paused)
 		return;
 
-	comp.repaint_id =
-	    g_idle_add_full(G_PRIORITY_HIGH_IDLE, comp_repaint_idle, NULL, NULL);
+	comp.repaint_pending = 1;
+	comp_arm_vblank();
 }
 
 /* -------------------------------------------------------------------------
- * Repaint — the core paint loop
+ * Repaint — fallback idle callback (used only when Present is unavailable)
  * ---------------------------------------------------------------------- */
 
 static gboolean
 comp_repaint_idle(gpointer data)
 {
 	(void) data;
-	comp.repaint_id = 0;
+	comp.repaint_id      = 0;
+	comp.repaint_pending = 0;
 
-	/* Guard: compositor may have been paused (fullscreen bypass) between
-	 * the time this idle was queued and now.  Bail out immediately rather
-	 * than touching GL with a lowered/hidden overlay window. */
 	if (!comp.active || comp.paused)
 		return G_SOURCE_REMOVE;
-
-	/* Drain any XDamageNotify events still queued in the X connection
-	 * before painting so we paint one complete frame covering all
-	 * accumulated damage instead of a series of partial frames. */
-	{
-		XEvent ev;
-		while (
-		    XCheckTypedEvent(dpy, comp.damage_ev_base + XDamageNotify, &ev)) {
-			compositor_fix_wire_to_event(&ev);
-			compositor_handle_event(&ev);
-		}
-	}
 
 	comp_do_repaint();
 	return G_SOURCE_REMOVE;
 }
 
-/* Dispatch to GL or XRender repaint */
 static void
 comp_do_repaint(void)
 {
 	if (!comp.active || comp.paused)
 		return;
 
-	if (comp.use_gl)
-		comp_do_repaint_gl();
-	else
-		comp_do_repaint_xrender();
-}
-
-/* -------------------------------------------------------------------------
- * GL repaint path
- * ---------------------------------------------------------------------- */
-
-/*
- * Fetch the bounding box of comp.dirty as a single XRectangle.
- * Returns 1 on success, 0 if the region is empty or the fetch fails.
- * On failure *out is set to the full screen rect.
- */
-static int
-dirty_get_bbox(XRectangle *out)
-{
-	int         nrects = 0;
-	XRectangle *rects  = XFixesFetchRegion(dpy, comp.dirty, &nrects);
-
-	if (!rects || nrects == 0) {
-		if (rects)
-			XFree(rects);
-		out->x = out->y = 0;
-		out->width      = (unsigned short) sw;
-		out->height     = (unsigned short) sh;
-		return 0;
-	}
-
-	/* Union all returned rects into a single bounding box */
-	int x1 = rects[0].x, y1 = rects[0].y;
-	int x2 = x1 + rects[0].width, y2 = y1 + rects[0].height;
-	for (int r = 1; r < nrects; r++) {
-		if (rects[r].x < x1)
-			x1 = rects[r].x;
-		if (rects[r].y < y1)
-			y1 = rects[r].y;
-		int ex = rects[r].x + rects[r].width;
-		int ey = rects[r].y + rects[r].height;
-		if (ex > x2)
-			x2 = ex;
-		if (ey > y2)
-			y2 = ey;
-	}
-	XFree(rects);
-
-	/* Clamp to screen */
-	if (x1 < 0)
-		x1 = 0;
-	if (y1 < 0)
-		y1 = 0;
-	if (x2 > sw)
-		x2 = sw;
-	if (y2 > sh)
-		y2 = sh;
-
-	out->x      = (short) x1;
-	out->y      = (short) y1;
-	out->width  = (unsigned short) (x2 - x1);
-	out->height = (unsigned short) (y2 - y1);
-	return (out->width > 0 && out->height > 0);
-}
-
-static void
-comp_do_repaint_gl(void)
-{
-	CompWin   *cw;
-	XRectangle scissor;
-	int        use_scissor = 0;
-
-	/* --- Partial repaint via EGL_EXT_buffer_age + glScissor ------------- */
-	if (comp.has_buffer_age) {
-		unsigned int age = 0;
-		eglQuerySurface(
-		    comp.egl_dpy, comp.egl_win, EGL_BUFFER_AGE_EXT, (EGLint *) &age);
-
-		/* age==0 means undefined (e.g. first frame or after resize);
-		 * fall back to full repaint.  age==1 means back buffer is one
-		 * frame old — only this frame's dirty rect needs repainting. */
-		if (age > 0 && age <= (unsigned int) DAMAGE_RING_SIZE) {
-			/* Collect current dirty bbox */
-			XRectangle cur;
-			dirty_get_bbox(&cur);
-
-			/* Union current dirty with the past (age-1) frames */
-			int x1 = cur.x, y1 = cur.y;
-			int x2 = x1 + cur.width, y2 = y1 + cur.height;
-			for (unsigned int a = 1; a < age; a++) {
-				int slot = ((comp.ring_idx - (int) a) + DAMAGE_RING_SIZE * 2) %
-				    DAMAGE_RING_SIZE;
-				XRectangle *r = &comp.damage_ring[slot];
-				if (r->width == 0 || r->height == 0)
-					continue;
-				if (r->x < x1)
-					x1 = r->x;
-				if (r->y < y1)
-					y1 = r->y;
-				int ex = r->x + r->width;
-				int ey = r->y + r->height;
-				if (ex > x2)
-					x2 = ex;
-				if (ey > y2)
-					y2 = ey;
-			}
-
-			/* Store this frame's bbox into ring before swap */
-			comp.damage_ring[comp.ring_idx] = cur;
-			comp.ring_idx = (comp.ring_idx + 1) % DAMAGE_RING_SIZE;
-
-			/* Clamp to screen */
-			if (x1 < 0)
-				x1 = 0;
-			if (y1 < 0)
-				y1 = 0;
-			if (x2 > sw)
-				x2 = sw;
-			if (y2 > sh)
-				y2 = sh;
-
-			scissor.x      = (short) x1;
-			scissor.y      = (short) y1;
-			scissor.width  = (unsigned short) (x2 - x1);
-			scissor.height = (unsigned short) (y2 - y1);
-
-			if (scissor.width > 0 && scissor.height > 0)
-				use_scissor = 1;
-		} else {
-			/* Full repaint — record full screen in ring */
-			comp.damage_ring[comp.ring_idx].x      = 0;
-			comp.damage_ring[comp.ring_idx].y      = 0;
-			comp.damage_ring[comp.ring_idx].width  = (unsigned short) sw;
-			comp.damage_ring[comp.ring_idx].height = (unsigned short) sh;
-			comp.ring_idx = (comp.ring_idx + 1) % DAMAGE_RING_SIZE;
-		}
-	}
-
-	if (use_scissor) {
-		/* GL scissor is in bottom-left origin; flip Y */
-		glEnable(GL_SCISSOR_TEST);
-		glScissor(scissor.x, sh - scissor.y - scissor.height, scissor.width,
-		    scissor.height);
-	}
-
-	glUseProgram(comp.prog);
-	glUniform2f(comp.u_screen, (float) sw, (float) sh);
-	glUniform1i(comp.u_tex, 0);
-
-	/* Clear to black (or paint wallpaper) */
-	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-	glClear(GL_COLOR_BUFFER_BIT);
-
-	/* Paint wallpaper via cached TFP texture if available */
-	if (comp.wallpaper_texture) {
-		glBindTexture(GL_TEXTURE_2D, comp.wallpaper_texture);
-		/* EGLImageKHR is a live mapping — no rebind needed */
-		glUniform4f(comp.u_rect, 0.0f, 0.0f, (float) sw, (float) sh);
-		glUniform1f(comp.u_opacity, 1.0f);
-		glUniform1i(comp.u_flip_y, 0);
-		glUniform1i(comp.u_solid, 0);
-		glBindVertexArray(comp.vao);
-		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-		glBindVertexArray(0);
-		glBindTexture(GL_TEXTURE_2D, 0);
-	}
-
-	/* Walk windows bottom-to-top using our internal list.
-	 * comp.windows is maintained in bottom-to-top order by comp_restack_above
-	 * and comp_add_by_xid, eliminating the per-frame XQueryTree round-trip. */
-	xerror_push_ignore();
-
-	glBindVertexArray(comp.vao);
-	glActiveTexture(GL_TEXTURE0);
-
-	for (cw = comp.windows; cw; cw = cw->next) {
-		if (!cw->redirected || !cw->texture || cw->hidden)
-			continue;
-
-		/* EGLImageKHR is a live mapping — GPU always sees current pixmap
-		 * contents, no per-frame rebind needed. */
-		glBindTexture(GL_TEXTURE_2D, cw->texture);
-
-		/* Draw the full window pixmap (XCompositeNameWindowPixmap includes
-		 * borders), positioned at cw->x,cw->y with full outer size.
-		 * Using the inner w/h caused the bottom bw rows to be clipped. */
-		glUniform4f(comp.u_rect, (float) cw->x, (float) cw->y,
-		    (float) (cw->w + 2 * cw->bw), (float) (cw->h + 2 * cw->bw));
-		glUniform1f(comp.u_opacity, (float) cw->opacity);
-		glUniform1i(comp.u_flip_y, 0); /* NDC Y-flip in vert shader suffices */
-		glUniform1i(comp.u_solid, 0);
-		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-
-		/* Draw borders for managed clients */
-		if (cw->client && cw->bw > 0) {
-			int          sel = (selmon && cw->client == selmon->sel);
-			XRenderColor xrc =
-			    scheme[sel ? SchemeSel : SchemeNorm][ColBorder].color;
-			float        r  = (float) xrc.red / 65535.0f;
-			float        g  = (float) xrc.green / 65535.0f;
-			float        b  = (float) xrc.blue / 65535.0f;
-			float        a  = (float) xrc.alpha / 65535.0f;
-			unsigned int bw = (unsigned int) cw->bw;
-			unsigned int ow = (unsigned int) cw->w + 2 * bw;
-			unsigned int oh = (unsigned int) cw->h + 2 * bw;
-
-			glBindTexture(GL_TEXTURE_2D, 0);
-			glUniform1i(comp.u_solid, 1);
-			/* Straight-alpha: pass r,g,b,a directly */
-			glUniform4f(comp.u_color, r, g, b, a);
-
-			/* top */
-			glUniform4f(comp.u_rect, (float) cw->x, (float) cw->y, (float) ow,
-			    (float) bw);
-			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-			/* bottom */
-			glUniform4f(comp.u_rect, (float) cw->x,
-			    (float) (cw->y + (int) (oh - bw)), (float) ow, (float) bw);
-			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-			/* left */
-			glUniform4f(comp.u_rect, (float) cw->x, (float) (cw->y + (int) bw),
-			    (float) bw, (float) cw->h);
-			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-			/* right */
-			glUniform4f(comp.u_rect, (float) (cw->x + (int) (ow - bw)),
-			    (float) (cw->y + (int) bw), (float) bw, (float) cw->h);
-			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-
-			glUniform1i(comp.u_solid, 0);
-			/* Restore texture binding for next window */
-			glBindTexture(GL_TEXTURE_2D, 0);
-		}
-	}
-
-	glBindVertexArray(0);
-	xerror_pop();
-
-	glUseProgram(0);
-
-	if (use_scissor)
-		glDisable(GL_SCISSOR_TEST);
-
-	/* Reset dirty region */
-	XFixesSetRegion(dpy, comp.dirty, NULL, 0);
-
-	/* Present — eglSwapBuffers is vsync-aware (swap interval = 1).
-	 * Re-check paused immediately before the swap: if a fullscreen bypass
-	 * raced in between the repaint start and here, the overlay window may
-	 * already be lowered and the GL context in an inconsistent state.
-	 * Skipping the swap is safe — the dirty region is already cleared. */
-
-	if (!comp.paused)
-		eglSwapBuffers(comp.egl_dpy, comp.egl_win);
-}
-
-/* -------------------------------------------------------------------------
- * XRender repaint path (fallback for software-only X servers)
- * ---------------------------------------------------------------------- */
-
-static void
-comp_do_repaint_xrender(void)
-{
-	CompWin     *cw;
-	XRenderColor bg_color = { 0, 0, 0, 0xffff };
-
-	/* Clip back-buffer to dirty region */
-	XFixesSetPictureClipRegion(dpy, comp.back, 0, 0, comp.dirty);
-
-	/* Paint background */
-	if (comp.wallpaper_pict) {
-		XRenderComposite(dpy, PictOpSrc, comp.wallpaper_pict, None, comp.back,
-		    0, 0, 0, 0, 0, 0, (unsigned int) sw, (unsigned int) sh);
-	} else {
-		XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bg_color, 0, 0,
-		    (unsigned int) sw, (unsigned int) sh);
-	}
-
-	/* Walk windows bottom-to-top using our internal list.
-	 * comp.windows is maintained in bottom-to-top order by comp_restack_above
-	 * and comp_add_by_xid, eliminating the per-frame XQueryTree round-trip. */
-	xerror_push_ignore();
-
-	for (cw = comp.windows; cw; cw = cw->next) {
-		int     alpha_idx;
-		Picture mask;
-
-		if (!cw->redirected || cw->picture == None || cw->hidden)
-			continue;
-
-		alpha_idx = (int) (cw->opacity * 255.0 + 0.5);
-		if (alpha_idx < 0)
-			alpha_idx = 0;
-		if (alpha_idx > 255)
-			alpha_idx = 255;
-
-		if (cw->argb || alpha_idx < 255) {
-			mask = comp.alpha_pict[alpha_idx];
-			XRenderComposite(dpy, PictOpOver, cw->picture, mask, comp.back, 0,
-			    0, 0, 0, cw->x + cw->bw, cw->y + cw->bw, (unsigned int) cw->w,
-			    (unsigned int) cw->h);
-		} else {
-			XRenderComposite(dpy, PictOpSrc, cw->picture, None, comp.back, 0,
-			    0, 0, 0, cw->x + cw->bw, cw->y + cw->bw, (unsigned int) cw->w,
-			    (unsigned int) cw->h);
-		}
-
-		if (cw->client && cw->bw > 0) {
-			int          sel = (selmon && cw->client == selmon->sel);
-			XRenderColor bc =
-			    scheme[sel ? SchemeSel : SchemeNorm][ColBorder].color;
-			unsigned int bw = (unsigned int) cw->bw;
-			unsigned int ow = (unsigned int) cw->w + 2 * bw;
-			unsigned int oh = (unsigned int) cw->h + 2 * bw;
-
-			XRenderFillRectangle(
-			    dpy, PictOpSrc, comp.back, &bc, cw->x, cw->y, ow, bw);
-			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc, cw->x,
-			    cw->y + (int) (oh - bw), ow, bw);
-			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc, cw->x,
-			    cw->y + (int) bw, bw, (unsigned int) cw->h);
-			XRenderFillRectangle(dpy, PictOpSrc, comp.back, &bc,
-			    cw->x + (int) (ow - bw), cw->y + (int) bw, bw,
-			    (unsigned int) cw->h);
-		}
-	}
-
-	xerror_pop();
-
-	/* Blit full back-buffer to overlay — unconditional, no clip */
-	XFixesSetPictureClipRegion(dpy, comp.target, 0, 0, None);
-	XRenderComposite(dpy, PictOpSrc, comp.back, None, comp.target, 0, 0, 0, 0,
-	    0, 0, (unsigned int) sw, (unsigned int) sh);
-
-	/* Reset dirty region */
-	XFixesSetRegion(dpy, comp.dirty, NULL, 0);
-
-	XFixesSetPictureClipRegion(dpy, comp.back, 0, 0, None);
-	XFlush(dpy);
+	comp.backend->repaint();
 }
 
 #endif /* COMPOSITOR */
 
-/* Satisfy ISO C99: a translation unit must contain at least one declaration.
- */
+/* Satisfy ISO C99: a translation unit must contain at least one declaration */
 typedef int compositor_translation_unit_nonempty;

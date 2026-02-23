@@ -45,8 +45,9 @@ runautostart(void)
 		pathpfx =
 		    ecalloc(1, strlen(home) + strlen(localshare) + strlen(awmdir) + 3);
 
-		if (snprintf(pathpfx, strlen(home) + strlen(awmdir) + 3, "%s/.%s",
-		        home, awmdir) < 0) {
+		if (snprintf(pathpfx,
+		        strlen(home) + strlen(localshare) + strlen(awmdir) + 3,
+		        "%s/%s/%s", home, localshare, awmdir) < 0) {
 			free(pathpfx);
 			return;
 		}
@@ -78,16 +79,20 @@ runautostart(void)
 	        pathpfx, autostartblocksh) < 0) {
 		free(path);
 		free(pathpfx);
+		return;
 	}
 
 	if (access(path, X_OK) == 0)
 		system(path);
 
-	/* now the non-blocking script */
+	/* now the non-blocking script — allocate +3 for " &\0" */
+	free(path);
+	path = ecalloc(1, strlen(pathpfx) + strlen(autostartsh) + 3);
 	if (snprintf(path, strlen(pathpfx) + strlen(autostartsh) + 2, "%s/%s",
 	        pathpfx, autostartsh) < 0) {
 		free(path);
 		free(pathpfx);
+		return;
 	}
 
 	if (access(path, X_OK) == 0)
@@ -105,8 +110,8 @@ spawn(const Arg *arg)
 	if (arg->v == dmenucmd)
 		dmenumon[0] = '0' + selmon->num;
 	if (fork() == 0) {
-		if (dpy)
-			close(ConnectionNumber(dpy));
+		if (xc)
+			close(xcb_get_file_descriptor(xc));
 		setsid();
 
 		sigemptyset(&sa.sa_mask);
@@ -123,8 +128,8 @@ void
 spawnscratch(const Arg *arg)
 {
 	if (fork() == 0) {
-		if (dpy)
-			close(ConnectionNumber(dpy));
+		if (xc)
+			close(xcb_get_file_descriptor(xc));
 		setsid();
 		execvp(((char **) arg->v)[1], ((char **) arg->v) + 1);
 		awm_error(

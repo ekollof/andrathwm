@@ -1,14 +1,22 @@
 /* See LICENSE file for copyright and license details.
  *
- * Reusable menu system for awm
- * Provides X11-based popup menus with keyboard and mouse support
+ * Reusable menu system for awm-ui
+ * Provides GTK-based popup menus with keyboard and mouse support.
  */
 
 #ifndef MENU_H
 #define MENU_H
 
-#include "drw.h"
-#include <X11/Xlib.h>
+#include <gtk/gtk.h>
+#include <stdint.h>
+
+/* xcb_timestamp_t is just uint32_t; define a compat alias so menu_show's
+ * event_time parameter keeps a meaningful type without pulling in xcb headers
+ * in awm-ui (which has no XCB connection).  If xcb/xcb.h is already included
+ * (e.g. in sni.c) this typedef is skipped to avoid a redefinition warning. */
+#ifndef __XCB_H__
+typedef uint32_t xcb_timestamp_t;
+#endif
 
 /* Toggle types for DBusMenu checkbox/radio items */
 typedef enum {
@@ -32,39 +40,35 @@ typedef struct MenuItem {
 /* Menu callback - called when item is selected */
 typedef void (*MenuCallback)(int item_id, void *data);
 
+/* Dismiss callback - called when the menu is dismissed (with or without
+ * item activation).  Optional; set to NULL if not needed. */
+typedef void (*MenuDismissCallback)(void *data);
+
 /* Menu structure */
 typedef struct Menu {
-	Display *dpy;
-	Window   win;
-	Drw     *drw;
-	Clr    **scheme;
+	GtkWidget *gtk_menu;           /* GTK menu widget */
+	gulong     deactivate_handler; /* signal handler ID for "deactivate" */
 
 	MenuItem *items;
-	int       item_count;
 	int owns_items; /* Whether this menu should free items on destruction */
-	int selected;
-	int x, y;
-	unsigned int w, h;
 
-	MenuCallback callback;
-	void        *callback_data;
+	MenuCallback        callback;
+	void               *callback_data;
+	MenuDismissCallback dismiss_callback;
+	void               *dismiss_data;
 
-	int visible;
-	int ignore_next_release; /* Ignore first ButtonRelease after showing */
-
-	struct Menu *parent;                     /* Parent menu (for submenus) */
-	struct Menu *active_submenu;             /* Currently open submenu */
-	int          mon_x, mon_y, mon_w, mon_h; /* Monitor bounds */
+	int        visible;
+	GdkWindow *timing_win; /* realized window for gdk_x11_get_server_time */
+	GdkWindow *grab_win;   /* 1x1 OR always-mapped window for seat grabs */
 } Menu;
 
-/* Menu API */
-Menu *menu_create(Display *dpy, Window root, Drw *drw, Clr **scheme);
+/* Menu API. */
+Menu *menu_create(void);
 void  menu_free(Menu *menu);
 void  menu_set_items(Menu *menu, MenuItem *items);
 void  menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
-     Time event_time);
+     xcb_timestamp_t event_time);
 void  menu_hide(Menu *menu);
-int   menu_handle_event(Menu *menu, XEvent *ev);
 
 /* Menu item helpers */
 MenuItem *menu_item_create(int id, const char *label, int enabled);

@@ -3,46 +3,46 @@
 #ifndef DRW_H
 #define DRW_H
 
-#include <X11/Xlib.h>
-#include <X11/Xft/Xft.h>
 #include <cairo/cairo.h>
 #include <cairo/cairo-xcb.h>
+#include <pango/pangocairo.h>
 #include <xcb/xcb.h>
 #include <xcb/render.h>
+#include <xcb/xcb_renderutil.h>
 
 typedef struct {
-	Cursor cursor;
+	xcb_cursor_t cursor;
 } Cur;
 
 typedef struct Fnt {
-	Display     *dpy;
-	unsigned int h;
-	XftFont     *xfont;
-	FcPattern   *pattern;
-	struct Fnt  *next;
+	unsigned int          h;    /* line height in pixels (ascent + descent) */
+	PangoFontDescription *desc; /* owned; freed in xfont_free() */
+	struct Fnt           *next; /* kept for API compat; only head is used */
 } Fnt;
 
 enum { ColFg, ColBg, ColBorder }; /* Clr scheme index */
-typedef XftColor Clr;
+typedef struct {
+	unsigned long  pixel; /* X11 pixel value — used by drw_rect/drw_text */
+	unsigned short r, g, b, a; /* 16-bit channels — used by clr_to_argb() */
+} Clr;
 
 typedef struct {
-	unsigned int w, h;
-	Display     *dpy;
-	int          screen;
-	Window       root;
-	Drawable     drawable;
-	GC           gc;
-	Clr         *scheme;
-	Fnt         *fonts;
-	xcb_connection_t
-	    *cairo_xcb; /* dedicated XCB conn for cairo — never read by Xlib */
-	xcb_visualtype_t *xcb_visual;    /* matches DefaultVisual(dpy, screen) */
-	cairo_surface_t  *cairo_surface; /* cached surface for icon rendering */
+	unsigned int      w, h;
+	xcb_connection_t *xc; /* main XCB connection (shared, not owned) */
+	int               screen;
+	xcb_window_t      root;
+	xcb_pixmap_t      drawable;
+	xcb_gcontext_t    gc;
+	Clr              *scheme;
+	Fnt              *fonts;
+	xcb_visualtype_t *xcb_visual; /* matches root visual for screen */
+	cairo_surface_t
+	    *cairo_surface; /* cached surface for text/icon rendering */
 } Drw;
 
 /* Drawable abstraction */
-Drw *drw_create(
-    Display *dpy, int screen, Window win, unsigned int w, unsigned int h);
+Drw *drw_create(xcb_connection_t *xc, int screen, xcb_window_t root,
+    unsigned int w, unsigned int h);
 void drw_resize(Drw *drw, unsigned int w, unsigned int h);
 void drw_free(Drw *drw);
 
@@ -52,8 +52,6 @@ void drw_fontset_free(Fnt *set);
 unsigned int drw_fontset_getwidth(Drw *drw, const char *text);
 unsigned int drw_fontset_getwidth_clamp(
     Drw *drw, const char *text, unsigned int n);
-void drw_font_getexts(Fnt *font, const char *text, unsigned int len,
-    unsigned int *w, unsigned int *h);
 
 /* Colorscheme abstraction */
 void drw_clr_create(Drw *drw, Clr *dest, const char *clrname);
@@ -77,6 +75,6 @@ void drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 
 /* Map functions */
 void drw_map(
-    Drw *drw, Window win, int x, int y, unsigned int w, unsigned int h);
+    Drw *drw, xcb_window_t win, int x, int y, unsigned int w, unsigned int h);
 
 #endif /* DRW_H */

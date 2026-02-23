@@ -45,6 +45,16 @@ void compositor_configure_window(Client *c, int actual_bw);
 void compositor_bypass_window(Client *c, int bypass);
 
 /*
+ * Schedule a deferred fullscreen bypass for client c.  Defers the
+ * compositor_bypass_window(c,1) + compositor_check_unredirect() sequence by
+ * one GLib main-loop iteration so the client (e.g. st) has time to process
+ * the ConfigureNotify from resizeclient() and fully repaint while still
+ * redirected.  The compositor paints one clean full-screen frame first, then
+ * the bypass fires.
+ */
+void compositor_defer_fullscreen_bypass(Client *c);
+
+/*
  * Called from propertynotify() when _NET_WM_WINDOW_OPACITY changes.
  * raw is the raw 32-bit property value (0 = fully transparent, 0xFFFFFFFF =
  * opaque).
@@ -56,7 +66,7 @@ void compositor_set_opacity(Client *c, unsigned long raw);
  * event before the normal handler[] dispatch so DamageNotify, MapNotify and
  * ConfigureNotify can be intercepted.
  */
-void compositor_handle_event(XEvent *ev);
+void compositor_handle_event(xcb_generic_event_t *ev);
 
 /* Force a full-screen repaint — used after xrdb hot-reload. */
 void compositor_damage_all(void);
@@ -84,16 +94,24 @@ void compositor_xrender_errors(int *req_base, int *err_base);
  * Needed by the X error handler to whitelist transient XDamage errors.
  * Sets to -1 if the compositor is not active.
  */
-void compositor_damage_errors(int *err_base);
+void compositor_damage_errors(int *req_base, int *err_base);
 
 /*
- * Fill *req_base and *err_base with the GLX extension major opcode and
- * error base.  Needed by the X error handler to whitelist transient GLX
- * errors (e.g. GLXBadPixmap / GLXBadContextState) that arise when a TFP
- * pixmap is destroyed while rendering is in flight (e.g. on fullscreen).
- * Sets both to -1 if the compositor is inactive or not using GL.
+ * Always sets *req_base and *err_base to -1.
+ * The EGL backend has no X extension opcodes (unlike GLX/TFP), so there are
+ * no GLX error codes to whitelist.  This stub exists to avoid changing the
+ * X error handler in events.c; callers that see -1 skip the whitelist check.
  */
 void compositor_glx_errors(int *req_base, int *err_base);
+
+/*
+ * Fill *req_base with the X Present major opcode.
+ * Needed by the X error handler to whitelist transient BadIDChoice errors
+ * that arise when a Present event subscription EID is used after
+ * comp_free_win() destroyed it (stale Present events racing the unsubscribe).
+ * Sets to 0 if the compositor is not yet initialised or Present is absent.
+ */
+void compositor_present_errors(int *req_base);
 
 /*
  * Perform a compositor repaint synchronously right now, bypassing the GLib
@@ -126,15 +144,6 @@ void compositor_check_unredirect(void);
  * bounding boxes are now stale), and forces a full repaint.
  */
 void compositor_notify_screen_resize(void);
-
-/*
- * Apply the XESetWireToEvent workaround for a raw X event.
- * Must be called on every event immediately after XNextEvent, before any
- * handler dispatches it.  Prevents GL/DRI2 wire-to-event hooks from
- * corrupting Xlib's sequence tracking when GLX and Xlib share a Display.
- * No-op when the GL compositor path is not active.
- */
-void compositor_fix_wire_to_event(XEvent *ev);
 
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */

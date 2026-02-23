@@ -2,9 +2,9 @@
  *
  * dynamic window manager is designed like any other X client as well. It is
  * driven through handling X events. In contrast to other X clients, a window
- * manager selects for SubstructureRedirectMask on the root window, to receive
- * events about window (dis-)appearance. Only one X connection at a time is
- * allowed to select for this event mask.
+ * manager selects for XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT on the root window,
+ * to receive events about window (dis-)appearance. Only one X connection at a
+ * time is allowed to select for this event mask.
  *
  * The event handlers of awm are organized in an array which is accessed
  * whenever a new event has been fetched. This allows event dispatching
@@ -21,33 +21,42 @@
  * To understand everything else, start reading main().
  */
 #include <stdint.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include <glib-unix.h>
+#include <gtk/gtk.h>
 
 #include "awm.h"
 #include "client.h"
 #include "events.h"
 #include "ewmh.h"
 #include "icon.h"
-#include "launcher.h"
 #include "monitor.h"
 #include "spawn.h"
 #include "status.h"
 #include "systray.h"
+#include "ui_proto.h"
 #include "xrdb.h"
 #include "xsource.h"
 #define AWM_CONFIG_IMPL
 #include "config.h"
 
 /* variables */
-Systray  *systray  = NULL;
-Launcher *launcher = NULL;
-char      stext[STATUS_TEXT_LEN];
-int       screen;
-int       sw, sh; /* X display screen geometry width, height */
-int       bh;     /* bar height */
-int       lrpad;  /* sum of left and right padding for text */
-int (*xerrorxlib)(Display *, XErrorEvent *);
+Systray     *systray          = NULL;
+static pid_t ui_pid           = -1; /* awm-ui child process */
+static int   ui_fd            = -1; /* socket fd to awm-ui */
+int          launcher_visible = 0;  /* 1 while the launcher window is open */
+xcb_window_t launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
+char         stext[STATUS_TEXT_LEN];
+int          screen;
+int          sw, sh; /* X display screen geometry width, height */
+int          bh;     /* bar height */
+int          lrpad;  /* sum of left and right padding for text */
 unsigned int numlockmask = 0;
 static guint xsource_id  = 0; /* GLib source ID for the X11 event source */
 #ifdef STATUSNOTIFIER
@@ -57,33 +66,36 @@ static guint dbus_retry_id = 0; /* GLib source ID for the reconnect timer */
 #ifdef XRANDR
 int randrbase, rrerrbase;
 #endif
-void (*handler[LASTEvent])(XEvent *) = { [ButtonPress] = buttonpress,
-	[ClientMessage]                                    = clientmessage,
-	[ConfigureRequest]                                 = configurerequest,
-	[ConfigureNotify]                                  = configurenotify,
-	[DestroyNotify]                                    = destroynotify,
-	[EnterNotify]                                      = enternotify,
-	[Expose]                                           = expose,
-	[FocusIn]                                          = focusin,
-	[KeyPress]                                         = keypress,
-	[MappingNotify]                                    = mappingnotify,
-	[MapRequest]                                       = maprequest,
-	[MotionNotify]                                     = motionnotify,
-	[PropertyNotify]                                   = propertynotify,
-	[ResizeRequest]                                    = resizerequest,
-	[UnmapNotify]                                      = unmapnotify };
-Atom              wmatom[WMLast], netatom[NetLast], xatom[XLast];
-int               restart         = 0;
-int               barsdirty       = 0;
-Time              last_event_time = CurrentTime;
-static GMainLoop *main_loop       = NULL;
-Cur              *cursor[CurLast];
-Clr             **scheme;
-Display          *dpy;
-Drw              *drw;
-Monitor          *mons, *selmon;
-Window            root, wmcheckwin;
-Clientlist       *cl;
+void (*handler[LASTEvent])(xcb_generic_event_t *) = {
+	[XCB_BUTTON_PRESS]      = buttonpress,
+	[XCB_CLIENT_MESSAGE]    = clientmessage,
+	[XCB_CONFIGURE_REQUEST] = configurerequest,
+	[XCB_CONFIGURE_NOTIFY]  = configurenotify,
+	[XCB_DESTROY_NOTIFY]    = destroynotify,
+	[XCB_ENTER_NOTIFY]      = enternotify,
+	[XCB_EXPOSE]            = expose,
+	[XCB_FOCUS_IN]          = focusin,
+	[XCB_KEY_PRESS]         = keypress,
+	[XCB_MAPPING_NOTIFY]    = mappingnotify,
+	[XCB_MAP_REQUEST]       = maprequest,
+	[XCB_MOTION_NOTIFY]     = motionnotify,
+	[XCB_PROPERTY_NOTIFY]   = propertynotify,
+	[XCB_RESIZE_REQUEST]    = resizerequest,
+	[XCB_UNMAP_NOTIFY]      = unmapnotify,
+};
+xcb_atom_t         wmatom[WMLast], netatom[NetLast], xatom[XLast];
+xcb_atom_t         utf8string_atom; /* UTF8_STRING — used in setup() */
+int                restart         = 0;
+int                barsdirty       = 0;
+xcb_timestamp_t    last_event_time = XCB_CURRENT_TIME;
+Cur               *cursor[CurLast];
+Clr              **scheme;
+xcb_connection_t  *xc;
+Drw               *drw;
+Monitor           *mons, *selmon;
+xcb_window_t       root, wmcheckwin;
+Clientlist        *cl;
+xcb_key_symbols_t *keysyms;
 
 /* ---- compile-time invariants ---- */
 _Static_assert(LENGTH(tags) <= 31,
@@ -91,12 +103,6 @@ _Static_assert(LENGTH(tags) <= 31,
 _Static_assert(LENGTH(tags) < sizeof(unsigned int) * 8,
     "LENGTH(tags) must be < bit-width of unsigned int to avoid UB in TAGMASK "
     "shift");
-_Static_assert(sizeof(Atom) == sizeof(long),
-    "Atom must equal long in size: Xlib format-32 property buffers use "
-    "long[]");
-_Static_assert(sizeof(Window) == sizeof(long),
-    "Window (XID) must equal long in size: Xlib format-32 property buffers "
-    "use long[]");
 _Static_assert(sizeof(long) >= 4,
     "long must be at least 32 bits for all Xlib format-32 EWMH/ICCCM property "
     "writes");
@@ -124,17 +130,40 @@ cleanup(void)
 	for (m = mons; m; m = m->next)
 		while (m->cl->stack)
 			unmanage(m->cl->stack, 0);
-	XUngrabKey(dpy, AnyKey, AnyModifier, root);
+	{
+
+		xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
+	}
 	while (mons)
 		cleanupmon(mons);
+	free(cl);
+	cl = NULL;
 
 	if (showsystray) {
-		XUnmapWindow(dpy, systray->win);
-		XDestroyWindow(dpy, systray->win);
+		Client *ic = systray->icons;
+		while (ic) {
+			Client *next = ic->next;
+			free(ic);
+			ic = next;
+		}
+		if (systray->colormap)
+			xcb_free_colormap(xc, systray->colormap);
+		xcb_unmap_window(xc, systray->win);
+		xcb_destroy_window(xc, systray->win);
 		free(systray);
 	}
 	status_cleanup();
-	launcher_free(launcher);
+	/* Signal awm-ui to exit and reap it.
+	 * setup() sets SA_NOCLDWAIT so children are auto-reaped; just kill and
+	 * give the process a moment to exit — no waitpid needed. */
+	if (ui_pid > 0) {
+		kill(ui_pid, SIGTERM);
+		ui_pid = -1;
+	}
+	if (ui_fd >= 0) {
+		close(ui_fd);
+		ui_fd = -1;
+	}
 #ifdef COMPOSITOR
 	compositor_cleanup();
 #endif
@@ -144,11 +173,14 @@ cleanup(void)
 	for (i = 0; i < LENGTH(colors); i++)
 		free(scheme[i]);
 	free(scheme);
-	XDestroyWindow(dpy, wmcheckwin);
+	xcb_destroy_window(xc, wmcheckwin);
 	drw_free(drw);
-	XSync(dpy, False);
-	XSetInputFocus(dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
-	XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
+	xcb_key_symbols_free(keysyms);
+	keysyms = NULL;
+	xflush();
+	xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT,
+	    XCB_INPUT_FOCUS_POINTER_ROOT, XCB_CURRENT_TIME);
+	xcb_delete_property(xc, root, netatom[NetActiveWindow]);
 	if (xsource_id > 0) {
 		g_source_remove(xsource_id);
 		xsource_id = 0;
@@ -171,27 +203,42 @@ quit(const Arg *arg)
 {
 	if (arg->i)
 		restart = 1;
-	if (main_loop)
-		g_main_loop_quit(main_loop);
+	gtk_main_quit();
 }
 
 void
 launchermenu(const Arg *arg)
 {
-	int x, y;
+	UiMsgHeader           hdr;
+	UiLauncherShowPayload p;
+	uint8_t buf[sizeof(UiMsgHeader) + sizeof(UiLauncherShowPayload)];
+	(void) arg;
 
-	if (!launcher)
+	if (ui_fd < 0)
 		return;
 
 	Monitor *m = selmon;
-	x          = m->wx + (m->ww - 600) / 2;
-	y          = m->wy + (m->wh - 400) / 2;
-	if (x < m->wx)
-		x = m->wx;
-	if (y < m->wy)
-		y = m->wy;
+	p.x        = (int32_t) (m->wx + (m->ww - 420) / 2);
+	p.y        = (int32_t) (m->wy + (m->wh - 400) / 2);
+	if (p.x < (int32_t) m->wx)
+		p.x = (int32_t) m->wx;
+	if (p.y < (int32_t) m->wy)
+		p.y = (int32_t) m->wy;
 
-	launcher_show(launcher, x, y);
+	hdr.type        = (uint32_t) UI_MSG_LAUNCHER_SHOW;
+	hdr.payload_len = sizeof(p);
+	memcpy(buf, &hdr, sizeof(hdr));
+	memcpy(buf + sizeof(hdr), &p, sizeof(p));
+
+	if (send(ui_fd, buf, sizeof(buf), MSG_NOSIGNAL) < 0) {
+		awm_error("launchermenu: send: %s", strerror(errno));
+	} else {
+		launcher_visible = 1;
+		/* awm-ui owns X focus for the launcher: launcher_show() calls
+		 * gdk_display_sync() then gdk_window_focus() on its own GDK
+		 * connection, which guarantees the window is mapped before
+		 * XSetInputFocus is sent — no cross-process race. */
+	}
 }
 
 /* ---------------------------------------------------------------------------
@@ -201,20 +248,23 @@ launchermenu(const Arg *arg)
 static gboolean
 x_dispatch_cb(gpointer user_data)
 {
-	XEvent ev;
+	xcb_generic_event_t *ev;
 	(void) user_data;
 
-	while (XPending(dpy)) {
-		XNextEvent(dpy, &ev);
-#ifdef COMPOSITOR
-		/* Apply the XESetWireToEvent workaround for every event before
-		 * any handler sees it.  This prevents GL/DRI2 wire-to-event
-		 * hooks from corrupting Xlib's sequence tracking. */
-		compositor_fix_wire_to_event(&ev);
-#endif
+	while ((ev = xcb_poll_for_event(xc))) {
+		uint8_t type = ev->response_type & ~0x80;
+
+		/* XCB delivers async errors as packets with response_type == 0 */
+		if (ev->response_type == 0) {
+			xcb_error_handler((xcb_generic_error_t *) ev);
+			free(ev);
+			continue;
+		}
+
 #ifdef XRANDR
-		if (ev.type == randrbase + RRScreenChangeNotify) {
-			XRRUpdateConfiguration(&ev);
+		if (type == (uint8_t) (randrbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY)) {
+			/* XCB randr handles screen change — no XRRUpdateConfiguration
+			 * needed since we don't use libXrandr data structures. */
 			updategeom();
 			drw_resize(drw, sw, bh);
 			updatebars();
@@ -228,28 +278,14 @@ x_dispatch_cb(gpointer user_data)
 			arrange(NULL);
 		} else
 #endif
-#ifdef STATUSNOTIFIER
-			/* Handle menu events BEFORE normal handlers if menu is visible */
-			if (!sni_handle_menu_event(&ev)) {
-#endif
-				/* Handle launcher events if visible */
-				if (launcher && launcher->visible) {
+		{
 #ifdef COMPOSITOR
-					compositor_handle_event(&ev);
+			compositor_handle_event(ev);
 #endif
-					if (!launcher_handle_event(launcher, &ev) &&
-					    ev.type < LASTEvent && handler[ev.type])
-						handler[ev.type](&ev);
-				} else {
-#ifdef COMPOSITOR
-					compositor_handle_event(&ev);
-#endif
-					if (ev.type < LASTEvent && handler[ev.type])
-						handler[ev.type](&ev);
-				}
-#ifdef STATUSNOTIFIER
-			}
-#endif
+			if (type < LASTEvent && handler[type])
+				handler[type](ev);
+		}
+		free(ev);
 	}
 
 	if (barsdirty) {
@@ -300,13 +336,11 @@ static gboolean dbus_reconnect_cb(gpointer user_data);
 void
 sni_schedule_reconnect(void)
 {
-	GMainContext *ctx;
-
 	if (dbus_retry_id > 0)
 		return; /* already scheduled */
 
-	ctx           = g_main_loop_get_context(main_loop);
-	dbus_retry_id = g_timeout_add_seconds(1, dbus_reconnect_cb, ctx);
+	dbus_retry_id =
+	    g_timeout_add_seconds(1, dbus_reconnect_cb, g_main_context_default());
 	awm_warn("D-Bus: name-loss detected — reconnect scheduled in 1 s");
 }
 
@@ -342,8 +376,12 @@ dbus_dispatch_cb(gint fd, GIOCondition condition, gpointer user_data)
 		awm_error("D-Bus connection lost (HUP/ERR) — scheduling reconnect");
 		dbus_src_id = 0; /* source is being removed by returning REMOVE */
 		/* Schedule a reconnect attempt 2 s from now on the same context. */
+		if (dbus_retry_id > 0) {
+			g_source_remove(dbus_retry_id);
+			dbus_retry_id = 0;
+		}
 		dbus_retry_id = g_timeout_add_seconds(
-		    2, dbus_reconnect_cb, g_main_loop_get_context(main_loop));
+		    2, dbus_reconnect_cb, g_main_context_default());
 		return G_SOURCE_REMOVE;
 	}
 
@@ -354,69 +392,407 @@ dbus_dispatch_cb(gint fd, GIOCondition condition, gpointer user_data)
 
 #endif /* STATUSNOTIFIER */
 
+/* -------------------------------------------------------------------------
+ * awm-ui helper process — fork/socket infrastructure
+ * ---------------------------------------------------------------------- */
+
+/* GSource for reading messages from awm-ui over ui_fd */
+typedef struct {
+	GSource source;
+	GPollFD pfd;
+} UiSource;
+
+static gboolean
+ui_source_prepare(GSource *src, gint *timeout)
+{
+	(void) src;
+	*timeout = -1;
+	return FALSE;
+}
+
+static gboolean
+ui_source_check(GSource *src)
+{
+	UiSource *s = (UiSource *) src;
+	return (s->pfd.revents & (G_IO_IN | G_IO_HUP | G_IO_ERR)) != 0;
+}
+
+/* Handle a single message received from awm-ui */
+static void
+ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
+{
+	switch (type) {
+	case UI_MSG_LAUNCHER_EXEC: {
+		/* payload is a NUL-terminated command string */
+		launcher_visible = 0;
+		if (len == 0)
+			break;
+		char   cmd[4096];
+		size_t cmdlen = len < sizeof(cmd) ? len : sizeof(cmd) - 1;
+		memcpy(cmd, payload, cmdlen);
+		cmd[cmdlen] = '\0';
+		awm_debug("awm: exec from ui: %s", cmd);
+
+		pid_t epid = fork();
+		if (epid < 0) {
+			awm_error("awm: fork for exec: %s", strerror(errno));
+		} else if (epid == 0) {
+			setsid();
+			execlp("sh", "sh", "-c", cmd, NULL);
+			_exit(1);
+		}
+		break;
+	}
+	case UI_MSG_LAUNCHER_DISMISSED:
+		launcher_visible = 0;
+		break;
+	case UI_MSG_LAUNCHER_READY: {
+		/* awm-ui sends this once after the launcher window is realized,
+		 * giving us its X window ID so we can call xcb_set_input_focus
+		 * directly on our own connection (avoids the _NET_ACTIVE_WINDOW
+		 * redirect race).  Store it for use in launchermenu(). */
+		if (len < sizeof(UiLauncherReadyPayload))
+			break;
+		UiLauncherReadyPayload p;
+		memcpy(&p, payload, sizeof(p));
+		launcher_xwin = (xcb_window_t) p.xwin;
+		awm_debug("awm: launcher ready, xwin=0x%x", (unsigned) launcher_xwin);
+		break;
+	}
+	default:
+		awm_warn("awm: unknown message from awm-ui: type=%u", (unsigned) type);
+		break;
+	}
+}
+
+static gboolean
+ui_source_dispatch(GSource *src, GSourceFunc cb, gpointer data)
+{
+	(void) cb;
+	(void) data;
+	UiSource *s = (UiSource *) src;
+
+	if (s->pfd.revents & (G_IO_HUP | G_IO_ERR)) {
+		awm_warn("awm: awm-ui socket closed — will not respawn");
+		return G_SOURCE_REMOVE;
+	}
+
+	uint8_t buf[sizeof(UiMsgHeader) + UI_MSG_MAX_PAYLOAD];
+	ssize_t n = recv(ui_fd, buf, sizeof(buf), 0);
+	if (n <= 0) {
+		awm_warn("awm: awm-ui recv: %s", n == 0 ? "EOF" : strerror(errno));
+		return G_SOURCE_REMOVE;
+	}
+	if ((size_t) n < sizeof(UiMsgHeader))
+		return G_SOURCE_CONTINUE;
+
+	UiMsgHeader hdr;
+	memcpy(&hdr, buf, sizeof(hdr));
+	if (hdr.payload_len > UI_MSG_MAX_PAYLOAD)
+		return G_SOURCE_CONTINUE;
+	if ((size_t) n < sizeof(UiMsgHeader) + hdr.payload_len)
+		return G_SOURCE_CONTINUE;
+
+	ui_handle_message(
+	    (UiMsgType) hdr.type, buf + sizeof(UiMsgHeader), hdr.payload_len);
+	return G_SOURCE_CONTINUE;
+}
+
+static GSourceFuncs ui_source_funcs = {
+	ui_source_prepare,
+	ui_source_check,
+	ui_source_dispatch,
+	NULL,
+	NULL,
+	NULL,
+};
+
+/* Spawn awm-ui.  Creates a socketpair, forks, passes the child fd via
+ * argv[1].  Returns 0 on success, -1 on failure. */
+static int
+ui_spawn(GMainContext *ctx)
+{
+	int fds[2];
+
+	if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fds) < 0) {
+		awm_error("ui_spawn: socketpair: %s", strerror(errno));
+		return -1;
+	}
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		awm_error("ui_spawn: fork: %s", strerror(errno));
+		close(fds[0]);
+		close(fds[1]);
+		return -1;
+	}
+
+	if (pid == 0) {
+		/* child — close the parent end */
+		close(fds[0]);
+
+		/* Close the XCB connection fd so awm's X connection doesn't
+		 * leak into awm-ui.  awm-ui uses GDK's own X connection. */
+		if (xc)
+			close(xcb_get_file_descriptor(xc));
+
+		/* Force GDK to use the X11 backend.  If awm is running inside
+		 * a Wayland session WAYLAND_DISPLAY is set in the environment
+		 * and GTK 3 would otherwise prefer the Wayland backend, causing
+		 * awm-ui to connect to the outer compositor rather than to the
+		 * X display we are managing (e.g. Xephyr).  Clearing
+		 * WAYLAND_DISPLAY and setting GDK_BACKEND=x11 ensures awm-ui
+		 * always opens on the same X display as awm. */
+		unsetenv("WAYLAND_DISPLAY");
+		setenv("GDK_BACKEND", "x11", 1);
+
+		/* Build argv: awm-ui <child_fd> */
+		char fd_str[32];
+		snprintf(fd_str, sizeof(fd_str), "%d", fds[1]);
+
+		/* Look for awm-ui in PATH */
+		execlp("awm-ui", "awm-ui", fd_str, NULL);
+
+		awm_error("ui_spawn: exec awm-ui failed: %s", strerror(errno));
+		_exit(1);
+	}
+
+	/* parent */
+	close(fds[1]);
+	ui_fd  = fds[0];
+	ui_pid = pid;
+
+	/* Mark the parent end close-on-exec so it is automatically closed when
+	 * awm restarts via execvp().  Without this the fd survives into the new
+	 * image and the old awm-ui stays alive with a dangling socket. */
+	{
+		int flags = fcntl(ui_fd, F_GETFD);
+		if (flags >= 0)
+			fcntl(ui_fd, F_SETFD, flags | FD_CLOEXEC);
+	}
+
+	/* Register the parent end with GLib */
+	UiSource *src =
+	    (UiSource *) g_source_new(&ui_source_funcs, sizeof(UiSource));
+	src->pfd.fd      = ui_fd;
+	src->pfd.events  = G_IO_IN | G_IO_HUP | G_IO_ERR;
+	src->pfd.revents = 0;
+	g_source_add_poll((GSource *) src, &src->pfd);
+	g_source_attach((GSource *) src, ctx);
+	g_source_unref((GSource *) src);
+
+	awm_debug("awm: awm-ui spawned (pid=%d, fd=%d)", (int) ui_pid, ui_fd);
+	return 0;
+}
+
 void
 run(void)
 {
 	GMainContext *ctx;
 
-	XSync(dpy, False);
+	xflush();
 
 	ctx = g_main_context_default();
 
 	/* X11 source — wakes the loop whenever X events are pending */
-	xsource_id = xsource_attach(dpy, ctx, x_dispatch_cb, NULL);
+	xsource_id = xsource_attach(xc, ctx, x_dispatch_cb, NULL);
 
 #ifdef STATUSNOTIFIER
 	/* D-Bus source — use helper so reconnect can re-attach cleanly */
 	sni_attach_dbus_source(ctx);
 #endif
 
-	main_loop = g_main_loop_new(ctx, FALSE);
-	/* Let xsource_dispatch quit the loop cleanly on X server death
+	/* Spawn awm-ui helper (launcher + SNI menus).  Non-fatal if absent. */
+	if (ui_spawn(ctx) < 0)
+		awm_warn(
+		    "awm: failed to spawn awm-ui — launcher and SNI menus disabled");
+
+	/* Let xsource_dispatch quit cleanly on X server death
 	 * instead of calling exit(1), so cleanup() can run. */
-	xsource_set_quit_loop(main_loop);
-	g_main_loop_run(main_loop);
-	xsource_set_quit_loop(NULL);
-	g_main_loop_unref(main_loop);
-	main_loop = NULL;
+	xsource_use_gtk_main_quit();
+	gtk_main();
 }
 
 void
 scan(void)
 {
-	unsigned int      i, num;
-	Window            d1, d2, *wins = NULL;
-	XWindowAttributes wa;
+	unsigned int i;
 
-	if (XQueryTree(dpy, root, &d1, &d2, &wins, &num)) {
-		for (i = 0; i < num; i++) {
-			if (!XGetWindowAttributes(dpy, wins[i], &wa) ||
-			    wa.override_redirect ||
-			    XGetTransientForHint(dpy, wins[i], &d1))
+	xcb_query_tree_cookie_t ck = xcb_query_tree(xc, root);
+	xcb_query_tree_reply_t *tr = xcb_query_tree_reply(xc, ck, NULL);
+	if (!tr)
+		return;
+
+	int           num  = xcb_query_tree_children_length(tr);
+	xcb_window_t *wins = xcb_query_tree_children(tr);
+
+	/* first pass: non-transients */
+	for (i = 0; i < (unsigned int) num; i++) {
+		xcb_get_window_attributes_cookie_t wck =
+		    xcb_get_window_attributes(xc, wins[i]);
+		xcb_get_window_attributes_reply_t *wr =
+		    xcb_get_window_attributes_reply(xc, wck, NULL);
+		if (!wr)
+			continue;
+		int override  = wr->override_redirect;
+		int map_state = wr->map_state;
+		free(wr);
+		xcb_window_t trans = XCB_WINDOW_NONE;
+		if (override ||
+		    xcb_icccm_get_wm_transient_for_reply(
+		        xc, xcb_icccm_get_wm_transient_for(xc, wins[i]), &trans, NULL))
+			continue;
+		if (map_state == XCB_MAP_STATE_VIEWABLE ||
+		    getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC) {
+			/* Skip XEMBED clients (systray icons reparented back to
+			 * root when the systray container was destroyed on restart) */
+			xcb_get_property_reply_t *xer       = xcb_get_property_reply(xc,
+			          xcb_get_property(xc, 0, wins[i],
+			              (xcb_atom_t) xatom[XembedInfo], XCB_ATOM_ANY, 0, 2),
+			          NULL);
+			int                       is_xembed = xer && xer->length > 0;
+			free(xer);
+			if (is_xembed)
 				continue;
-			if (wa.map_state == IsViewable || getstate(wins[i]) == IconicState)
-				manage(wins[i], &wa);
+			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
+			xcb_get_geometry_reply_t *gr =
+			    xcb_get_geometry_reply(xc, gck, NULL);
+			if (gr) {
+				manage(wins[i], gr);
+				free(gr);
+			}
 		}
-		for (i = 0; i < num; i++) { /* now the transients */
-			if (!XGetWindowAttributes(dpy, wins[i], &wa))
-				continue;
-			if (XGetTransientForHint(dpy, wins[i], &d1) &&
-			    (wa.map_state == IsViewable ||
-			        getstate(wins[i]) == IconicState))
-				manage(wins[i], &wa);
-		}
-		if (wins)
-			XFree(wins);
 	}
+	/* second pass: transients */
+	for (i = 0; i < (unsigned int) num; i++) {
+		xcb_get_window_attributes_cookie_t wck =
+		    xcb_get_window_attributes(xc, wins[i]);
+		xcb_get_window_attributes_reply_t *wr =
+		    xcb_get_window_attributes_reply(xc, wck, NULL);
+		if (!wr)
+			continue;
+		int map_state = wr->map_state;
+		free(wr);
+		xcb_window_t trans = XCB_WINDOW_NONE;
+		if (xcb_icccm_get_wm_transient_for_reply(xc,
+		        xcb_icccm_get_wm_transient_for(xc, wins[i]), &trans, NULL) &&
+		    (map_state == XCB_MAP_STATE_VIEWABLE ||
+		        getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC)) {
+			/* Skip XEMBED clients here too */
+			xcb_get_property_reply_t *xer       = xcb_get_property_reply(xc,
+			          xcb_get_property(xc, 0, wins[i],
+			              (xcb_atom_t) xatom[XembedInfo], XCB_ATOM_ANY, 0, 2),
+			          NULL);
+			int                       is_xembed = xer && xer->length > 0;
+			free(xer);
+			if (is_xembed)
+				continue;
+			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
+			xcb_get_geometry_reply_t *gr =
+			    xcb_get_geometry_reply(xc, gck, NULL);
+			if (gr) {
+				manage(wins[i], gr);
+				free(gr);
+			}
+		}
+	}
+	free(tr);
+}
+
+/* Batch-intern all atoms using async XCB cookies on the connection that Xlib
+ * already owns.  All requests are sent in one go before any reply is read, so
+ * the round-trip cost is that of a single request instead of N sequential
+ * ones.  The two COMPOSITOR-only atoms are included unconditionally in the
+ * table (their slots in netatom[] exist regardless of the build flag); we just
+ * always populate them so the table stays flat and branch-free. */
+static void
+intern_atoms(void)
+{
+	/* Each entry maps one atom name to the Atom* that should receive it. */
+	static const struct {
+		xcb_atom_t *dest;
+		const char *name;
+	} tbl[] = {
+		{ &utf8string_atom, "UTF8_STRING" },
+		{ &wmatom[WMProtocols], "WM_PROTOCOLS" },
+		{ &wmatom[WMDelete], "WM_DELETE_WINDOW" },
+		{ &wmatom[WMState], "WM_STATE" },
+		{ &wmatom[WMTakeFocus], "WM_TAKE_FOCUS" },
+		{ &netatom[NetActiveWindow], "_NET_ACTIVE_WINDOW" },
+		{ &netatom[NetSupported], "_NET_SUPPORTED" },
+		{ &netatom[NetSystemTray], "_NET_SYSTEM_TRAY_S0" },
+		{ &netatom[NetSystemTrayOP], "_NET_SYSTEM_TRAY_OPCODE" },
+		{ &netatom[NetSystemTrayOrientation], "_NET_SYSTEM_TRAY_ORIENTATION" },
+		{ &netatom[NetSystemTrayOrientationHorz],
+		    "_NET_SYSTEM_TRAY_ORIENTATION_HORZ" },
+		{ &netatom[NetSystemTrayColors], "_NET_SYSTEM_TRAY_COLORS" },
+		{ &netatom[NetSystemTrayVisual], "_NET_SYSTEM_TRAY_VISUAL" },
+		{ &netatom[NetWMName], "_NET_WM_NAME" },
+		{ &netatom[NetWMIcon], "_NET_WM_ICON" },
+		{ &netatom[NetWMState], "_NET_WM_STATE" },
+		{ &netatom[NetWMCheck], "_NET_SUPPORTING_WM_CHECK" },
+		{ &netatom[NetWMFullscreen], "_NET_WM_STATE_FULLSCREEN" },
+		{ &netatom[NetWMStateDemandsAttention],
+		    "_NET_WM_STATE_DEMANDS_ATTENTION" },
+		{ &netatom[NetWMStateSticky], "_NET_WM_STATE_STICKY" },
+		{ &netatom[NetWMStateAbove], "_NET_WM_STATE_ABOVE" },
+		{ &netatom[NetWMStateBelow], "_NET_WM_STATE_BELOW" },
+		{ &netatom[NetWMStateHidden], "_NET_WM_STATE_HIDDEN" },
+		{ &netatom[NetWMWindowType], "_NET_WM_WINDOW_TYPE" },
+		{ &netatom[NetWMWindowTypeDialog], "_NET_WM_WINDOW_TYPE_DIALOG" },
+		{ &netatom[NetWMWindowTypeDock], "_NET_WM_WINDOW_TYPE_DOCK" },
+		{ &netatom[NetWMWindowTypeToolbar], "_NET_WM_WINDOW_TYPE_TOOLBAR" },
+		{ &netatom[NetWMWindowTypeUtility], "_NET_WM_WINDOW_TYPE_UTILITY" },
+		{ &netatom[NetWMWindowTypeSplash], "_NET_WM_WINDOW_TYPE_SPLASH" },
+		{ &netatom[NetClientList], "_NET_CLIENT_LIST" },
+		{ &netatom[NetClientListStacking], "_NET_CLIENT_LIST_STACKING" },
+		{ &netatom[NetWMDesktop], "_NET_WM_DESKTOP" },
+		{ &netatom[NetWMPid], "_NET_WM_PID" },
+		{ &netatom[NetDesktopViewport], "_NET_DESKTOP_VIEWPORT" },
+		{ &netatom[NetNumberOfDesktops], "_NET_NUMBER_OF_DESKTOPS" },
+		{ &netatom[NetCurrentDesktop], "_NET_CURRENT_DESKTOP" },
+		{ &netatom[NetDesktopNames], "_NET_DESKTOP_NAMES" },
+		{ &netatom[NetWorkarea], "_NET_WORKAREA" },
+		{ &netatom[NetCloseWindow], "_NET_CLOSE_WINDOW" },
+		{ &netatom[NetMoveResizeWindow], "_NET_MOVERESIZE_WINDOW" },
+		{ &netatom[NetFrameExtents], "_NET_FRAME_EXTENTS" },
+		{ &netatom[NetWMWindowOpacity], "_NET_WM_WINDOW_OPACITY" },
+		{ &netatom[NetWMBypassCompositor], "_NET_WM_BYPASS_COMPOSITOR" },
+		{ &xatom[Manager], "MANAGER" },
+		{ &xatom[Xembed], "_XEMBED" },
+		{ &xatom[XembedInfo], "_XEMBED_INFO" },
+	};
+	static const int N = (int) (sizeof tbl / sizeof tbl[0]);
+
+	xcb_intern_atom_cookie_t *cookies;
+	xcb_intern_atom_reply_t  *reply;
+	int                       i;
+
+	cookies = ecalloc((size_t) N, sizeof *cookies);
+
+	/* Fire all requests — no round-trip yet. */
+	for (i = 0; i < N; i++) {
+		uint16_t nlen = (uint16_t) strlen(tbl[i].name);
+		cookies[i]    = xcb_intern_atom(xc, 0, nlen, tbl[i].name);
+	}
+
+	/* Collect replies — one round-trip covers all. */
+	for (i = 0; i < N; i++) {
+		reply = xcb_intern_atom_reply(xc, cookies[i], NULL);
+		if (reply) {
+			*tbl[i].dest = reply->atom;
+			free(reply);
+		}
+	}
+
+	free(cookies);
 }
 
 void
 setup(void)
 {
-	int                  i;
-	XSetWindowAttributes wa;
-	Atom                 utf8string;
-	struct sigaction     sa;
+	int              i;
+	struct sigaction sa;
 
 	/* do not transform children into zombies when they terminate */
 	sigemptyset(&sa.sa_mask);
@@ -428,17 +804,22 @@ setup(void)
 	while (waitpid(-1, NULL, WNOHANG) > 0)
 		;
 
-	/* init screen */
-	screen = DefaultScreen(dpy);
-	sw     = DisplayWidth(dpy, screen);
-	sh     = DisplayHeight(dpy, screen);
+	/* init screen — screen number comes from xcb_connect() second arg */
+	{
+		xcb_screen_iterator_t sit =
+		    xcb_setup_roots_iterator(xcb_get_setup(xc));
+		int i;
+		for (i = 0; i < screen; i++)
+			xcb_screen_next(&sit);
+		sw   = (int) sit.data->width_in_pixels;
+		sh   = (int) sit.data->height_in_pixels;
+		root = sit.data->root;
+	}
 	if (!(cl = (Clientlist *) calloc(1, sizeof(Clientlist))))
 		die("fatal: could not malloc() %u bytes\n", sizeof(Clientlist));
-	root = RootWindow(dpy, screen);
 	/* drw uses a dedicated bare xcb_connection_t (opened inside drw_create)
-	 * for all cairo rendering, so Xlib's sequence counter on dpy is never
-	 * disturbed by cairo's raw XCB traffic. */
-	drw = drw_create(dpy, screen, root, sw, sh);
+	 * for all cairo rendering, keeping its XCB traffic off xc. */
+	drw = drw_create(xc, screen, root, sw, sh);
 	if (!drw_fontset_create(drw, fonts, LENGTH(fonts)))
 		die("no fonts could be loaded.");
 	lrpad = drw->fonts->h;
@@ -446,76 +827,25 @@ setup(void)
 	updategeom();
 	/* Enable RandR screen change notifications */
 #ifdef XRANDR
-	if (XRRQueryExtension(dpy, &randrbase, &rrerrbase)) {
-		XRRSelectInput(dpy, root, RRScreenChangeNotifyMask);
+	{
+		const xcb_query_extension_reply_t *ext =
+		    xcb_get_extension_data(xc, &xcb_randr_id);
+		if (ext && ext->present) {
+			randrbase = ext->first_event;
+			rrerrbase = ext->first_error;
+			xcb_randr_select_input(
+			    xc, root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE);
+		}
 	}
 #endif
-	/* init atoms */
-	utf8string               = XInternAtom(dpy, "UTF8_STRING", False);
-	wmatom[WMProtocols]      = XInternAtom(dpy, "WM_PROTOCOLS", False);
-	wmatom[WMDelete]         = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
-	wmatom[WMState]          = XInternAtom(dpy, "WM_STATE", False);
-	wmatom[WMTakeFocus]      = XInternAtom(dpy, "WM_TAKE_FOCUS", False);
-	netatom[NetActiveWindow] = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
-	netatom[NetSupported]    = XInternAtom(dpy, "_NET_SUPPORTED", False);
-	netatom[NetSystemTray]   = XInternAtom(dpy, "_NET_SYSTEM_TRAY_S0", False);
-	netatom[NetSystemTrayOP] =
-	    XInternAtom(dpy, "_NET_SYSTEM_TRAY_OPCODE", False);
-	netatom[NetSystemTrayOrientation] =
-	    XInternAtom(dpy, "_NET_SYSTEM_TRAY_ORIENTATION", False);
-	netatom[NetSystemTrayOrientationHorz] =
-	    XInternAtom(dpy, "_NET_SYSTEM_TRAY_ORIENTATION_HORZ", False);
-	netatom[NetSystemTrayColors] =
-	    XInternAtom(dpy, "_NET_SYSTEM_TRAY_COLORS", False);
-	netatom[NetSystemTrayVisual] =
-	    XInternAtom(dpy, "_NET_SYSTEM_TRAY_VISUAL", False);
-	netatom[NetWMName]  = XInternAtom(dpy, "_NET_WM_NAME", False);
-	netatom[NetWMIcon]  = XInternAtom(dpy, "_NET_WM_ICON", False);
-	netatom[NetWMState] = XInternAtom(dpy, "_NET_WM_STATE", False);
-	netatom[NetWMCheck] = XInternAtom(dpy, "_NET_SUPPORTING_WM_CHECK", False);
-	netatom[NetWMFullscreen] =
-	    XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
-	netatom[NetWMStateDemandsAttention] =
-	    XInternAtom(dpy, "_NET_WM_STATE_DEMANDS_ATTENTION", False);
-	netatom[NetWMStateSticky] =
-	    XInternAtom(dpy, "_NET_WM_STATE_STICKY", False);
-	netatom[NetWMStateAbove] = XInternAtom(dpy, "_NET_WM_STATE_ABOVE", False);
-	netatom[NetWMStateBelow] = XInternAtom(dpy, "_NET_WM_STATE_BELOW", False);
-	netatom[NetWMStateHidden] =
-	    XInternAtom(dpy, "_NET_WM_STATE_HIDDEN", False);
-	netatom[NetWMWindowType] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
-	netatom[NetWMWindowTypeDialog] =
-	    XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
-	netatom[NetClientList] = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
-	netatom[NetClientListStacking] =
-	    XInternAtom(dpy, "_NET_CLIENT_LIST_STACKING", False);
-	netatom[NetWMDesktop] = XInternAtom(dpy, "_NET_WM_DESKTOP", False);
-	netatom[NetWMPid]     = XInternAtom(dpy, "_NET_WM_PID", False);
-	netatom[NetDesktopViewport] =
-	    XInternAtom(dpy, "_NET_DESKTOP_VIEWPORT", False);
-	netatom[NetNumberOfDesktops] =
-	    XInternAtom(dpy, "_NET_NUMBER_OF_DESKTOPS", False);
-	netatom[NetCurrentDesktop] =
-	    XInternAtom(dpy, "_NET_CURRENT_DESKTOP", False);
-	netatom[NetDesktopNames] = XInternAtom(dpy, "_NET_DESKTOP_NAMES", False);
-	netatom[NetWorkarea]     = XInternAtom(dpy, "_NET_WORKAREA", False);
-	netatom[NetCloseWindow]  = XInternAtom(dpy, "_NET_CLOSE_WINDOW", False);
-	netatom[NetMoveResizeWindow] =
-	    XInternAtom(dpy, "_NET_MOVERESIZE_WINDOW", False);
-	netatom[NetFrameExtents] = XInternAtom(dpy, "_NET_FRAME_EXTENTS", False);
-#ifdef COMPOSITOR
-	netatom[NetWMWindowOpacity] =
-	    XInternAtom(dpy, "_NET_WM_WINDOW_OPACITY", False);
-	netatom[NetWMBypassCompositor] =
-	    XInternAtom(dpy, "_NET_WM_BYPASS_COMPOSITOR", False);
-#endif
-	xatom[Manager]    = XInternAtom(dpy, "MANAGER", False);
-	xatom[Xembed]     = XInternAtom(dpy, "_XEMBED", False);
-	xatom[XembedInfo] = XInternAtom(dpy, "_XEMBED_INFO", False);
+	/* init atoms — all interned in a single async XCB batch */
+	intern_atoms();
+	/* init key symbols table */
+	keysyms = xcb_key_symbols_alloc(xc);
 	/* init cursors */
-	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
-	cursor[CurResize] = drw_cur_create(drw, XC_sizing);
-	cursor[CurMove]   = drw_cur_create(drw, XC_fleur);
+	cursor[CurNormal] = drw_cur_create(drw, 68);  /* XC_left_ptr */
+	cursor[CurResize] = drw_cur_create(drw, 120); /* XC_sizing */
+	cursor[CurMove]   = drw_cur_create(drw, 52);  /* XC_fleur */
 	/* init appearance */
 	scheme = ecalloc(LENGTH(colors), sizeof(Clr *));
 	for (i = 0; i < LENGTH(colors); i++)
@@ -527,16 +857,35 @@ setup(void)
 	updatebars();
 	updatestatus();
 	/* supporting window for NetWMCheck */
-	wmcheckwin = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
-	XChangeProperty(dpy, wmcheckwin, netatom[NetWMCheck], XA_WINDOW, 32,
-	    PropModeReplace, (unsigned char *) &wmcheckwin, 1);
-	XChangeProperty(dpy, wmcheckwin, netatom[NetWMName], utf8string, 8,
-	    PropModeReplace, (unsigned char *) "awm", 3);
-	XChangeProperty(dpy, root, netatom[NetWMCheck], XA_WINDOW, 32,
-	    PropModeReplace, (unsigned char *) &wmcheckwin, 1);
-	/* EWMH support per view */
-	XChangeProperty(dpy, root, netatom[NetSupported], XA_ATOM, 32,
-	    PropModeReplace, (unsigned char *) netatom, NetLast);
+	{
+		wmcheckwin = xcb_generate_id(xc);
+		xcb_create_window(xc, XCB_COPY_FROM_PARENT, wmcheckwin, root, 0, 0, 1,
+		    1, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, 0,
+		    NULL);
+	}
+	{
+		uint32_t win32 = (uint32_t) wmcheckwin;
+
+		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, wmcheckwin,
+		    netatom[NetWMCheck], XCB_ATOM_WINDOW, 32, 1, &win32);
+		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, wmcheckwin,
+		    netatom[NetWMName], utf8string_atom, 8, 3, "awm");
+		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
+		    netatom[NetWMCheck], XCB_ATOM_WINDOW, 32, 1, &win32);
+
+		/* EWMH support per view — netatom[] is Atom=unsigned long, need
+		 * uint32_t array for XCB format-32 */
+		{
+			xcb_atom_t supported[NetLast];
+			int        k;
+			for (k = 0; k < NetLast; k++)
+				supported[k] = (xcb_atom_t) netatom[k];
+			xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
+			    netatom[NetSupported], XCB_ATOM_ATOM, 32, NetLast, supported);
+		}
+
+		xcb_delete_property(xc, root, netatom[NetClientList]);
+	}
 	setnumdesktops();
 	setcurrentdesktop();
 	setdesktopnames();
@@ -547,64 +896,60 @@ setup(void)
 		for (m = mons; m; m = m->next)
 			updateworkarea(m);
 	}
-	XDeleteProperty(dpy, root, netatom[NetClientList]);
 	/* select events */
-	wa.cursor     = cursor[CurNormal]->cursor;
-	wa.event_mask = SubstructureRedirectMask | SubstructureNotifyMask |
-	    ButtonPressMask | PointerMotionMask | EnterWindowMask |
-	    LeaveWindowMask | StructureNotifyMask | PropertyChangeMask;
-	XChangeWindowAttributes(dpy, root, CWEventMask | CWCursor, &wa);
-	XSelectInput(dpy, root, wa.event_mask);
+	{
+
+		uint32_t evmask = XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT |
+		    XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS |
+		    XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_ENTER_WINDOW |
+		    XCB_EVENT_MASK_LEAVE_WINDOW | XCB_EVENT_MASK_STRUCTURE_NOTIFY |
+		    XCB_EVENT_MASK_PROPERTY_CHANGE;
+		xcb_change_window_attributes(xc, root, XCB_CW_EVENT_MASK, &evmask);
+		uint32_t cur = (uint32_t) cursor[CurNormal]->cursor;
+		xcb_change_window_attributes(xc, root, XCB_CW_CURSOR, &cur);
+	}
 	grabkeys();
 	focus(NULL);
 	/* Initialize icon subsystem (GTK, cache) unconditionally */
 	icon_init();
 #ifdef STATUSNOTIFIER
 	/* Initialize StatusNotifier support */
-	if (!sni_init(dpy, drw->cairo_xcb, drw->xcb_visual, root, drw, scheme,
-	        sniconsize))
+	if (!sni_init(xc, xc, drw->xcb_visual, root, drw, scheme, sniconsize))
 		awm_warn("Failed to initialize StatusNotifier support");
 #endif
-	/* Initialize launcher */
-	launcher =
-	    launcher_create(dpy, root, scheme, fonts, LENGTH(fonts), termcmd[0]);
 #ifdef COMPOSITOR
 	if (compositor_init(g_main_context_default()) < 0)
 		awm_warn("compositor: init failed, running without compositing");
 #endif
 }
 
-static int
-xioerror(Display *d)
-{
-	(void) d;
-	/* _XIOError: the X server closed the connection (or the socket died).
-	 * This fires when the server forcibly drops our connection, e.g. due to
-	 * a fatal GLX protocol error.  Log it before libc calls exit(). */
-	awm_error("X IO error: X server connection lost (fatal GLX/X protocol "
-	          "error likely); awm is exiting");
-	/* Xlib requires this handler to not return — call exit directly. */
-	exit(1);
-	return 0; /* unreachable, silences -Werror=return-type */
-}
-
 int
 main(int argc, char *argv[])
 {
+	int no_autostart = 0;
+
 	/* Initialize logging subsystem */
 	log_init("awm");
 
 	if (argc == 2 && !strcmp("-v", argv[1]))
 		die("awm-" VERSION);
+	else if (argc == 2 && !strcmp("-s", argv[1]))
+		no_autostart = 1;
 	else if (argc != 1)
-		die("usage: awm [-v]");
-	if (!setlocale(LC_CTYPE, "") || !XSupportsLocale())
+		die("usage: awm [-v] [-s]");
+	if (!setlocale(LC_CTYPE, ""))
 		fputs("warning: no locale support\n", stderr);
-	if (!(dpy = XOpenDisplay(NULL)))
-		die("awm: cannot open display");
-	XSetIOErrorHandler(xioerror);
+	xc = xcb_connect(NULL, &screen);
+	if (!xc || xcb_connection_has_error(xc))
+		die("awm: cannot open X display");
+	/* Initialise GTK on the same X display.  GTK uses the DISPLAY env var
+	 * which must already be set (awm opens xc successfully just above).
+	 * We force GDK_BACKEND=x11 so GTK doesn't pick Wayland when run inside
+	 * a nested session. */
+	unsetenv("WAYLAND_DISPLAY");
+	setenv("GDK_BACKEND", "x11", 1);
+	gtk_init(&argc, &argv);
 	checkotherwm();
-	XrmInitialize();
 	loadxrdb();
 	setup();
 #ifdef __OpenBSD__
@@ -612,7 +957,7 @@ main(int argc, char *argv[])
 		die("pledge");
 #endif /* __OpenBSD__ */
 	scan();
-	if (!restart && !getenv("RESTARTED"))
+	if (!no_autostart && !restart && !getenv("RESTARTED"))
 		runautostart();
 	/* Always re-apply Xresources after scan: on a fresh start
 	 * autostart_blocking.sh may have just run `xrdb -merge`; on an
@@ -623,6 +968,13 @@ main(int argc, char *argv[])
 	run();
 	if (restart) {
 		setenv("RESTARTED", "1", 1); /* overwrite=1: always update */
+		/* Terminate awm-ui before exec so the new awm image spawns a fresh
+		 * one.  cleanup() is skipped on restart so we must do this here.
+		 * SA_NOCLDWAIT means no waitpid needed. */
+		if (ui_pid > 0) {
+			kill(ui_pid, SIGTERM);
+			ui_pid = -1;
+		}
 #ifdef STATUSNOTIFIER
 		/* Release D-Bus name and connection before exec so the new process
 		 * image can claim org.kde.StatusNotifierWatcher immediately.
@@ -644,6 +996,6 @@ main(int argc, char *argv[])
 	}
 	cleanup();
 	log_cleanup();
-	XCloseDisplay(dpy);
+	xcb_disconnect(xc);
 	return EXIT_SUCCESS;
 }

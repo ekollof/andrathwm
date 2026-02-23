@@ -4,61 +4,56 @@
 
 #include "xsource.h"
 
-#include <X11/Xlib.h>
+#include <xcb/xcb.h>
 #include <glib.h>
+#include <gtk/gtk.h>
 
-/* GMainLoop to quit on X server death; set via xsource_set_quit_loop(). */
-static GMainLoop *xsource_quit_loop = NULL;
+/* Whether to call gtk_main_quit() (instead of exit) on X server death.
+ * Set to 1 via xsource_set_quit_loop(). */
+static int xsource_use_gtk_quit = 0;
 
 /* Internal structure — GSource must be the first member so that the
  * GLib vtable functions can cast between GSource* and XSource*. */
 struct XSource {
-	GSource  source;
-	Display *dpy;
-	GPollFD  pollfd;
+	GSource           source;
+	xcb_connection_t *xc;
+	GPollFD           pollfd;
 };
 
 /* -------------------------------------------------------------------------
  * GSource vtable
  * -------------------------------------------------------------------------
  * prepare:  check whether the source is immediately ready.
- *           Returns TRUE (and sets *timeout to 0) if X events are already
- *           buffered in the Xlib queue so we don't block in poll().
+ *           Returns FALSE — we rely on poll() to wake us when the X fd
+ *           becomes readable.  x_dispatch_cb drains all pending events
+ *           in one go, so there is no need to fast-path xcb_poll_for_event
+ *           here.
  */
 static gboolean
 xsource_prepare(GSource *src, gint *timeout)
 {
-	XSource *xs = (XSource *) src;
-
-	*timeout = -1; /* block indefinitely unless we have pending events */
-
-	if (XPending(xs->dpy)) {
-		*timeout = 0;
-		return TRUE;
-	}
+	(void) src;
+	*timeout = -1; /* block indefinitely */
 	return FALSE;
 }
 
 /*
  * check:  called after poll() returns; decide whether to dispatch.
- *         We dispatch if either the socket became readable, Xlib has
- *         already buffered events, or the connection has been lost
- *         (HUP/ERR), so we can handle X server death promptly.
+ *         We dispatch if the socket became readable or the connection
+ *         has been lost (HUP/ERR), so we can handle X server death promptly.
  */
 static gboolean
 xsource_check(GSource *src)
 {
 	XSource *xs = (XSource *) src;
 
-	return (xs->pollfd.revents & (G_IO_IN | G_IO_HUP | G_IO_ERR)) ||
-	    XPending(xs->dpy);
+	return (xs->pollfd.revents & (G_IO_IN | G_IO_HUP | G_IO_ERR)) != 0;
 }
 
 /*
  * dispatch:  invoke the user callback.
- *            If the X connection has been lost (HUP or ERR), exit
- *            immediately — the Display is non-recoverable and continuing
- *            would deadlock inside Xlib.
+ *            If the X connection has been lost (HUP or ERR), quit or exit —
+ *            the connection is non-recoverable.
  *            The callback receives the user_data pointer; returning
  *            G_SOURCE_REMOVE unregisters the source, G_SOURCE_CONTINUE
  *            keeps it alive (normal case).
@@ -69,9 +64,9 @@ xsource_dispatch(GSource *src, GSourceFunc callback, gpointer user_data)
 	XSource *xs = (XSource *) src;
 
 	if (xs->pollfd.revents & (G_IO_HUP | G_IO_ERR)) {
-		if (xsource_quit_loop) {
-			/* Quit cleanly so cleanup() and XCloseDisplay() can run. */
-			g_main_loop_quit(xsource_quit_loop);
+		if (xsource_use_gtk_quit) {
+			/* Quit cleanly so cleanup() and xcb_disconnect() can run. */
+			gtk_main_quit();
 			return G_SOURCE_REMOVE;
 		}
 		exit(1);
@@ -97,7 +92,7 @@ static GSourceFuncs xsource_funcs = {
  * ------------------------------------------------------------------------- */
 
 GSource *
-xsource_new(Display *dpy, GSourceFunc callback, gpointer user_data)
+xsource_new(xcb_connection_t *xc, GSourceFunc callback, gpointer user_data)
 {
 	GSource *src;
 	XSource *xs;
@@ -105,8 +100,8 @@ xsource_new(Display *dpy, GSourceFunc callback, gpointer user_data)
 	src = g_source_new(&xsource_funcs, sizeof(XSource));
 	xs  = (XSource *) src;
 
-	xs->dpy            = dpy;
-	xs->pollfd.fd      = ConnectionNumber(dpy);
+	xs->xc             = xc;
+	xs->pollfd.fd      = xcb_get_file_descriptor(xc);
 	xs->pollfd.events  = G_IO_IN | G_IO_HUP | G_IO_ERR;
 	xs->pollfd.revents = 0;
 
@@ -117,13 +112,13 @@ xsource_new(Display *dpy, GSourceFunc callback, gpointer user_data)
 }
 
 guint
-xsource_attach(
-    Display *dpy, GMainContext *ctx, GSourceFunc callback, gpointer user_data)
+xsource_attach(xcb_connection_t *xc, GMainContext *ctx, GSourceFunc callback,
+    gpointer user_data)
 {
 	GSource *src;
 	guint    id;
 
-	src = xsource_new(dpy, callback, user_data);
+	src = xsource_new(xc, callback, user_data);
 	id  = g_source_attach(src, ctx);
 	g_source_unref(src);
 
@@ -131,7 +126,7 @@ xsource_attach(
 }
 
 void
-xsource_set_quit_loop(GMainLoop *loop)
+xsource_use_gtk_main_quit(void)
 {
-	xsource_quit_loop = loop;
+	xsource_use_gtk_quit = 1;
 }

@@ -4,16 +4,11 @@
 #ifndef AWM_H
 #define AWM_H
 
-#include <X11/X.h>
-#include <X11/Xatom.h>
-#include <X11/Xft/Xft.h>
-#include <X11/Xlib.h>
-#include <X11/Xlib-xcb.h>
-#include <X11/Xproto.h>
-#include <X11/Xresource.h>
-#include <X11/Xutil.h>
-#include <X11/cursorfont.h>
-#include <X11/keysym.h>
+#include "x11_constants.h"
+#include <xkbcommon/xkbcommon-keysyms.h>
+#include <xcb/randr.h>
+#include <xcb/xcb_icccm.h>
+#include <xcb/xcb_keysyms.h>
 #include <cairo/cairo.h>
 #include <errno.h>
 #include <glib.h>
@@ -28,19 +23,15 @@
 #include <syslog.h>
 #include <unistd.h>
 #ifdef XINERAMA
-#include <X11/extensions/Xinerama.h>
+/* <X11/extensions/Xinerama.h> removed — xcb-xinerama used exclusively */
+#include <xcb/xinerama.h>
 #endif /* XINERAMA */
 #ifdef XRANDR
-#include <X11/extensions/Xrandr.h>
+/* <X11/extensions/Xrandr.h> removed — XCB randr used exclusively */
 #endif /* XRANDR */
-#ifdef XSS
-#include <X11/extensions/scrnsaver.h>
-#endif /* XSS */
 #ifdef COMPOSITOR
-#include <X11/extensions/Xcomposite.h>
-#include <X11/extensions/Xdamage.h>
-#include <X11/extensions/Xfixes.h>
-#include <X11/extensions/Xrender.h>
+/* XComposite/XDamage/XFixes/XRender Xlib headers removed — compositor.c
+ * uses pure XCB (xcb/composite.h, xcb/damage.h, xcb/xfixes.h, xcb/render.h) */
 #endif /* COMPOSITOR */
 #ifdef STATUSNOTIFIER
 #include "sni.h"
@@ -52,22 +43,28 @@
 #include "util.h"
 
 /* macros */
-#define BUTTONMASK (ButtonPressMask | ButtonReleaseMask)
-#define CLEANMASK(mask)                                             \
-	(mask & ~(numlockmask | LockMask) &                             \
-	    (ShiftMask | ControlMask | Mod1Mask | Mod2Mask | Mod3Mask | \
-	        Mod4Mask | Mod5Mask))
+#define BUTTONMASK \
+	(XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE)
+#define CLEANMASK(mask)                                               \
+	(mask & ~(numlockmask | XCB_MOD_MASK_LOCK) &                      \
+	    (XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_CONTROL | XCB_MOD_MASK_1 | \
+	        XCB_MOD_MASK_2 | XCB_MOD_MASK_3 | XCB_MOD_MASK_4 |        \
+	        XCB_MOD_MASK_5))
 #define INTERSECT(x, y, w, h, m)                                     \
 	(MAX(0, MIN((x) + (w), (m)->wx + (m)->ww) - MAX((x), (m)->wx)) * \
 	    MAX(0, MIN((y) + (h), (m)->wy + (m)->wh) - MAX((y), (m)->wy)))
 #define ISVISIBLE(C, M) ((C->tags & M->tagset[M->seltags]))
 #define LENGTH(X) (sizeof X / sizeof X[0])
-#define MOUSEMASK (BUTTONMASK | PointerMotionMask)
+#define MOUSEMASK (BUTTONMASK | XCB_EVENT_MASK_POINTER_MOTION)
 #define WIDTH(X) ((X)->w + 2 * (X)->bw)
 #define HEIGHT(X) ((X)->h + 2 * (X)->bw)
 #define TAGMASK ((1 << LENGTH(tags)) - 1)
 #define TAGSLENGTH (LENGTH(tags))
 #define TEXTW(X) (drw_fontset_getwidth(drw, (X)) + lrpad)
+
+/* Flush the X request buffer without a round-trip.
+ * Prefer this over XSync(dpy, False) wherever error-draining is not needed. */
+#define xflush() xcb_flush(xc)
 
 #define STATUS_TEXT_LEN 512
 
@@ -79,29 +76,6 @@
 #define XEMBED_EMBEDDED_NOTIFY 0
 #define XEMBED_MAPPED (1 << 0)
 #define XEMBED_VERSION 0
-
-/* XRDB color loading helper */
-#define XRDB_LOAD_COLOR(R, V)                                    \
-	if (XrmGetResource(xrdb, R, NULL, &type, &value) == True) {  \
-		if (value.addr != NULL && strnlen(value.addr, 8) == 7 && \
-		    value.addr[0] == '#') {                              \
-			int i = 1;                                           \
-			for (; i <= 6; i++) {                                \
-				if (value.addr[i] < 48)                          \
-					break;                                       \
-				if (value.addr[i] > 57 && value.addr[i] < 65)    \
-					break;                                       \
-				if (value.addr[i] > 70 && value.addr[i] < 97)    \
-					break;                                       \
-				if (value.addr[i] > 102)                         \
-					break;                                       \
-			}                                                    \
-			if (i == 7) {                                        \
-				strncpy(V, value.addr, 7);                       \
-				V[7] = '\0';                                     \
-			}                                                    \
-		}                                                        \
-	}
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
@@ -127,6 +101,10 @@ enum {
 	NetActiveWindow,
 	NetWMWindowType,
 	NetWMWindowTypeDialog,
+	NetWMWindowTypeDock,
+	NetWMWindowTypeToolbar,
+	NetWMWindowTypeUtility,
+	NetWMWindowTypeSplash,
 	NetClientList,
 	NetClientListStacking,
 	NetWMDesktop,
@@ -191,16 +169,16 @@ struct Client {
 	unsigned int tags;
 	int isfixed, iscentered, isfloating, isurgent, neverfocus, oldstate,
 	    isfullscreen;
-	int      ishidden;
-	int      issteam;
-	int      issni;
-	char     scratchkey;
-	double   opacity;           /* compositing opacity 0.0–1.0 */
-	int      bypass_compositor; /* _NET_WM_BYPASS_COMPOSITOR hint */
-	Client  *next;
-	Client  *snext;
-	Monitor *mon;
-	Window   win;
+	int          ishidden;
+	int          issteam;
+	int          issni;
+	char         scratchkey;
+	double       opacity;           /* compositing opacity 0.0–1.0 */
+	int          bypass_compositor; /* _NET_WM_BYPASS_COMPOSITOR hint */
+	Client      *next;
+	Client      *snext;
+	Monitor     *mon;
+	xcb_window_t win;
 };
 
 #ifdef COMPOSITOR
@@ -254,7 +232,7 @@ struct Monitor {
 	Client       *sel;
 	Client       *stack;
 	Monitor      *next;
-	Window        barwin;
+	xcb_window_t  barwin;
 	const Layout *lt[2];
 	Pertag       *pertag;
 };
@@ -278,32 +256,37 @@ struct Clientlist {
 
 typedef struct Systray Systray;
 struct Systray {
-	Window   win;
-	Client  *icons;
-	Visual  *visual;   /* 32-bit ARGB visual for the container window */
-	Colormap colormap; /* colormap matching visual */
+	xcb_window_t   win;
+	Client        *icons;
+	xcb_visualid_t visual_id; /* 32-bit ARGB visual XID (0 = default) */
+	xcb_colormap_t colormap;  /* colormap matching visual_id */
 };
 
 /* extern globals — defined in awm.c */
-extern Display     *dpy;
-extern Window       root, wmcheckwin;
-extern int          screen;
-extern int          sw, sh;
-extern int          bh;
-extern int          lrpad;
-extern Drw         *drw;
-extern Clr        **scheme;
-extern Cur         *cursor[CurLast];
-extern Monitor     *mons, *selmon;
-extern Clientlist  *cl;
-extern Systray     *systray;
-extern Atom         wmatom[WMLast], netatom[NetLast], xatom[XLast];
-extern char         stext[STATUS_TEXT_LEN];
-extern int          restart;
-extern int          barsdirty;
+extern xcb_connection_t *xc;
+extern xcb_window_t      root, wmcheckwin;
+extern int               screen;
+extern int               sw, sh;
+extern int               bh;
+extern int               lrpad;
+extern Drw              *drw;
+extern Clr             **scheme;
+extern Cur              *cursor[CurLast];
+extern Monitor          *mons, *selmon;
+extern Clientlist       *cl;
+extern Systray          *systray;
+extern xcb_atom_t        wmatom[WMLast], netatom[NetLast], xatom[XLast];
+extern xcb_atom_t        utf8string_atom;
+extern char              stext[STATUS_TEXT_LEN];
+extern int               restart;
+extern int               barsdirty;
+extern int launcher_visible; /* 1 while launcher window is open */
+extern xcb_window_t
+    launcher_xwin; /* X window ID of the launcher (from LAUNCHER_READY) */
 extern unsigned int numlockmask;
-extern int (*xerrorxlib)(Display *, XErrorEvent *);
-extern Time last_event_time; /* timestamp of the most recent user event */
+extern xcb_timestamp_t
+    last_event_time; /* timestamp of the most recent user event */
+extern xcb_key_symbols_t *keysyms;
 /* config-derived globals referenced by dbus.c / icon.c */
 extern const unsigned int sniconsize;
 extern const unsigned int iconcachesize;
@@ -312,7 +295,29 @@ extern const unsigned int dbustimeout;
 #ifdef XRANDR
 extern int randrbase, rrerrbase;
 #endif
-extern void (*handler[LASTEvent])(XEvent *);
+extern void (*handler[LASTEvent])(xcb_generic_event_t *);
+
+/* Return the root_visual of screen number scr_num from an XCB connection.
+ * Replaces XVisualIDFromVisual(DefaultVisual(dpy, screen)) everywhere. */
+static inline xcb_visualid_t
+xcb_screen_root_visual(xcb_connection_t *xc, int scr_num)
+{
+	xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(xc));
+	for (int i = 0; i < scr_num; i++)
+		xcb_screen_next(&it);
+	return it.data->root_visual;
+}
+
+/* Return the root depth (bits-per-pixel) of screen number scr_num.
+ * Replaces DefaultDepth(dpy, screen) everywhere. */
+static inline uint8_t
+xcb_screen_root_depth(xcb_connection_t *xc, int scr_num)
+{
+	xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(xc));
+	for (int i = 0; i < scr_num; i++)
+		xcb_screen_next(&it);
+	return it.data->root_depth;
+}
 
 /* core WM functions (defined in awm.c) */
 void quit(const Arg *arg);

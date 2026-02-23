@@ -1,241 +1,140 @@
 /* See LICENSE file for copyright and license details.
  *
- * Reusable menu system for awm
+ * Reusable menu system for awm — GTK backend
+ *
+ * Provides GTK-based popup menus with keyboard and mouse support.
+ * All XCB dependencies have been removed; xcb_timestamp_t is typedef'd as
+ * uint32_t in menu.h for the event_time parameter used by menu_show().
  */
 
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
-#include <X11/keysym.h>
-#ifdef XINERAMA
-#include <X11/extensions/Xinerama.h>
-#endif
-#ifdef XRANDR
-#include <X11/extensions/Xrandr.h>
-#endif
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
-#include "drw.h"
+#include <gtk/gtk.h>
+#include <gdk/gdkx.h>
+
 #include "log.h"
 #include "menu.h"
 
-#define MENU_ITEM_HEIGHT 22
-#define MENU_PADDING 4
-#define MENU_MIN_WIDTH 150
-#define SEPARATOR_HEIGHT 8
-#define MENU_TOGGLE_COL 16 /* width reserved for toggle indicator */
+/* -------------------------------------------------------------------------
+ * Internal helpers
+ * ---------------------------------------------------------------------- */
 
-/* Internal helper to calculate menu dimensions */
+/* Data passed to each GtkMenuItem "activate" signal handler */
+typedef struct {
+	Menu *menu;
+	int   item_id;
+} MenuItemData;
+
 static void
-menu_calculate_size(Menu *menu)
+on_item_activate(GtkMenuItem *widget, gpointer user_data)
 {
-	MenuItem    *item;
-	unsigned int maxw       = MENU_MIN_WIDTH;
-	unsigned int totalh     = MENU_PADDING * 2;
-	int          count      = 0;
-	int          has_toggle = 0;
+	MenuItemData *d = (MenuItemData *) user_data;
+	(void) widget;
 
-	for (item = menu->items; item; item = item->next) {
-		if (!item->is_separator && item->toggle_type != MENU_TOGGLE_NONE)
-			has_toggle = 1;
-	}
+	if (d->menu->callback)
+		d->menu->callback(d->item_id, d->menu->callback_data);
+}
 
-	for (item = menu->items; item; item = item->next) {
+/* Build a GtkMenu from a linked list of MenuItem.
+ * Returns the new GtkWidget* (a GtkMenu), or NULL on empty list. */
+static GtkWidget *
+build_gtk_menu(Menu *menu, MenuItem *items)
+{
+	MenuItem  *item;
+	GtkWidget *gmenu;
+	GSList    *radio_group = NULL;
+
+	if (!items)
+		return NULL;
+
+	gmenu = gtk_menu_new();
+
+	for (item = items; item; item = item->next) {
+		GtkWidget *gitem = NULL;
+
 		if (item->is_separator) {
-			totalh += SEPARATOR_HEIGHT;
-		} else if (item->label) {
-			unsigned int w = drw_fontset_getwidth(menu->drw, item->label);
-			if (has_toggle)
-				w += MENU_TOGGLE_COL;
-			if (w > maxw)
-				maxw = w;
-			totalh += MENU_ITEM_HEIGHT;
-			count++;
+			gitem = gtk_separator_menu_item_new();
+		} else if (!item->label) {
+			continue;
+		} else if (item->toggle_type == MENU_TOGGLE_RADIO) {
+			gitem =
+			    gtk_radio_menu_item_new_with_label(radio_group, item->label);
+			radio_group =
+			    gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(gitem));
+			gtk_check_menu_item_set_active(
+			    GTK_CHECK_MENU_ITEM(gitem), item->toggle_state);
+		} else if (item->toggle_type == MENU_TOGGLE_CHECKMARK) {
+			radio_group = NULL;
+			gitem       = gtk_check_menu_item_new_with_label(item->label);
+			gtk_check_menu_item_set_active(
+			    GTK_CHECK_MENU_ITEM(gitem), item->toggle_state);
+		} else {
+			radio_group = NULL;
+			gitem       = gtk_menu_item_new_with_label(item->label);
 		}
+
+		if (!item->enabled)
+			gtk_widget_set_sensitive(gitem, FALSE);
+
+		/* Attach submenu recursively */
+		if (item->submenu && !item->is_separator) {
+			GtkWidget *sub = build_gtk_menu(menu, item->submenu);
+			if (sub)
+				gtk_menu_item_set_submenu(GTK_MENU_ITEM(gitem), sub);
+		}
+
+		/* Connect activate signal for leaf items (no submenu) */
+		if (!item->is_separator && !item->submenu && item->enabled) {
+			MenuItemData *d = g_new(MenuItemData, 1);
+			d->menu         = menu;
+			d->item_id      = item->id;
+			g_signal_connect_data(gitem, "activate",
+			    G_CALLBACK(on_item_activate), d, (GClosureNotify) g_free,
+			    (GConnectFlags) 0);
+		}
+
+		gtk_menu_shell_append(GTK_MENU_SHELL(gmenu), gitem);
 	}
 
-	menu->w          = maxw + MENU_PADDING * 4;
-	menu->h          = totalh;
-	menu->item_count = count;
+	gtk_widget_show_all(gmenu);
+	return gmenu;
 }
 
-/* Determine if submenu should open to the right (1) or left (0) */
-static int
-menu_submenu_opens_right(Menu *menu, MenuItem *item)
-{
-	unsigned int submenu_w;
-	MenuItem    *subitem;
-
-	if (!item || !item->submenu)
-		return 1;
-
-	/* Calculate submenu width */
-	submenu_w = MENU_MIN_WIDTH;
-	for (subitem = item->submenu; subitem; subitem = subitem->next) {
-		if (subitem->label && *subitem->label) {
-			unsigned int w = drw_fontset_getwidth(menu->drw, subitem->label);
-			if (w > submenu_w)
-				submenu_w = w;
-		}
-	}
-	submenu_w += MENU_PADDING * 4;
-
-	/* Check if there's space on the right */
-	if (menu->x + menu->w + submenu_w <= menu->mon_x + menu->mon_w)
-		return 1; /* Open to the right */
-
-	/* Check if there's space on the left */
-	if (menu->x - submenu_w >= menu->mon_x)
-		return 0; /* Open to the left */
-
-	/* Default to right if neither fits well */
-	return 1;
-}
-
-/* Render the menu */
+/* Called when the GtkMenu is deactivated (dismissed by any means) */
 static void
-menu_render(Menu *menu)
+on_menu_deactivate(GtkMenuShell *shell, gpointer user_data)
 {
-	MenuItem *item;
-	int       y          = MENU_PADDING;
-	int       idx        = 0;
-	int       has_toggle = 0;
+	Menu *menu = (Menu *) user_data;
+	(void) shell;
+	awm_debug("menu: on_menu_deactivate fired");
+	menu->visible = 0;
 
-	if (!menu->drw || !menu->scheme)
-		return;
-
-	/* Check if any item has a toggle type (determines left-column layout) */
-	for (item = menu->items; item; item = item->next) {
-		if (!item->is_separator && item->toggle_type != MENU_TOGGLE_NONE) {
-			has_toggle = 1;
-			break;
-		}
-	}
-
-	/* Ensure drawable is large enough for menu */
-	if (menu->drw->w < menu->w || menu->drw->h < menu->h)
-		drw_resize(menu->drw, menu->w, menu->h);
-
-	/* Draw background */
-	drw_setscheme(menu->drw, menu->scheme[0]); /* SchemeNorm */
-	drw_rect(menu->drw, 0, 0, menu->w, menu->h, 1, 0);
-
-	/* Draw items */
-	for (item = menu->items; item; item = item->next) {
-		if (item->is_separator) {
-			/* Draw separator line */
-			drw_setscheme(menu->drw, menu->scheme[0]);
-			drw_rect(menu->drw, MENU_PADDING, y + SEPARATOR_HEIGHT / 2 - 1,
-			    menu->w - MENU_PADDING * 2, 1, 1, 0);
-			y += SEPARATOR_HEIGHT;
-		} else if (item->label) {
-			int is_selected = (idx == menu->selected);
-			int text_x      = MENU_PADDING * 2;
-			int text_w      = menu->w - MENU_PADDING * 4;
-
-			/* Draw item background */
-			if (is_selected && item->enabled) {
-				drw_setscheme(menu->drw, menu->scheme[1]); /* SchemeSel */
-			} else {
-				drw_setscheme(menu->drw, menu->scheme[0]); /* SchemeNorm */
-			}
-			drw_rect(menu->drw, 0, y, menu->w, MENU_ITEM_HEIGHT, 1, 0);
-
-			/* Draw toggle indicator in the left gutter */
-			if (has_toggle) {
-				const char *glyph = NULL;
-				if (item->toggle_type == MENU_TOGGLE_CHECKMARK)
-					glyph = item->toggle_state ? "✓" : " ";
-				else if (item->toggle_type == MENU_TOGGLE_RADIO)
-					glyph = item->toggle_state ? "●" : "○";
-				if (glyph && glyph[0] != ' ')
-					drw_text(menu->drw, MENU_PADDING, y, MENU_TOGGLE_COL,
-					    MENU_ITEM_HEIGHT, 0, glyph, !item->enabled);
-				text_x = MENU_PADDING + MENU_TOGGLE_COL;
-				text_w = menu->w - text_x - MENU_PADDING * 2;
-			}
-
-			/* Draw item text */
-			drw_text(menu->drw, text_x, y, text_w, MENU_ITEM_HEIGHT, 0,
-			    item->label, !item->enabled);
-
-			/* Draw submenu indicator if item has submenu */
-			if (item->submenu) {
-				const char *arrow =
-				    menu_submenu_opens_right(menu, item) ? "►" : "◄";
-				drw_text(menu->drw, menu->w - MENU_PADDING * 3, y,
-				    MENU_PADDING * 2, MENU_ITEM_HEIGHT, 0, arrow,
-				    !item->enabled);
-			}
-
-			/* Draw item text */
-			drw_text(menu->drw, text_x, y, text_w, MENU_ITEM_HEIGHT, 0,
-			    item->label, !item->enabled);
-
-			/* Draw submenu indicator if item has submenu */
-			if (item->submenu) {
-				const char *arrow = menu_submenu_opens_right(menu, item)
-				    ? "\xe2\x96\xba"
-				    : "\xe2\x97\x84";
-				drw_text(menu->drw, menu->w - MENU_PADDING * 3, y,
-				    MENU_PADDING * 2, MENU_ITEM_HEIGHT, 0, arrow,
-				    !item->enabled);
-			}
-
-			y += MENU_ITEM_HEIGHT;
-			idx++;
-		}
-	}
-
-	drw_map(menu->drw, menu->win, 0, 0, menu->w, menu->h);
+	if (menu->dismiss_callback)
+		menu->dismiss_callback(menu->dismiss_data);
 }
 
-/* Create menu */
+/* -------------------------------------------------------------------------
+ * Public API
+ * ---------------------------------------------------------------------- */
+
 Menu *
-menu_create(Display *dpy, Window root, Drw *drw, Clr **scheme)
+menu_create(void)
 {
-	Menu                *menu;
-	XSetWindowAttributes wa;
+	Menu *menu;
 
 	menu = calloc(1, sizeof(Menu));
 	if (!menu)
 		return NULL;
 
-	menu->dpy                 = dpy;
-	menu->drw                 = drw;
-	menu->scheme              = scheme;
-	menu->items               = NULL;
-	menu->item_count          = 0;
-	menu->owns_items          = 1; /* By default, menu owns its items */
-	menu->selected            = -1;
-	menu->visible             = 0;
-	menu->ignore_next_release = 0;
-	menu->parent              = NULL;
-	menu->active_submenu      = NULL;
-	menu->w                   = MENU_MIN_WIDTH;
-	menu->h                   = 100;
-
-	/* Create override-redirect window */
-	wa.override_redirect = True;
-	wa.background_pixel  = 0;
-	wa.border_pixel      = 0;
-	wa.colormap          = DefaultColormap(dpy, DefaultScreen(dpy));
-	wa.event_mask        = ExposureMask | KeyPressMask | ButtonPressMask |
-	    ButtonReleaseMask | PointerMotionMask | LeaveWindowMask |
-	    FocusChangeMask;
-
-	menu->win = XCreateWindow(dpy, root, 0, 0, menu->w, menu->h, 1,
-	    DefaultDepth(dpy, DefaultScreen(dpy)), CopyFromParent,
-	    DefaultVisual(dpy, DefaultScreen(dpy)),
-	    CWOverrideRedirect | CWBackPixel | CWBorderPixel | CWColormap |
-	        CWEventMask,
-	    &wa);
+	menu->owns_items = 1;
+	menu->visible    = 0;
+	menu->gtk_menu   = NULL;
 
 	return menu;
 }
 
-/* Free menu */
 void
 menu_free(Menu *menu)
 {
@@ -245,16 +144,22 @@ menu_free(Menu *menu)
 	if (menu->visible)
 		menu_hide(menu);
 
+	if (menu->gtk_menu) {
+		if (menu->deactivate_handler) {
+			g_signal_handler_disconnect(
+			    menu->gtk_menu, menu->deactivate_handler);
+			menu->deactivate_handler = 0;
+		}
+		gtk_widget_destroy(menu->gtk_menu);
+		menu->gtk_menu = NULL;
+	}
+
 	if (menu->owns_items && menu->items)
 		menu_items_free(menu->items);
-
-	if (menu->win)
-		XDestroyWindow(menu->dpy, menu->win);
 
 	free(menu);
 }
 
-/* Set menu items */
 void
 menu_set_items(Menu *menu, MenuItem *items)
 {
@@ -264,484 +169,126 @@ menu_set_items(Menu *menu, MenuItem *items)
 	if (menu->owns_items && menu->items)
 		menu_items_free(menu->items);
 
-	menu->items    = items;
-	menu->selected = -1;
-	menu_calculate_size(menu);
+	menu->items = items;
+
+	/* Destroy old GTK menu so it gets rebuilt fresh on next show */
+	if (menu->gtk_menu) {
+		if (menu->deactivate_handler) {
+			g_signal_handler_disconnect(
+			    menu->gtk_menu, menu->deactivate_handler);
+			menu->deactivate_handler = 0;
+		}
+		gtk_widget_destroy(menu->gtk_menu);
+		menu->gtk_menu = NULL;
+	}
 }
 
-/* Get monitor geometry containing point (x, y) */
-static void
-menu_get_monitor_geometry(
-    Display *dpy, int x, int y, int *mon_x, int *mon_y, int *mon_w, int *mon_h)
-{
-	/* Default to full display */
-	*mon_x = 0;
-	*mon_y = 0;
-	*mon_w = DisplayWidth(dpy, DefaultScreen(dpy));
-	*mon_h = DisplayHeight(dpy, DefaultScreen(dpy));
-
-#ifdef XRANDR
-	{
-		int                 randr_event, randr_error;
-		XRRScreenResources *sr;
-		int                 i;
-
-		if (XRRQueryExtension(dpy, &randr_event, &randr_error) &&
-		    (sr = XRRGetScreenResources(dpy, DefaultRootWindow(dpy)))) {
-			int found = 0;
-
-			for (i = 0; i < sr->ncrtc && !found; i++) {
-				XRRCrtcInfo *ci = XRRGetCrtcInfo(dpy, sr, sr->crtcs[i]);
-				if (!ci)
-					continue;
-				if (ci->noutput > 0 && x >= ci->x &&
-				    x < (int) (ci->x + ci->width) && y >= ci->y &&
-				    y < (int) (ci->y + ci->height)) {
-					*mon_x = ci->x;
-					*mon_y = ci->y;
-					*mon_w = ci->width;
-					*mon_h = ci->height;
-					found  = 1;
-				}
-				XRRFreeCrtcInfo(ci);
-			}
-
-			if (!found) {
-				/* Point not in any CRTC — use first active one */
-				for (i = 0; i < sr->ncrtc && !found; i++) {
-					XRRCrtcInfo *ci = XRRGetCrtcInfo(dpy, sr, sr->crtcs[i]);
-					if (!ci)
-						continue;
-					if (ci->noutput > 0) {
-						*mon_x = ci->x;
-						*mon_y = ci->y;
-						*mon_w = ci->width;
-						*mon_h = ci->height;
-						found  = 1;
-					}
-					XRRFreeCrtcInfo(ci);
-				}
-			}
-
-			XRRFreeScreenResources(sr);
-			if (found)
-				return;
-		}
-	}
-#endif /* XRANDR */
-
-#ifdef XINERAMA
-	{
-		XineramaScreenInfo *screens;
-		int                 nscreens, i;
-		int                 found = 0;
-
-		if (XineramaIsActive(dpy) &&
-		    (screens = XineramaQueryScreens(dpy, &nscreens))) {
-			for (i = 0; i < nscreens; i++) {
-				if (x >= screens[i].x_org &&
-				    x < screens[i].x_org + screens[i].width &&
-				    y >= screens[i].y_org &&
-				    y < screens[i].y_org + screens[i].height) {
-					*mon_x = screens[i].x_org;
-					*mon_y = screens[i].y_org;
-					*mon_w = screens[i].width;
-					*mon_h = screens[i].height;
-					found  = 1;
-					break;
-				}
-			}
-			if (!found && nscreens > 0) {
-				*mon_x = screens[0].x_org;
-				*mon_y = screens[0].y_org;
-				*mon_w = screens[0].width;
-				*mon_h = screens[0].height;
-			}
-			XFree(screens);
-		}
-	}
-#else
-	(void) x;
-	(void) y;
-#endif /* XINERAMA */
-}
-
-/* Show menu at coordinates */
 void
 menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
-    Time event_time)
+    xcb_timestamp_t event_time)
 {
-	int mon_x, mon_y, mon_w, mon_h;
-
 	if (!menu || !menu->items)
 		return;
+
+	awm_debug("menu_show: x=%d y=%d", x, y);
 
 	menu->callback      = callback;
 	menu->callback_data = data;
 
-	/* Recalculate size in case items changed */
-	menu_calculate_size(menu);
-
-	/* Get monitor geometry containing the click point */
-	menu_get_monitor_geometry(menu->dpy, x, y, &mon_x, &mon_y, &mon_w, &mon_h);
-
-	/* Store monitor bounds for submenu positioning */
-	menu->mon_x = mon_x;
-	menu->mon_y = mon_y;
-	menu->mon_w = mon_w;
-	menu->mon_h = mon_h;
-
-	menu->x = x;
-	menu->y = y;
-
-	awm_debug("Menu: Initial pos (%d,%d) size %ux%u, monitor [%d,%d %dx%d]", x,
-	    y, menu->w, menu->h, mon_x, mon_y, mon_w, mon_h);
-
-	/* Ensure menu fits within monitor bounds */
-	if (menu->x + menu->w > mon_x + mon_w)
-		menu->x = mon_x + mon_w - menu->w;
-	if (menu->y + menu->h > mon_y + mon_h)
-		menu->y = mon_y + mon_h - menu->h;
-	if (menu->x < mon_x)
-		menu->x = mon_x;
-	if (menu->y < mon_y)
-		menu->y = mon_y;
-
-	awm_debug("Menu: Adjusted pos (%d,%d)", menu->x, menu->y);
-
-	/* Position and show window */
-	XMoveResizeWindow(
-	    menu->dpy, menu->win, menu->x, menu->y, menu->w, menu->h);
-	XMapRaised(menu->dpy, menu->win);
-
-	/* Process expose to render before grab */
-	XSync(menu->dpy, False);
-
-	menu->visible             = 1;
-	menu->ignore_next_release = 1; /* Ignore the pending ButtonRelease */
-	menu_render(menu);
-
-	/* Ungrab any existing pointer grab (e.g. from Electron) using the
-	 * original event timestamp, then immediately re-grab.  Qt and GTK
-	 * use exactly this approach: issuing a new XCB_GRAB_MODE_ASYNC grab
-	 * with the triggering event's timestamp steals the grab from whoever
-	 * held it (the async/async combination is key — it replaces another
-	 * client's async grab).  Using CurrentTime here would fail with
-	 * AlreadyGrabbed because X11 rejects a grab that pre-dates the
-	 * existing one. */
-	XUngrabPointer(menu->dpy, event_time);
-	XSync(menu->dpy, False);
-	{
-		int grab_result = XGrabPointer(menu->dpy, menu->win, False,
-		    ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
-		    GrabModeAsync, GrabModeAsync, None, None, event_time);
-		if (grab_result != GrabSuccess)
-			awm_warn("Menu: Failed to grab pointer (result=%d)", grab_result);
+	/* (Re)build the GTK widget tree from the MenuItem list. */
+	if (menu->gtk_menu) {
+		if (menu->visible)
+			gtk_menu_popdown(GTK_MENU(menu->gtk_menu));
+		if (menu->deactivate_handler) {
+			g_signal_handler_disconnect(
+			    menu->gtk_menu, menu->deactivate_handler);
+			menu->deactivate_handler = 0;
+		}
+		gtk_widget_destroy(menu->gtk_menu);
+		menu->gtk_menu = NULL;
 	}
 
-	{
-		int key_grab = XGrabKeyboard(menu->dpy, menu->win, True, GrabModeAsync,
-		    GrabModeAsync, event_time);
-		if (key_grab != GrabSuccess)
-			awm_warn("Menu: Failed to grab keyboard (result=%d)", key_grab);
-	}
-}
-
-/* Show submenu for a menu item */
-static void
-menu_show_submenu(Menu *parent, MenuItem *item, int item_y)
-{
-	Menu *submenu;
-	int   sub_x, sub_y;
-
-	if (!parent || !item || !item->submenu)
+	menu->gtk_menu = build_gtk_menu(menu, menu->items);
+	if (!menu->gtk_menu)
 		return;
 
-	/* Close any existing submenu */
-	if (parent->active_submenu) {
-		menu_hide(parent->active_submenu);
-		menu_free(parent->active_submenu);
-		parent->active_submenu = NULL;
+	menu->deactivate_handler = g_signal_connect(
+	    menu->gtk_menu, "deactivate", G_CALLBACK(on_menu_deactivate), menu);
+
+	menu->visible = 1;
+
+	/* Popup the GtkMenu.
+	 *
+	 * We do NOT call gdk_seat_grab() ourselves — GTK does it internally
+	 * inside gtk_menu_popup_at_pointer().  Calling it beforehand causes
+	 * GDK_GRAB_ALREADY_GRABBED because GTK registers passive XGrabButton
+	 * handlers on every mapped GdkWindow (including our grab_win), and an
+	 * explicit active gdk_seat_grab() on the same window triggers the
+	 * AlreadyGrabbed error from the X server.
+	 *
+	 * We use:
+	 *  - timing_win for gdk_x11_get_server_time (PropertyNotify round-trip)
+	 *    to obtain a fresh server timestamp
+	 *  - grab_win as ev->button.window — GTK passes this to its internal
+	 *    gdk_seat_grab() call so it must be a viewable (mapped) window
+	 */
+	{
+		GdkDisplay *dpy  = gtk_widget_get_display(menu->gtk_menu);
+		GdkSeat    *seat = gdk_display_get_default_seat(dpy);
+		GdkDevice  *ptr  = gdk_seat_get_pointer(seat);
+		GdkWindow  *twin = menu->timing_win;
+		GdkWindow  *gwin = menu->grab_win ? menu->grab_win : twin;
+		guint32     ts =
+            twin ? gdk_x11_get_server_time(twin) : (guint32) event_time;
+
+		awm_debug("menu_show: ts=%u twin=%p gwin=%p", ts, (void *) twin,
+		    (void *) gwin);
+
+		/* Ungrab any stale GDK grab left by a previous failed popup
+		 * (e.g. GTK's internal grab-transfer-window).  Do NOT probe with
+		 * an explicit gdk_seat_grab — see comment above. */
+		gdk_seat_ungrab(seat);
+		gdk_display_flush(dpy);
+
+		GdkEvent *ev      = gdk_event_new(GDK_BUTTON_PRESS);
+		ev->button.time   = ts;
+		ev->button.button = 3;
+		ev->button.window = gwin ? g_object_ref(gwin) : NULL;
+		gdk_event_set_device(ev, ptr);
+		gtk_menu_popup_at_pointer(GTK_MENU(menu->gtk_menu), ev);
+		gdk_event_free(ev);
+
+		gdk_display_flush(dpy);
 	}
 
-	/* Create new submenu */
-	submenu = menu_create(parent->dpy, DefaultRootWindow(parent->dpy),
-	    parent->drw, parent->scheme);
-	if (!submenu)
-		return;
-
-	/* Set up submenu */
-	submenu->parent     = parent;
-	submenu->owns_items = 0; /* Submenu items are owned by parent MenuItem */
-	submenu->mon_x      = parent->mon_x;
-	submenu->mon_y      = parent->mon_y;
-	submenu->mon_w      = parent->mon_w;
-	submenu->mon_h      = parent->mon_h;
-	menu_set_items(submenu, item->submenu);
-	menu_calculate_size(submenu);
-
-	/* Position submenu */
-	if (menu_submenu_opens_right(parent, item)) {
-		sub_x = parent->x + parent->w;
+	if (menu->visible && menu->gtk_menu &&
+	    !gtk_widget_get_mapped(menu->gtk_menu)) {
+		awm_warn(
+		    "menu_show: menu not mapped after popup — forcing self-dismiss");
+		on_menu_deactivate(GTK_MENU_SHELL(menu->gtk_menu), menu);
+	} else if (!menu->visible) {
+		awm_warn("menu_show: menu was immediately dismissed");
 	} else {
-		sub_x = parent->x - submenu->w;
+		awm_debug("menu_show: menu mapped OK");
 	}
-	sub_y = parent->y + item_y;
-
-	/* Adjust for monitor bounds */
-	if (sub_x + submenu->w > parent->mon_x + parent->mon_w)
-		sub_x = parent->mon_x + parent->mon_w - submenu->w;
-	if (sub_x < parent->mon_x)
-		sub_x = parent->mon_x;
-	if (sub_y + submenu->h > parent->mon_y + parent->mon_h)
-		sub_y = parent->mon_y + parent->mon_h - submenu->h;
-	if (sub_y < parent->mon_y)
-		sub_y = parent->mon_y;
-
-	/* Show submenu without callback (parent handles activation) */
-	submenu->x             = sub_x;
-	submenu->y             = sub_y;
-	submenu->callback      = parent->callback;
-	submenu->callback_data = parent->callback_data;
-
-	XMoveResizeWindow(submenu->dpy, submenu->win, submenu->x, submenu->y,
-	    submenu->w, submenu->h);
-	XMapRaised(submenu->dpy, submenu->win);
-	submenu->visible = 1;
-	menu_render(submenu);
-
-	parent->active_submenu = submenu;
 }
 
-/* Hide menu */
 void
 menu_hide(Menu *menu)
 {
 	if (!menu || !menu->visible)
 		return;
 
-	/* Hide any active submenu first */
-	if (menu->active_submenu) {
-		menu_hide(menu->active_submenu);
-		menu_free(menu->active_submenu);
-		menu->active_submenu = NULL;
-	}
+	if (menu->gtk_menu)
+		gtk_menu_popdown(GTK_MENU(menu->gtk_menu));
 
-	XUngrabPointer(menu->dpy, CurrentTime);
-	XUngrabKeyboard(menu->dpy, CurrentTime);
-	XUnmapWindow(menu->dpy, menu->win);
-	menu->visible  = 0;
-	menu->selected = -1;
+	menu->visible = 0;
 }
 
-/* Handle X event - returns 1 if event was handled */
-int
-menu_handle_event(Menu *menu, XEvent *ev)
-{
-	MenuItem *item;
-	int       idx, y;
+/* -------------------------------------------------------------------------
+ * Menu item helpers
+ * ---------------------------------------------------------------------- */
 
-	if (!menu || !menu->visible)
-		return 0;
-
-	/* Check submenu first */
-	if (menu->active_submenu && menu_handle_event(menu->active_submenu, ev))
-		return 1;
-
-	/* Check if event is for our window */
-	if (ev->xany.window != menu->win) {
-		/* Ignore ALL button events until after the initial release */
-		if (menu->ignore_next_release) {
-			if (ev->type == ButtonPress || ev->type == ButtonRelease) {
-				if (ev->type == ButtonRelease) {
-					menu->ignore_next_release = 0;
-				}
-				return 1;
-			}
-		} else {
-			/* After initial release, any button event outside menu means close
-			 * it */
-			if (ev->type == ButtonPress || ev->type == ButtonRelease) {
-				menu_hide(menu);
-				return 1;
-			}
-		}
-		return 0;
-	}
-
-	switch (ev->type) {
-	case Expose:
-		if (ev->xexpose.count == 0)
-			menu_render(menu);
-		return 1;
-
-	case MotionNotify:
-		/* Update selection based on mouse position */
-		/* Only process if mouse is within menu bounds */
-		if (ev->xmotion.x < 0 || ev->xmotion.x >= (int) menu->w ||
-		    ev->xmotion.y < 0 || ev->xmotion.y >= (int) menu->h) {
-			/* Mouse outside menu - clear selection */
-			if (menu->selected != -1) {
-				menu->selected = -1;
-				menu_render(menu);
-			}
-			return 1;
-		}
-
-		y   = MENU_PADDING;
-		idx = 0;
-		for (item = menu->items; item; item = item->next) {
-			if (item->is_separator) {
-				y += SEPARATOR_HEIGHT;
-			} else if (item->label) {
-				if (ev->xmotion.y >= y &&
-				    ev->xmotion.y < y + MENU_ITEM_HEIGHT) {
-					if (menu->selected != idx) {
-						menu->selected = idx;
-						menu_render(menu);
-
-						/* Show submenu if this item has one */
-						if (item->submenu) {
-							menu_show_submenu(menu, item, y);
-						} else if (menu->active_submenu) {
-							/* Close submenu if moving to item without submenu
-							 */
-							menu_hide(menu->active_submenu);
-							menu_free(menu->active_submenu);
-							menu->active_submenu = NULL;
-						}
-					}
-					return 1;
-				}
-				y += MENU_ITEM_HEIGHT;
-				idx++;
-			}
-		}
-		/* Mouse not over any item */
-		if (menu->selected != -1) {
-			menu->selected = -1;
-			/* Close any open submenu */
-			if (menu->active_submenu) {
-				menu_hide(menu->active_submenu);
-				menu_free(menu->active_submenu);
-				menu->active_submenu = NULL;
-			}
-			menu_render(menu);
-		}
-		return 1;
-
-	case ButtonRelease:
-		/* Ignore first release after showing menu */
-		if (menu->ignore_next_release) {
-			menu->ignore_next_release = 0;
-			return 1;
-		}
-		return 1;
-
-	case ButtonPress:
-		/* Check if click is outside menu bounds using root coordinates */
-		if (ev->xbutton.x_root < menu->x ||
-		    ev->xbutton.x_root >= menu->x + (int) menu->w ||
-		    ev->xbutton.y_root < menu->y ||
-		    ev->xbutton.y_root >= menu->y + (int) menu->h) {
-			menu_hide(menu);
-			return 1;
-		}
-		/* Click on menu item */
-		if (menu->selected >= 0) {
-			/* Find the selected item */
-			idx = 0;
-			for (item = menu->items; item; item = item->next) {
-				if (!item->is_separator && item->label) {
-					if (idx == menu->selected && item->enabled) {
-						/* Don't activate items with submenus - they only open
-						 * the submenu */
-						if (item->submenu) {
-							return 1;
-						}
-						/* Found it - trigger callback */
-						if (menu->callback)
-							menu->callback(item->id, menu->callback_data);
-						menu_hide(menu);
-						return 1;
-					}
-					idx++;
-				}
-			}
-		}
-		return 1;
-
-	case KeyPress: {
-		KeySym key = XLookupKeysym(&ev->xkey, 0);
-		switch (key) {
-		case XK_Escape:
-			menu_hide(menu);
-			return 1;
-		case XK_Up:
-			/* Move selection up */
-			if (menu->selected > 0)
-				menu->selected--;
-			else
-				menu->selected = menu->item_count - 1;
-			menu_render(menu);
-			return 1;
-		case XK_Down:
-			/* Move selection down */
-			if (menu->selected < menu->item_count - 1)
-				menu->selected++;
-			else
-				menu->selected = 0;
-			menu_render(menu);
-			return 1;
-		case XK_Return:
-		case XK_KP_Enter:
-			/* Activate selected item */
-			if (menu->selected >= 0) {
-				idx = 0;
-				for (item = menu->items; item; item = item->next) {
-					if (!item->is_separator && item->label) {
-						if (idx == menu->selected && item->enabled) {
-							if (menu->callback)
-								menu->callback(item->id, menu->callback_data);
-							menu_hide(menu);
-							return 1;
-						}
-						idx++;
-					}
-				}
-			}
-			return 1;
-		}
-	}
-		return 1;
-
-	case LeaveNotify:
-		/* Clear selection when mouse leaves */
-		if (menu->selected != -1) {
-			menu->selected = -1;
-			menu_render(menu);
-		}
-		return 1;
-
-	case FocusOut:
-		/*
-		 * Dismiss menu when keyboard focus leaves — this is the fallback
-		 * dismiss path when XGrabPointer/XGrabKeyboard failed (e.g. because
-		 * an Electron window held the grab).  Ignore grab-related transient
-		 * focus events (NotifyGrab / NotifyUngrab / NotifyWhileGrabbed) and
-		 * focus moving to an inferior window (submenu).
-		 */
-		if (ev->xfocus.detail != NotifyInferior &&
-		    ev->xfocus.mode != NotifyGrab && ev->xfocus.mode != NotifyUngrab) {
-			menu_hide(menu);
-		}
-		return 1;
-	}
-
-	return 0;
-}
-
-/* Menu item helpers */
 MenuItem *
 menu_item_create(int id, const char *label, int enabled)
 {
