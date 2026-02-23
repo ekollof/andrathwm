@@ -1,13 +1,16 @@
 # xidle - X11 Idle Time Query Utility
 
-`xidle` is a simple, lightweight utility for querying X11 idle time using the XScreenSaver extension. It's designed to work with any window manager and requires no systemd dependencies.
+`xidle` is a simple, lightweight utility for querying X11 idle time using the
+XScreenSaver extension. It is built on pure XCB (`xcb-screensaver`) with no
+Xlib dependency. It works with any window manager and requires no systemd
+dependencies.
 
 ## Features
 
 - Query user idle time (time since last keyboard/mouse activity)
 - Two output formats: milliseconds or human-readable
 - POSIX-compliant, works on Linux and BSD
-- No dependencies beyond X11 and XScreenSaver extension
+- No Xlib dependency — uses `xcb-screensaver` directly
 - Can be used in shell scripts for automation
 
 ## Usage
@@ -100,7 +103,7 @@ make clean && make
 To build xidle standalone:
 
 ```sh
-gcc -o xidle xidle.c -lX11 -lXss
+clang -std=c11 -o xidle src/xidle.c -lxcb -lxcb-screensaver
 ```
 
 ## Installation
@@ -117,9 +120,10 @@ sudo make install
 If you don't want XScreenSaver extension support, edit `config.mk` and comment out:
 
 ```makefile
-# XSSLIBS  = -lXss
 # XSSFLAGS = -DXSS
 ```
+
+(`XSSLIBS` is empty — the library is pulled in via `XCBLIBS` as `xcb-screensaver`.)
 
 ## Use Cases
 

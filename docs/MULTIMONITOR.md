@@ -58,21 +58,20 @@ awm tries multi-monitor support in this order:
 
 ## Building
 
-Both extensions are enabled by default in `config.mk`:
+Both extensions are enabled by default in `config.mk`. awm uses pure XCB for
+both — no `libXrandr` or `libXinerama` needed:
 
 ```make
 # RandR (modern multi-monitor support)
-RANDRLIBS  = -lXrandr
-RANDRFLAGS = -DXRANDR
+RANDRFLAGS = -DXRANDR   # xcb-randr pulled in via XCBLIBS
 
 # Xinerama (legacy fallback)
-XINERAMALIBS  = -lXinerama
-XINERAMAFLAGS = -DXINERAMA
+XINERAMAFLAGS = -DXINERAMA   # xcb-xinerama pulled in via XCBLIBS
 ```
 
 To disable either:
-- Comment out RANDRFLAGS to disable RandR
-- Comment out XINERAMAFLAGS to disable Xinerama
+- Comment out `RANDRFLAGS` to disable RandR
+- Comment out `XINERAMAFLAGS` to disable Xinerama
 
 ## Verification
 

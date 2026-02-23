@@ -39,10 +39,10 @@ Due to conflicts with awesomebar bindings, these were changed:
 
 ## Implementation Details
 
-- **Icon Loading**: Icons loaded from `_NET_WM_ICON` X11 property
+- **Icon Loading**: Icons loaded from `_NET_WM_ICON` XCB property
 - **Icon Cache**: Icons cached per-window for performance
 - **Icon Fallback**: Missing icons show no icon (space reserved)
-- **Window State**: Hidden state preserved using X11 IconicState
+- **Window State**: Hidden state preserved using `XCB_ICCCM_WM_STATE_ICONIC`
 - **Bar Layout**: Equal-width tabs distributed across available space
 
 ## Compatibility

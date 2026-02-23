@@ -25,15 +25,15 @@ This build includes the following enhancements over vanilla dwm:
 
 ### Modern Desktop Integration
 - **StatusNotifier/AppIndicator**: Full D-Bus based system tray support
-  - GTK+3, Cairo, and librsvg for icon rendering
   - SNI (StatusNotifierItem) protocol support
   - Application menu support via D-Bus
+  - SVG icon rasterisation via librsvg
   - Icon caching with LRU eviction
 
 - **Embedded status bar**: Built-in status module replaces external `slstatus`
   - Timer-driven via GLib `GTimeout` source integrated with the main event loop
   - Components: CPU%, load average, RAM used/total, battery, date/time, uptime
-  - Per-component update intervals; driven by a GLib timeout in the main event loop
+  - Per-component update intervals
   - Configured in `status_config.h` — no recompile of the WM core needed for format changes
 
 - **EWMH Support**: Extended Window Manager Hints for better application compatibility
@@ -45,9 +45,8 @@ This build includes the following enhancements over vanilla dwm:
   - `_NET_FRAME_EXTENTS` for client geometry
   - `_NET_CLOSE_WINDOW` and `_NET_MOVERESIZE_WINDOW` messages
 
-- **Idle Detection**: XScreenSaver extension support
+- **Idle Detection**: XScreenSaver extension support via pure XCB
   - `xidle` utility for querying idle time
-  - `getidletime()` function available in awm
   - Example scripts for auto-locking, DPMS, and notifications
   - See [docs/XIDLE.md](docs/XIDLE.md) for detailed documentation
 
@@ -57,51 +56,71 @@ This build includes the following enhancements over vanilla dwm:
 - **Move stack**: Move windows up/down in the stack
 - **Custom layouts**: Tile, Monocle, and Floating layouts
 - **Dynamic colors**: Runtime color scheme modification via Xresources
-  - Colors reloaded from `~/.Xresources` on restart and after autostart script
+
+### Compositor
+- **Built-in compositor**: XRender and EGL/GL backends
+  - XRender fallback works in all environments (including Xephyr)
+  - EGL/GL path used when DRI3 and `EGL_KHR_image_pixmap` are available
+  - X Present vblank loop for tear-free rendering
+  - Fullscreen bypass (unredirect) with 40 ms deferred activation
+- **`awm-ui` helper process**: GTK popup menus (launcher, SNI context menus)
+  run out-of-process over a `SOCK_SEQPACKET` socketpair
 
 ### Development Features
-- **Debug logging**: Optional logging subsystem for troubleshooting
+- **Debug logging**: Optional logging subsystem (`awm_debug`/`awm_info`/`awm_warn`/`awm_error`)
 - **Thread-safe icon cache**: LRU cache with configurable limits
 - **Signal-safe logging**: Proper logging for signal handlers
-- **Memory management**: Automatic icon cache eviction
+- **`-s` flag**: Skip autostart script at startup (useful for testing)
 
 ## Requirements
 
-In order to build awm you need the following libraries and header files:
+awm is **Xlib-free**. It uses XCB directly for all X11 protocol communication.
+No `libX11`, `libXinerama`, `libXrandr`, or `libXss` are needed.
 
-### Essential
-- Xlib header files
-- Xft header files
-- libXinerama (optional, for multi-monitor support)
-- libXrandr (optional, for display rotation/configuration)
-- libXss (optional, for idle detection)
+### Build dependencies
 
-### For StatusNotifier/System Tray
-- GTK+ 3
-- Cairo
-- librsvg
-- gdk-pixbuf
-- D-Bus
-- GLib
-
-Most distributions provide these in development packages:
+| Library | Purpose |
+|---------|---------|
+| `xcb`, `xcb-icccm`, `xcb-randr`, `xcb-keysyms` | Core XCB + WM hints |
+| `xcb-xinerama`, `xcb-cursor`, `xcb-renderutil` | Multi-monitor, cursors, XRender utils |
+| `xcb-composite`, `xcb-damage`, `xcb-xfixes`, `xcb-shape`, `xcb-render`, `xcb-present` | Compositor extensions |
+| `xcb-screensaver` | Idle detection (`xidle`) |
+| `xkbcommon` | Keysym names |
+| `EGL`, `GL` | Compositor EGL/GL backend |
+| `pangocairo`, `cairo` | Text rendering and drawing |
+| `gtk-3`, `gdk-3`, `gdk-pixbuf-2` | Launcher and SNI menu UI |
+| `librsvg-2` | SVG icon rasterisation |
+| `dbus-1`, `glib-2` | D-Bus / SNI / event loop |
 
 **Debian/Ubuntu:**
 ```sh
-sudo apt-get install libx11-dev libxft-dev libxinerama-dev libxrandr-dev \
-    libxss-dev libgtk-3-dev libcairo2-dev librsvg2-dev libdbus-1-dev
+sudo apt-get install \
+    libxcb1-dev libxcb-icccm4-dev libxcb-randr0-dev libxcb-keysyms1-dev \
+    libxcb-xinerama0-dev libxcb-cursor-dev libxcb-render-util0-dev \
+    libxcb-composite0-dev libxcb-damage0-dev libxcb-xfixes0-dev \
+    libxcb-shape0-dev libxcb-render0-dev libxcb-present-dev \
+    libxcb-screensaver0-dev libxkbcommon-dev \
+    libegl-dev libgl-dev \
+    libpango1.0-dev libcairo2-dev \
+    libgtk-3-dev librsvg2-dev libdbus-1-dev libglib2.0-dev
 ```
 
 **Arch Linux:**
 ```sh
-sudo pacman -S libx11 libxft libxinerama libxrandr libxss gtk3 cairo \
-    librsvg dbus glib2
+sudo pacman -S \
+    libxcb xcb-util-wm xcb-util-keysyms xcb-util-cursor xcb-util-renderutil \
+    xkbcommon mesa \
+    pango cairo \
+    gtk3 librsvg dbus glib2
 ```
 
 **FreeBSD:**
 ```sh
-pkg install xorg libXft libXinerama libXrandr libXScrnSaver gtk3 cairo \
-    librsvg2 dbus glib
+pkg install \
+    libxcb xcb-util-wm xcb-util-keysyms xcb-util-cursor xcb-util-renderutil \
+    libxkbcommon mesa-libs \
+    pango cairo \
+    gtk3 librsvg2 dbus glib
 ```
 
 ## Installation
@@ -117,28 +136,36 @@ make clean install
 ```
 
 This will install:
-- `awm` - the window manager binary
-- `xidle` - the idle time query utility
+- `awm` — the window manager binary
+- `awm-ui` — the out-of-process GTK UI helper
+- `xidle` — the idle time query utility
+
+### Build variants
+
+```sh
+make              # default: drw_cairo.c backend (pure Cairo, no XCB in hot path)
+make DRW_LEGACY=1 # use original drw.c (XCB + Cairo)
+```
 
 ### Optional Features
 
-You can disable optional features by commenting out the relevant lines in `config.mk`:
+Comment out lines in `config.mk` to disable optional subsystems:
 
 ```makefile
 # Disable Xinerama support
-# XINERAMALIBS  = -lXinerama
 # XINERAMAFLAGS = -DXINERAMA
 
 # Disable XRandR support
-# RANDRLIBS  = -lXrandr
 # RANDRFLAGS = -DXRANDR
 
 # Disable XScreenSaver idle detection
-# XSSLIBS  = -lXss
 # XSSFLAGS = -DXSS
 
 # Disable StatusNotifier/system tray
 # Comment out the SNIINC, SNILIBS, and SNIFLAGS lines
+
+# Disable compositor
+# Comment out COMPOSITORLIBS and COMPOSITORFLAGS
 ```
 
 ## Running awm
@@ -183,14 +210,14 @@ The global update tick is set by `status_interval_ms` (default: 1000 ms).
 
 ### Multi-Monitor Setup
 
-awm supports both Xinerama and XRandR for multi-monitor setups. To connect awm
-to a specific display:
+awm supports both Xinerama and XRandR for multi-monitor setups. See
+[docs/MULTIMONITOR.md](docs/MULTIMONITOR.md) for details.
+
+To connect awm to a specific display:
 
 ```sh
 DISPLAY=foo.bar:1 exec awm
 ```
-
-This will start awm on display `:1` of the host `foo.bar`.
 
 ## Configuration
 
@@ -207,16 +234,19 @@ make clean install
 
 ### Key Bindings
 
-The default modifier key is `Mod4` (Windows/Super key). See `config.def.h` for the complete list of key bindings.
+The default modifier key is `Mod4` (Super/Windows key). Key names use
+`XKB_KEY_*` constants from `<xkbcommon/xkbcommon-keysyms.h>` and modifier
+masks use `XCB_MOD_MASK_*`. See `config.def.h` for the complete list.
 
 Some notable bindings:
-- `Mod4+Return` - Spawn terminal
-- `Mod4+p` - Open application launcher
-- `Mod4+j/k` - Focus next/previous window
-- `Mod4+h/l` - Resize master area
-- `Mod4+Tab` - Toggle between current and previous tag
-- `Mod4+Shift+c` - Close window
-- `Mod4+Shift+q` - Quit awm
+- `Mod4+Return` — Spawn terminal
+- `Mod4+p` — Open application launcher
+- `Mod4+j/k` — Focus next/previous window
+- `Mod4+Ctrl+h/l` — Resize master area
+- `Mod4+Tab` — Toggle between current and previous tag
+- `Mod4+Shift+c` — Close window
+- `Mod4+Shift+q` — Quit awm
+- `Mod4+Shift+r` — Restart awm (re-execs; `-s` flag is preserved if set)
 
 ### Scratchpads
 
@@ -238,7 +268,7 @@ Add a matching rule (match by title, `tags=0`, floating, centered):
 Then bind a key using `.v` pointing to the command array:
 
 ```c
-{ MODKEY, XK_grave, togglescratch, { .v = notepadcmd } },
+{ MODKEY, XKB_KEY_grave, togglescratch, { .v = notepadcmd } },
 ```
 
 The scratchpad starts hidden. The first keypress spawns it; subsequent presses
@@ -283,10 +313,10 @@ xidle -h
 
 Four example scripts are included in the `examples/` directory:
 
-1. **xidle-autolock.sh** - Auto-lock screen after idle timeout
-2. **xidle-dpms.sh** - Display power management
-3. **xidle-notify.sh** - Desktop notifications for idle warnings
-4. **xidle-manager.sh** - Combined lock + DPMS management
+1. **xidle-autolock.sh** — Auto-lock screen after idle timeout
+2. **xidle-dpms.sh** — Display power management
+3. **xidle-notify.sh** — Desktop notifications for idle warnings
+4. **xidle-manager.sh** — Combined lock + DPMS management
 
 Example usage:
 
@@ -299,52 +329,69 @@ See [docs/XIDLE.md](docs/XIDLE.md) for detailed usage and examples.
 
 ## Debug Logging
 
-Debug logging can be enabled at compile time by uncommenting in `config.mk`:
+Debug logging is enabled by default in `config.mk` (`-DAWM_DEBUG`). To disable:
 
 ```makefile
+# comment out or remove:
 CPPFLAGS += -DAWM_DEBUG
-CFLAGS   = -g -std=c99 -pedantic -Wall -O0 ${INCS} ${CPPFLAGS}
 ```
+
+Log macros: `awm_debug()`, `awm_info()`, `awm_warn()`, `awm_error()` — all
+write to stderr with a level prefix.
 
 ## Project Structure
 
 ```
 andrathwm/
-├── src/                  # Source files
-│   ├── awm.c            # Main window manager code
-│   ├── drw.c/drw.h      # Drawing library (Cairo/X11)
-│   ├── util.c/util.h    # Utility functions
-│   ├── dbus.c/dbus.h    # D-Bus integration
-│   ├── sni.c/sni.h      # StatusNotifier implementation
-│   ├── icon.c/icon.h    # Icon cache and rendering
-│   ├── launcher.c/launcher.h  # Application launcher
-│   ├── status.c/status.h      # Embedded status bar (GLib timer-driven)
-│   ├── status_components.c/h  # Status components (CPU, RAM, battery, …)
-│   ├── status_util.c/h        # Status utility functions
-│   ├── menu.c/menu.h    # SNI menu support
-│   ├── queue.c/queue.h  # Event queue
-│   ├── log.c/log.h      # Logging subsystem
-│   ├── xidle.c          # Idle detection utility
-│   ├── movestack.c      # Move stack helper
-│   └── transient.c      # Transient window test
-├── third_party/          # Vendored libraries (currently empty)
-├── build/                # Build artifacts (.o files)
-├── docs/                 # Documentation
-│   ├── XIDLE.md         # xidle documentation
-│   ├── AWESOMEBAR.md    # Awesomebar feature docs
-│   ├── LAUNCHER.md      # Application launcher docs
-│   ├── MULTIMONITOR.md  # Multi-monitor setup
-│   ├── SYSTRAY_ICONS.md # System tray icon docs
-│   └── PHASE1_IMPROVEMENTS.md  # Development notes
-├── status_config.h       # Status bar component configuration
-├── config.def.h          # Default configuration
-├── config.h              # User configuration (not tracked)
-├── config.mk             # Build configuration
-├── Makefile              # Build system
-├── README.md             # This file
-├── LICENSE               # MIT/X Consortium License
-├── awm.1                 # Man page
-└── awm.png               # Icon
+├── src/
+│   ├── awm.c/awm.h              # Core WM: setup, event loop, main()
+│   ├── awm_ui.c                 # Out-of-process GTK UI helper (awm-ui binary)
+│   ├── ui_proto.h               # IPC protocol between awm and awm-ui
+│   ├── client.c/client.h        # Client (window) management
+│   ├── events.c/events.h        # XCB event dispatch, xcb_error_handler
+│   ├── monitor.c/monitor.h      # Monitor management, bar, tile/monocle
+│   ├── ewmh.c/ewmh.h            # EWMH (_NET_WM_*) support
+│   ├── compositor.c/compositor.h         # Compositor shared state + public API
+│   ├── compositor_backend.h              # Backend vtable + shared inline helpers
+│   ├── compositor_egl.c                  # EGL/GL compositor backend
+│   ├── compositor_xrender.c              # XRender compositor backend
+│   ├── drw.c/drw.h              # Drawing library (XCB + PangoCairo)
+│   ├── drw_cairo.c              # Pure-Cairo drawing backend (default)
+│   ├── x11_constants.h          # KeySym typedef, LASTEvent, X_ opcodes
+│   ├── dbus.c/dbus.h            # D-Bus integration
+│   ├── sni.c/sni.h              # StatusNotifier (SNI) system tray
+│   ├── icon.c/icon.h            # Icon cache and rendering
+│   ├── launcher.c/launcher.h    # Application launcher (GTK)
+│   ├── menu.c/menu.h            # SNI context menu (GTK)
+│   ├── systray.c/systray.h      # XEMBED system tray
+│   ├── status.c/status.h        # Embedded status bar (GLib timer-driven)
+│   ├── status_components.c/h    # Status components (CPU, RAM, battery, …)
+│   ├── status_util.c/h          # Status utility functions
+│   ├── spawn.c/spawn.h          # Process spawning
+│   ├── xrdb.c/xrdb.h            # Xresources query (pure XCB)
+│   ├── xsource.c/xsource.h      # GLib GSource wrapping XCB fd
+│   ├── log.c/log.h              # Logging subsystem
+│   ├── util.c/util.h            # Utility functions
+│   └── xidle.c                  # Idle detection utility (xcb-screensaver)
+├── third_party/                 # Vendored libraries
+├── build/                       # Build artifacts (.o files)
+├── docs/                        # Documentation
+│   ├── AWESOMEBAR.md            # Awesomebar feature docs
+│   ├── LAUNCHER.md              # Application launcher docs
+│   ├── MULTIMONITOR.md          # Multi-monitor setup
+│   ├── SYSTRAY_ICONS.md         # System tray icon theme configuration
+│   └── XIDLE.md                 # xidle documentation
+├── examples/                    # xidle example scripts
+├── status_config.h              # Status bar component configuration
+├── config.def.h                 # Default configuration
+├── config.h                     # User configuration (not tracked by git)
+├── config.mk                    # Build configuration
+├── Makefile                     # Build system
+├── xcb-migration.md             # XCB migration history and API cheat-sheet
+├── README.md                    # This file
+├── LICENSE                      # MIT/X Consortium License
+├── awm.1                        # Man page
+└── awm.png                      # Icon
 ```
 
 ## Patches Applied
@@ -354,29 +401,31 @@ This build incorporates the following concepts/patches from the dwm ecosystem:
 - Single-tag mode (custom implementation)
 - Awesomebar with icons
 - Application launcher with GTK icon theme support
-- Embedded status bar (coroutine-driven, replaces slstatus)
+- Embedded status bar (GLib timer-driven, replaces slstatus)
 - StatusNotifier/AppIndicator system tray
 - EWMH support (comprehensive implementation)
-- Multi-monitor support (fixmultimon patches)
+- Multi-monitor support (RandR + Xinerama)
 - Scratchpads
 - Move stack
 - Centered floating windows
-- XScreenSaver idle detection (custom implementation)
+- XScreenSaver idle detection (pure XCB via xcb-screensaver)
+- Built-in compositor (XRender + EGL/GL, X Present vblank)
 
 ## Development
 
 ### Building for Development
 
 ```sh
-# Enable debug logging
-vim config.mk  # Uncomment debug flags
-
-# Build with debug symbols
+# Build with debug symbols and logging (default)
 make clean && make
 
-# Run in Xephyr for testing
-Xephyr -br -ac -noreset -screen 1280x720 :1 &
+# Run in Xephyr for testing (compositor uses XRender fallback in Xephyr)
+Xephyr :1 -screen 1280x720 &
+sleep 1
 DISPLAY=:1 ./awm
+
+# Skip autostart during testing
+DISPLAY=:1 ./awm -s
 ```
 
 ### Code Style
@@ -385,7 +434,9 @@ This codebase follows the suckless.org coding style:
 - K&R style with tabs for indentation
 - 80 character line limit where practical
 - Minimal abstractions
-- Direct X11 API usage
+- XCB for all X11 protocol communication (no Xlib)
+- `config.h` must be the last `#include` in any `.c` file that uses it
+- Only `src/awm.c` defines `AWM_CONFIG_IMPL` before including `config.h`
 
 ### Thread Safety
 
@@ -396,12 +447,13 @@ Icon rendering and D-Bus operations are thread-safe:
 
 ## License
 
-MIT/X Consortium License - see LICENSE file for details.
+MIT/X Consortium License — see LICENSE file for details.
 
 ## Links
 
 - [upstream dwm](https://dwm.suckless.org)
 - [suckless.org](https://suckless.org)
+- [XCB migration history](xcb-migration.md)
 - [xidle documentation](docs/XIDLE.md)
 
 ## Acknowledgments

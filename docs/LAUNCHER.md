@@ -1,7 +1,9 @@
 # Application Launcher
 
-awm includes a built-in rofi-style application launcher that replaces dmenu for
-launching applications.
+awm includes a built-in application launcher that replaces dmenu. It uses a
+native GTK window (`GtkWindow` + `GtkSearchEntry` + `GtkListBox`) and is driven
+by the existing GLib main loop — no custom XCB grab or event handling is
+needed.
 
 ## Activation
 
@@ -133,7 +135,7 @@ To change these, edit `src/launcher.c` and recompile.
 The keybinding is set in `config.h`:
 
 ```c
-{ MODKEY, XK_p, launchermenu, {0} },
+{ MODKEY, XKB_KEY_p, launchermenu, {0} },
 ```
 
 ## Implementation Notes
@@ -142,10 +144,10 @@ The keybinding is set in `config.h`:
   as `cairo_surface_t` objects. There is no runtime re-scan.
 - The reverse-DNS alias table is built lazily on first alias lookup and freed
   when the launcher is destroyed.
-- The launcher reuses the same `Drw` instance as the bar, sharing font and
-  colour scheme settings.
-- Icon background rectangles are filled with `ColBg` before compositing so that
-  semi-transparent icon edges blend against the correct row background colour
-  rather than an X11 pixmap artefact.
+- The launcher runs inside `awm-ui`, the out-of-process GTK helper. awm spawns
+  `awm-ui` on first use and communicates over a `SOCK_SEQPACKET` socketpair
+  using the protocol defined in `src/ui_proto.h`. awm forks the selected
+  command itself via `UI_MSG_LAUNCHER_EXEC`.
+- SVG icons are rasterised via librsvg so transparency is preserved correctly.
 </content>
 </invoke>
