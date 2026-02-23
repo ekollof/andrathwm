@@ -323,7 +323,7 @@ drw_rect(Drw *drw, int x, int y, unsigned int w, unsigned int h, int filled,
 	if (!drw || !drw->scheme || !drw->cairo_surface)
 		return;
 
-	col = &drw->scheme[invert ? ColFg : ColBg];
+	col = &drw->scheme[invert ? ColBg : ColFg];
 	cr  = cairo_create(drw->cairo_surface);
 
 	cairo_set_source_rgb(
