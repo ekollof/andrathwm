@@ -17,8 +17,13 @@
 
 /* KeySym — an X11 keysym is a 32-bit identifier (X.h: typedef XID KeySym,
  * where XID is unsigned long; Xproto.h redefines it as CARD32 = uint32_t).
- * We use uint32_t so it matches xcb_key_symbols_get_keysym() return type. */
+ * We use uint32_t so it matches xcb_key_symbols_get_keysym() return type.
+ * Guard against redefinition when <X11/X.h> is pulled in transitively (e.g.
+ * via <gdk/gdkx.h>): X.h's include guard is X_H, so if it is already
+ * included we skip our typedef entirely and rely on the one from X.h. */
+#ifndef X_H
 typedef uint32_t KeySym;
+#endif
 
 /* LASTEvent — the highest X11 core event number + 1.  The handler[] dispatch
  * table in awm.c is sized [LASTEvent] and indexed by xcb event type.

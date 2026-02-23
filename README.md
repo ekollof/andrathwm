@@ -56,6 +56,12 @@ This build includes the following enhancements over vanilla dwm:
 - **Move stack**: Move windows up/down in the stack
 - **Custom layouts**: Tile, Monocle, and Floating layouts
 - **Dynamic colors**: Runtime color scheme modification via Xresources
+- **Window switcher**: Alt+Tab / Super+Tab overlay with live thumbnails
+  - Horizontal card strip with per-window live thumbnails
+  - EGL path: GL FBO readback (always current frame)
+  - XRender path: server-side picture composite + `xcb_get_image`
+  - Keyboard grab via XCB while overlay is open; confirmed on modifier release
+  - See [docs/SWITCHER.md](docs/SWITCHER.md) for details
 
 ### Compositor
 - **Built-in compositor**: XRender and EGL/GL backends
@@ -355,6 +361,7 @@ andrathwm/
 │   ├── compositor_backend.h              # Backend vtable + shared inline helpers
 │   ├── compositor_egl.c                  # EGL/GL compositor backend
 │   ├── compositor_xrender.c              # XRender compositor backend
+│   ├── switcher.c/switcher.h             # Alt+Tab window switcher with live thumbnails
 │   ├── drw.c/drw.h              # Drawing library (XCB + PangoCairo)
 │   ├── drw_cairo.c              # Pure-Cairo drawing backend (default)
 │   ├── x11_constants.h          # KeySym typedef, LASTEvent, X_ opcodes
@@ -379,6 +386,7 @@ andrathwm/
 │   ├── AWESOMEBAR.md            # Awesomebar feature docs
 │   ├── LAUNCHER.md              # Application launcher docs
 │   ├── MULTIMONITOR.md          # Multi-monitor setup
+│   ├── SWITCHER.md              # Window switcher docs
 │   ├── SYSTRAY_ICONS.md         # System tray icon theme configuration
 │   └── XIDLE.md                 # xidle documentation
 ├── examples/                    # xidle example scripts
@@ -410,6 +418,7 @@ This build incorporates the following concepts/patches from the dwm ecosystem:
 - Centered floating windows
 - XScreenSaver idle detection (pure XCB via xcb-screensaver)
 - Built-in compositor (XRender + EGL/GL, X Present vblank)
+- Window switcher (Alt+Tab / Super+Tab, live thumbnails via GL FBO / XRender+get_image)
 
 ## Development
 

@@ -17,6 +17,7 @@ void enternotify(xcb_generic_event_t *e);
 void expose(xcb_generic_event_t *e);
 void focusin(xcb_generic_event_t *e);
 void keypress(xcb_generic_event_t *e);
+void keyrelease(xcb_generic_event_t *e);
 void mappingnotify(xcb_generic_event_t *e);
 void maprequest(xcb_generic_event_t *e);
 void motionnotify(xcb_generic_event_t *e);

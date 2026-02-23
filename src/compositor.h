@@ -4,6 +4,7 @@
 #ifdef COMPOSITOR
 
 #include <glib.h>
+#include <cairo/cairo.h>
 
 /*
  * compositor.h is included from awm.h *after* the Client typedef/struct,
@@ -144,6 +145,20 @@ void compositor_check_unredirect(void);
  * bounding boxes are now stale), and forces a full repaint.
  */
 void compositor_notify_screen_resize(void);
+
+/*
+ * Render the live GL texture for client c into a new cairo image surface
+ * scaled to at most (max_w x max_h), preserving aspect ratio.
+ *
+ * Uses the EGL FBO path: binds cw->texture into a framebuffer object,
+ * draws a scaled quad, reads pixels back via glReadPixels, and returns a
+ * CAIRO_FORMAT_RGB24 image surface containing the result.
+ *
+ * Returns NULL if the compositor is not active, the EGL backend is not in
+ * use, the client has no compositor window, or any GL operation fails.
+ * The caller owns the returned surface and must cairo_surface_destroy() it.
+ */
+cairo_surface_t *comp_capture_thumb(Client *c, int max_w, int max_h);
 
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */

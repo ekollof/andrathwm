@@ -12,6 +12,7 @@
 
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
@@ -22,9 +23,12 @@
 #include <xcb/xcb.h>
 #include <xcb/xfixes.h>
 
+#include <cairo/cairo.h>
+
 #include "awm.h"
 #include "log.h"
 #include "compositor_backend.h"
+#include "compositor.h"
 
 /* -------------------------------------------------------------------------
  * Private backend state
@@ -766,6 +770,123 @@ egl_repaint(void)
 }
 
 /* -------------------------------------------------------------------------
+ * Thumbnail capture — EGL/GL path.
+ * Render cw->texture into an FBO, read back via glReadPixels.
+ * ---------------------------------------------------------------------- */
+
+static cairo_surface_t *
+egl_capture_thumb(CompWin *cw, int max_w, int max_h)
+{
+	GLuint           fbo = 0, color_tex = 0;
+	int              tw, th;
+	double           sx, sy, scale;
+	uint8_t         *pixels = NULL;
+	cairo_surface_t *surf   = NULL;
+
+	if (!cw || !cw->texture || cw->w <= 0 || cw->h <= 0)
+		return NULL;
+
+	/* Compute thumbnail size preserving aspect ratio */
+	sx    = (double) max_w / (double) cw->w;
+	sy    = (double) max_h / (double) cw->h;
+	scale = sx < sy ? sx : sy;
+	if (scale > 1.0)
+		scale = 1.0;
+	tw = (int) (cw->w * scale);
+	th = (int) (cw->h * scale);
+	if (tw < 1)
+		tw = 1;
+	if (th < 1)
+		th = 1;
+
+	/* Create FBO with a texture color attachment at thumb size */
+	glGenTextures(1, &color_tex);
+	glBindTexture(GL_TEXTURE_2D, color_tex);
+	glTexImage2D(
+	    GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	glGenFramebuffers(1, &fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+	glFramebufferTexture2D(
+	    GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color_tex, 0);
+
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+		awm_warn("comp_capture_thumb: FBO incomplete");
+		goto out;
+	}
+
+	/* Render the window texture into the FBO at thumb size */
+	glViewport(0, 0, tw, th);
+	glUseProgram(egl.prog);
+	glUniform2f(egl.u_screen, (float) tw, (float) th);
+	glUniform4f(egl.u_rect, 0.0f, 0.0f, (float) tw, (float) th);
+	glUniform1f(egl.u_opacity, 1.0f);
+	glUniform1i(egl.u_solid, 0);
+	glUniform1i(egl.u_tex, 0);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, cw->texture);
+	glBindVertexArray(egl.vao);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	glBindVertexArray(0);
+	glBindTexture(GL_TEXTURE_2D, 0);
+	glUseProgram(0);
+
+	/* Read pixels back — GL origin is bottom-left, cairo is top-left.
+	 * Read row by row in reverse so the image is not upside down. */
+	pixels = malloc((size_t) (tw * th * 4));
+	if (!pixels)
+		goto out;
+
+	glReadPixels(0, 0, tw, th, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+
+	/* Flip rows vertically: GL bottom-left → cairo top-left */
+	{
+		uint8_t *row = malloc((size_t) (tw * 4));
+		if (row) {
+			for (int y = 0; y < th / 2; y++) {
+				uint8_t *top = pixels + (size_t) (y * tw * 4);
+				uint8_t *bot = pixels + (size_t) ((th - 1 - y) * tw * 4);
+				memcpy(row, top, (size_t) (tw * 4));
+				memcpy(top, bot, (size_t) (tw * 4));
+				memcpy(bot, row, (size_t) (tw * 4));
+			}
+			free(row);
+		}
+	}
+
+	/* Wrap in a cairo image surface (RGB24 — alpha channel ignored) */
+	surf = cairo_image_surface_create_for_data(
+	    pixels, CAIRO_FORMAT_RGB24, tw, th, tw * 4);
+	if (!surf || cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
+		if (surf) {
+			cairo_surface_destroy(surf);
+			surf = NULL;
+		}
+		free(pixels);
+		pixels = NULL;
+		goto out;
+	}
+	/* Transfer ownership of pixels to the surface via a destroy callback */
+	cairo_surface_set_user_data(
+	    surf, (const cairo_user_data_key_t *) &fbo, pixels, free);
+	pixels = NULL; /* now owned by the surface */
+
+out:
+	/* Restore normal render target and viewport */
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glViewport(0, 0, sw, sh);
+	if (fbo)
+		glDeleteFramebuffers(1, &fbo);
+	if (color_tex)
+		glDeleteTextures(1, &color_tex);
+	free(pixels); /* NULL-safe; only non-NULL if surface creation failed */
+	return surf;
+}
+
+/* -------------------------------------------------------------------------
  * Backend vtable singleton
  * ---------------------------------------------------------------------- */
 
@@ -778,6 +899,7 @@ const CompBackend comp_backend_egl = {
 	.release_wallpaper = egl_release_wallpaper,
 	.repaint           = egl_repaint,
 	.notify_resize     = egl_notify_resize,
+	.capture_thumb     = egl_capture_thumb,
 	.apply_shape = NULL, /* EGL handles ShapeNotify via comp_refresh_pixmap in
 	                        compositor.c */
 };

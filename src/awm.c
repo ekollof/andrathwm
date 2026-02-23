@@ -77,6 +77,7 @@ void (*handler[LASTEvent])(xcb_generic_event_t *) = {
 	[XCB_EXPOSE]            = expose,
 	[XCB_FOCUS_IN]          = focusin,
 	[XCB_KEY_PRESS]         = keypress,
+	[XCB_KEY_RELEASE]       = keyrelease,
 	[XCB_MAPPING_NOTIFY]    = mappingnotify,
 	[XCB_MAP_REQUEST]       = maprequest,
 	[XCB_MOTION_NOTIFY]     = motionnotify,

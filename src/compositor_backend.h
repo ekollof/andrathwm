@@ -25,6 +25,8 @@
 #include <EGL/eglext.h>
 #include <GL/gl.h>
 
+#include <cairo/cairo.h>
+
 #include <glib.h>
 
 #include "awm.h" /* Client, Monitor, selmon, xc, root, screen, sw, sh, ... */
@@ -92,6 +94,12 @@ typedef struct CompBackend {
 
 	/* Execute one full repaint.  Called from comp_do_repaint(). */
 	void (*repaint)(void);
+
+	/* Capture a scaled thumbnail of one window as a cairo image surface.
+	 * max_w / max_h are the maximum thumbnail dimensions.
+	 * Returns NULL if the window has no content or on any error.
+	 * The caller owns the returned surface. */
+	cairo_surface_t *(*capture_thumb)(CompWin *cw, int max_w, int max_h);
 
 	/* Handle a screen resize (sw/sh already updated).
 	 * Called from compositor_notify_screen_resize(). */

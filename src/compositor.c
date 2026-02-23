@@ -37,6 +37,7 @@
 #include <xcb/present.h>
 
 #include <glib.h>
+#include <cairo/cairo.h>
 
 #include "awm.h"
 #include "log.h"
@@ -1850,6 +1851,27 @@ comp_do_repaint(void)
 		return;
 
 	comp.backend->repaint();
+}
+
+/* -------------------------------------------------------------------------
+ * comp_capture_thumb — public entry point, dispatches to the active backend.
+ * ---------------------------------------------------------------------- */
+
+cairo_surface_t *
+comp_capture_thumb(Client *c, int max_w, int max_h)
+{
+	CompWin *cw;
+
+	if (!comp.active || !c || !comp.backend->capture_thumb)
+		return NULL;
+
+	for (cw = comp.windows; cw; cw = cw->next)
+		if (cw->client == c)
+			break;
+	if (!cw)
+		return NULL;
+
+	return comp.backend->capture_thumb(cw, max_w, max_h);
 }
 
 #endif /* COMPOSITOR */

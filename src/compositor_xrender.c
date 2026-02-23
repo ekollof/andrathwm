@@ -12,11 +12,17 @@
 
 #ifdef COMPOSITOR
 
+#include <stdlib.h>
+#include <string.h>
+
 #include <xcb/xcb.h>
+#include <xcb/composite.h>
 #include <xcb/render.h>
 #include <xcb/xfixes.h>
 #include <xcb/shape.h>
 #include <xcb/xcb_renderutil.h>
+
+#include <cairo/cairo.h>
 
 #include "awm.h"
 #include "log.h"
@@ -427,6 +433,216 @@ xrender_repaint(void)
 }
 
 /* -------------------------------------------------------------------------
+ * Backend vtable — thumbnail capture
+ * ---------------------------------------------------------------------- */
+
+/* Helper: find XRender picture format for a given visual ID. */
+static xcb_render_pictformat_t
+xr_find_visual_format(xcb_visualid_t vid)
+{
+	const xcb_render_pictvisual_t *pv;
+
+	if (!comp.render_formats)
+		return 0;
+	pv = xcb_render_util_find_visual_format(comp.render_formats, vid);
+	return pv ? pv->format : 0;
+}
+
+/* Helper: find XRender picture format for a given depth. */
+static xcb_render_pictformat_t
+xr_find_format_for_depth(int depth)
+{
+	const xcb_render_pictforminfo_t *fi;
+
+	if (!comp.render_formats)
+		return 0;
+	if (depth == 32) {
+		fi = xcb_render_util_find_standard_format(
+		    comp.render_formats, XCB_PICT_STANDARD_ARGB_32);
+		if (fi)
+			return fi->id;
+	}
+	if (depth == 24) {
+		fi = xcb_render_util_find_standard_format(
+		    comp.render_formats, XCB_PICT_STANDARD_RGB_24);
+		if (fi)
+			return fi->id;
+	}
+	return xr_find_visual_format(xcb_screen_root_visual(xc, screen));
+}
+
+/* Capture a scaled thumbnail from a window via XRender + xcb_get_image. */
+static cairo_surface_t *
+xrender_capture_thumb(CompWin *cw, int max_w, int max_h)
+{
+	double                  sx, sy, scale;
+	int                     tw, th;
+	xcb_render_pictformat_t src_fmt, dst_fmt;
+	xcb_render_picture_t    src_pict = 0, dst_pict = 0;
+	xcb_pixmap_t            dst_pixmap = 0;
+	xcb_pixmap_t            own_pixmap = 0;
+	xcb_pixmap_t            src_pixmap;
+	xcb_render_transform_t  xform;
+	xcb_get_image_cookie_t  gck;
+	xcb_get_image_reply_t  *gr       = NULL;
+	cairo_surface_t        *surf     = NULL;
+	uint8_t                *img_data = NULL;
+
+	if (!cw || cw->w <= 0 || cw->h <= 0)
+		return NULL;
+
+	/* Compute thumbnail size preserving aspect ratio */
+	sx    = (double) max_w / (double) cw->w;
+	sy    = (double) max_h / (double) cw->h;
+	scale = sx < sy ? sx : sy;
+	if (scale > 1.0)
+		scale = 1.0;
+	tw = (int) (cw->w * scale);
+	th = (int) (cw->h * scale);
+	if (tw < 1)
+		tw = 1;
+	if (th < 1)
+		th = 1;
+
+	/* Source pixmap: prefer cw->pixmap, fall back to a fresh acquire */
+	src_pixmap = cw->pixmap;
+	if (!src_pixmap) {
+		xcb_pixmap_t         pix = xcb_generate_id(xc);
+		xcb_void_cookie_t    nck;
+		xcb_generic_error_t *nerr;
+		nck = xcb_composite_name_window_pixmap_checked(
+		    xc, (xcb_window_t) cw->win, pix);
+		xcb_flush(xc);
+		nerr = xcb_request_check(xc, nck);
+		if (nerr) {
+			free(nerr);
+			return NULL;
+		}
+		own_pixmap = pix;
+		src_pixmap = pix;
+	}
+
+	/* Source picture with scale transform */
+	src_fmt = xr_find_format_for_depth(cw->depth);
+	if (!src_fmt)
+		goto out;
+
+	src_pict = xcb_generate_id(xc);
+	{
+		uint32_t pmask = 0, pval = 0;
+		xcb_render_create_picture(
+		    xc, src_pict, (xcb_drawable_t) src_pixmap, src_fmt, pmask, &pval);
+	}
+
+	{
+		double             inv    = 1.0 / scale;
+		xcb_render_fixed_t fp_inv = (xcb_render_fixed_t) (inv * 65536.0 + 0.5);
+		xcb_render_fixed_t fp_one = 65536;
+
+		xform.matrix11 = fp_inv;
+		xform.matrix12 = 0;
+		xform.matrix13 = 0;
+		xform.matrix21 = 0;
+		xform.matrix22 = fp_inv;
+		xform.matrix23 = 0;
+		xform.matrix31 = 0;
+		xform.matrix32 = 0;
+		xform.matrix33 = fp_one;
+	}
+	xcb_render_set_picture_transform(xc, src_pict, xform);
+	{
+		static const char filter[] = "good";
+		xcb_render_set_picture_filter(
+		    xc, src_pict, (uint16_t) (sizeof(filter) - 1), filter, 0, NULL);
+	}
+
+	/* Destination pixmap at thumbnail size (root depth) */
+	dst_fmt = xr_find_visual_format(xcb_screen_root_visual(xc, screen));
+	if (!dst_fmt)
+		goto out;
+
+	dst_pixmap = xcb_generate_id(xc);
+	{
+		uint8_t dst_depth = (uint8_t) xcb_screen_root_depth(xc, screen);
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+		ck = xcb_create_pixmap_checked(xc, dst_depth, dst_pixmap,
+		    (xcb_drawable_t) root, (uint16_t) tw, (uint16_t) th);
+		xcb_flush(xc);
+		err = xcb_request_check(xc, ck);
+		if (err) {
+			free(err);
+			dst_pixmap = 0;
+			goto out;
+		}
+	}
+
+	dst_pict = xcb_generate_id(xc);
+	{
+		uint32_t pmask = 0, pval = 0;
+		xcb_render_create_picture(
+		    xc, dst_pict, (xcb_drawable_t) dst_pixmap, dst_fmt, pmask, &pval);
+	}
+
+	/* Scale-composite source → destination */
+	xcb_render_composite(xc, XCB_RENDER_PICT_OP_SRC, src_pict,
+	    XCB_RENDER_PICTURE_NONE, dst_pict, 0, 0, 0, 0, 0, 0, (uint16_t) tw,
+	    (uint16_t) th);
+	xcb_flush(xc);
+
+	/* Read the pixels back */
+	gck = xcb_get_image(xc, XCB_IMAGE_FORMAT_Z_PIXMAP,
+	    (xcb_drawable_t) dst_pixmap, 0, 0, (uint16_t) tw, (uint16_t) th,
+	    0xffffffff);
+	gr  = xcb_get_image_reply(xc, gck, NULL);
+	if (!gr)
+		goto out;
+
+	{
+		int      data_len = xcb_get_image_data_length(gr);
+		uint8_t *data     = xcb_get_image_data(gr);
+		int      stride   = tw * 4;
+
+		if (data_len < stride * th)
+			goto out;
+
+		img_data = malloc((size_t) (stride * th));
+		if (!img_data)
+			goto out;
+		memcpy(img_data, data, (size_t) (stride * th));
+
+		surf = cairo_image_surface_create_for_data(
+		    img_data, CAIRO_FORMAT_RGB24, tw, th, stride);
+		if (!surf || cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
+			if (surf) {
+				cairo_surface_destroy(surf);
+				surf = NULL;
+			}
+			free(img_data);
+			img_data = NULL;
+		} else {
+			/* Transfer ownership of img_data to the surface */
+			cairo_surface_set_user_data(
+			    surf, (const cairo_user_data_key_t *) &comp, img_data, free);
+			img_data = NULL;
+		}
+	}
+
+out:
+	if (src_pict)
+		xcb_render_free_picture(xc, src_pict);
+	if (dst_pict)
+		xcb_render_free_picture(xc, dst_pict);
+	if (dst_pixmap)
+		xcb_free_pixmap(xc, dst_pixmap);
+	if (own_pixmap)
+		xcb_free_pixmap(xc, own_pixmap);
+	free(gr);
+	free(img_data);
+	return surf;
+}
+
+/* -------------------------------------------------------------------------
  * Backend vtable singleton
  * ---------------------------------------------------------------------- */
 
@@ -439,6 +655,7 @@ const CompBackend comp_backend_xrender = {
 	.release_wallpaper = xrender_release_wallpaper,
 	.repaint           = xrender_repaint,
 	.notify_resize     = xrender_notify_resize,
+	.capture_thumb     = xrender_capture_thumb,
 	.apply_shape       = xrender_apply_shape,
 };
 

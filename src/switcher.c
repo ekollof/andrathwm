@@ -7,18 +7,41 @@
  *     pre-scaled thumbnail pixmaps for each client, populates a row of
  *     GtkDrawingArea cards inside a GtkScrolledWindow, and makes the window
  *     visible.
- *   - The user cycles with Tab / Shift+Tab (ISO_Left_Tab); Escape cancels,
- *     Return or release of Alt/Super confirms.
- *   - On hide, all thumbnail pixmaps/pictures are freed.
+ *   - Cycling (Tab / Shift+Tab) is driven from awm's keypress() handler via
+ *     switcher_next() / switcher_prev(), because awm holds the X passive grab
+ *     on those keybindings and GTK never sees the key events.
+ *   - Confirmation (release of Alt/Super) is driven from awm's keyrelease()
+ *     handler via switcher_confirm_xkb().
+ *   - Escape calls switcher_cancel_xkb() also from keypress().
  *
- * Thumbnail rendering (when compositor is active and cw->ever_damaged):
- *   1. Wrap the client's XComposite pixmap in an XRender source picture.
- *   2. Allocate a destination pixmap at the desired thumbnail size and wrap
+ * Scope:
+ *   - Alt+Tab  (all_monitors=0): all windows currently visible on any
+ *     monitor's active tagset (ISVISIBLE across all monitors).
+ *   - Super+Tab (all_monitors=1): all windows on all tags, all monitors.
+ *
+ * Confirmation behaviour:
+ *   - Always warps the pointer to the centre of the chosen window so that
+ *     focus-follows-mouse takes effect immediately.
+ *   - For Super+Tab, if the chosen window is on a hidden tag, calls view()
+ *     to make that tag visible and seturgent() to highlight it in the bar,
+ *     then focuses and warps.
+ *
+ * Thumbnail rendering (when compositor is active):
+ *   1. Obtain the client's XComposite pixmap (cw->pixmap, or a fresh
+ *      xcb_composite_name_window_pixmap if cw->pixmap is currently 0).
+ *   2. Wrap the source pixmap in an XRender source picture.
+ *   3. Allocate a destination pixmap at the desired thumbnail size and wrap
  *      it in an XRender destination picture.
- *   3. Set a projective scale transform on the source picture and call
+ *   4. Set a projective scale transform on the source picture and call
  *      xcb_render_composite to perform server-side scaled copy.
- *   4. Wrap the destination pixmap in a cairo_xcb_surface and paint it in
+ *   5. Wrap the destination pixmap in a cairo_xcb_surface and paint it in
  *      the GtkDrawingArea "draw" callback.
+ *
+ * Z-order / focus management:
+ *   The switcher window uses override_redirect (set via GDK before the window
+ *   is mapped) so awm does not manage it, does not steal focus from it, and
+ *   does not restack it.  We raise it ourselves via xcb_configure_window on
+ *   every show.
  *
  * See LICENSE file for copyright and license details. */
 
@@ -28,17 +51,19 @@
 #include <string.h>
 
 #include <xcb/xcb.h>
+#include <xcb/composite.h>
 #include <xcb/render.h>
 #include <xcb/xcb_renderutil.h>
 #include <cairo/cairo.h>
 #include <cairo/cairo-xcb.h>
 #include <gtk/gtk.h>
-#include <xkbcommon/xkbcommon-keysyms.h>
+#include <gdk/gdkx.h>
 
 #include "awm.h"
 #include "client.h"
 #include "log.h"
 #include "compositor_backend.h"
+#include "compositor.h"
 #include "switcher.h"
 
 /* -------------------------------------------------------------------------
@@ -47,14 +72,14 @@
 
 #define SW_MAX_THUMB_W 200 /* maximum thumbnail width  (px) */
 #define SW_MAX_THUMB_H 150 /* maximum thumbnail height (px) */
-#define SW_MIN_CARD_W 100  /* minimum card width       (px) */
-#define SW_FALLBACK_W 100  /* card width when no thumbnail  */
+#define SW_MIN_CARD_W 120  /* minimum card width       (px) */
+#define SW_FALLBACK_W 120  /* card width when no thumbnail  */
 #define SW_FALLBACK_H 80   /* card height when no thumbnail */
 #define SW_CARD_PAD 8      /* padding inside each card      */
 #define SW_CARD_GAP 6      /* gap between cards             */
 #define SW_ICON_SIZE 24    /* icon size in the title row    */
-#define SW_TITLE_H 32      /* height of the title row       */
-#define SW_BORDER_W 2      /* selection highlight thickness */
+#define SW_TITLE_H 36      /* height of the title row       */
+#define SW_BORDER_W 3      /* selection highlight thickness */
 #define SW_WIN_PAD 12      /* padding around the card row   */
 
 /* -------------------------------------------------------------------------
@@ -62,7 +87,8 @@
  * ---------------------------------------------------------------------- */
 
 typedef struct {
-	Client *c;
+	Client  *c;
+	CompWin *cw; /* compositor window (may be NULL)   */
 	/* Scaled thumbnail resources (NULL/0 if compositor unavailable) */
 	xcb_pixmap_t         thumb_pixmap; /* destination pixmap at thumb size  */
 	xcb_render_picture_t thumb_pict;   /* XRender picture on thumb_pixmap   */
@@ -82,19 +108,25 @@ static GtkWidget *sw_win    = NULL;    /* persistent GTK window            */
 static GtkWidget *sw_scroll = NULL;    /* GtkScrolledWindow                */
 static GtkWidget *sw_box    = NULL;    /* GtkBox containing cards          */
 static int        sw_active = 0;       /* 1 = switcher is visible          */
-static int        sw_all_monitors = 0; /* 1 = show all monitors        */
+static int        sw_all_monitors = 0; /* 1 = show all monitors            */
+static guint sw_refresh_id = 0; /* GLib timer for live thumbnail updates */
+
+#define SW_REFRESH_MS 100 /* thumbnail refresh interval (ms) */
 
 static SwitcherEntry *sw_entries  = NULL;
 static int            sw_nentries = 0;
 static int            sw_sel      = 0; /* index of selected entry          */
 
 /* Forward declarations */
-static void switcher_hide(void);
-static void switcher_confirm(void);
-static void switcher_cancel(void);
-static void switcher_select(int idx);
-static void switcher_rebuild_cards(void);
-static void free_thumbnails(void);
+static void     switcher_hide(void);
+static void     switcher_confirm(void);
+static void     switcher_cancel(void);
+static void     switcher_select(int idx);
+static void     switcher_rebuild_cards(void);
+static void     free_thumbnails(void);
+static void     build_thumbnail(SwitcherEntry *e);
+static void     refresh_thumbnail(SwitcherEntry *e);
+static gboolean sw_refresh_cb(gpointer data);
 
 /* -------------------------------------------------------------------------
  * XRender helpers
@@ -138,7 +170,30 @@ find_format_for_depth(int depth)
 	return find_visual_format(xcb_screen_root_visual(xc, screen));
 }
 
+/* Walk the xcb_screen visuals to find the xcb_visualtype_t for the root
+ * visual of our screen. */
+static xcb_visualtype_t *
+get_root_visualtype(void)
+{
+	xcb_screen_iterator_t sit = xcb_setup_roots_iterator(xcb_get_setup(xc));
+	for (int i = 0; i < screen; i++)
+		xcb_screen_next(&sit);
+
+	xcb_visualid_t       root_vid = sit.data->root_visual;
+	xcb_depth_iterator_t dit = xcb_screen_allowed_depths_iterator(sit.data);
+	for (; dit.rem; xcb_depth_next(&dit)) {
+		xcb_visualtype_iterator_t vit = xcb_depth_visuals_iterator(dit.data);
+		for (; vit.rem; xcb_visualtype_next(&vit)) {
+			if (vit.data->visual_id == root_vid)
+				return vit.data;
+		}
+	}
+	return NULL;
+}
+
 /* Build the XRender thumbnail for entry e.
+ * If cw->pixmap is 0 we acquire a fresh one ourselves and release it after
+ * compositing (snapshot approach).
  * Leaves e->has_thumb = 0 on any error. */
 static void
 build_thumbnail(SwitcherEntry *e)
@@ -151,8 +206,9 @@ build_thumbnail(SwitcherEntry *e)
 	int                     tw, th;
 	xcb_void_cookie_t       ck;
 	xcb_generic_error_t    *err;
-	uint32_t                pict_mask;
-	uint32_t                pict_val = 0;
+	uint32_t                pict_mask  = 0;
+	uint32_t                pict_val   = 0;
+	xcb_pixmap_t            own_pixmap = 0; /* pixmap we acquired ourselves */
 
 	e->has_thumb    = 0;
 	e->thumb_pixmap = 0;
@@ -167,8 +223,28 @@ build_thumbnail(SwitcherEntry *e)
 		if (cw->client == e->c)
 			break;
 
-	if (!cw || !cw->ever_damaged || !cw->pixmap || cw->w <= 0 || cw->h <= 0)
+	if (!cw || cw->w <= 0 || cw->h <= 0)
 		return;
+
+	e->cw = cw; /* remember for live refresh */
+
+	/* Use cw->pixmap if available; otherwise acquire a fresh snapshot. */
+	xcb_pixmap_t src_pixmap = cw->pixmap;
+	if (!src_pixmap) {
+		xcb_pixmap_t         pix = xcb_generate_id(xc);
+		xcb_void_cookie_t    nck;
+		xcb_generic_error_t *nerr;
+		nck = xcb_composite_name_window_pixmap_checked(
+		    xc, (xcb_window_t) cw->win, pix);
+		xcb_flush(xc);
+		nerr = xcb_request_check(xc, nck);
+		if (nerr) {
+			free(nerr);
+			return;
+		}
+		own_pixmap = pix;
+		src_pixmap = pix;
+	}
 
 	/* Compute thumbnail dimensions, preserving aspect ratio */
 	sx    = (double) SW_MAX_THUMB_W / (double) cw->w;
@@ -183,14 +259,16 @@ build_thumbnail(SwitcherEntry *e)
 	if (th < 1)
 		th = 1;
 
-	/* Source picture wrapping the composite pixmap */
+	/* Source picture wrapping the pixmap */
 	src_fmt = find_format_for_depth(cw->depth);
-	if (!src_fmt)
+	if (!src_fmt) {
+		if (own_pixmap)
+			xcb_free_pixmap(xc, own_pixmap);
 		return;
+	}
 
-	src_pict  = xcb_generate_id(xc);
-	pict_mask = 0;
-	xcb_render_create_picture(xc, src_pict, (xcb_drawable_t) cw->pixmap,
+	src_pict = xcb_generate_id(xc);
+	xcb_render_create_picture(xc, src_pict, (xcb_drawable_t) src_pixmap,
 	    src_fmt, pict_mask, &pict_val);
 
 	/* Set scale transform on the source picture.
@@ -216,17 +294,18 @@ build_thumbnail(SwitcherEntry *e)
 
 	/* Bilinear filter for nicer downscaling */
 	{
-		/* "good" filter string */
 		static const char filter[] = "good";
 		xcb_render_set_picture_filter(
 		    xc, src_pict, (uint16_t) (sizeof(filter) - 1), filter, 0, NULL);
 	}
 
-	/* Destination pixmap at thumbnail size */
+	/* Destination pixmap at thumbnail size (root depth / visual) */
 	uint8_t dst_depth = (uint8_t) xcb_screen_root_depth(xc, screen);
 	dst_fmt           = find_visual_format(xcb_screen_root_visual(xc, screen));
 	if (!dst_fmt) {
 		xcb_render_free_picture(xc, src_pict);
+		if (own_pixmap)
+			xcb_free_pixmap(xc, own_pixmap);
 		return;
 	}
 
@@ -240,12 +319,13 @@ build_thumbnail(SwitcherEntry *e)
 		    (int) err->error_code);
 		free(err);
 		xcb_render_free_picture(xc, src_pict);
+		if (own_pixmap)
+			xcb_free_pixmap(xc, own_pixmap);
 		e->thumb_pixmap = 0;
 		return;
 	}
 
 	e->thumb_pict = xcb_generate_id(xc);
-	pict_mask     = 0;
 	xcb_render_create_picture(xc, e->thumb_pict,
 	    (xcb_drawable_t) e->thumb_pixmap, dst_fmt, pict_mask, &pict_val);
 
@@ -258,33 +338,13 @@ build_thumbnail(SwitcherEntry *e)
 	xcb_flush(xc);
 
 	xcb_render_free_picture(xc, src_pict);
+	/* Release snapshot pixmap we acquired ourselves (if any) */
+	if (own_pixmap)
+		xcb_free_pixmap(xc, own_pixmap);
 
 	/* Wrap the destination pixmap as a cairo surface */
 	{
-		xcb_screen_iterator_t sit =
-		    xcb_setup_roots_iterator(xcb_get_setup(xc));
-		int i;
-		for (i = 0; i < screen; i++)
-			xcb_screen_next(&sit);
-
-		xcb_visualtype_t    *vis = NULL;
-		xcb_depth_iterator_t dit =
-		    xcb_screen_allowed_depths_iterator(sit.data);
-		for (; dit.rem; xcb_depth_next(&dit)) {
-			if (dit.data->depth != dst_depth)
-				continue;
-			xcb_visualtype_iterator_t vit =
-			    xcb_depth_visuals_iterator(dit.data);
-			for (; vit.rem; xcb_visualtype_next(&vit)) {
-				if (vit.data->visual_id ==
-				    xcb_screen_root_visual(xc, screen)) {
-					vis = vit.data;
-					break;
-				}
-			}
-			if (vis)
-				break;
-		}
+		xcb_visualtype_t *vis = get_root_visualtype();
 		if (!vis) {
 			xcb_render_free_picture(xc, e->thumb_pict);
 			xcb_free_pixmap(xc, e->thumb_pixmap);
@@ -312,6 +372,53 @@ build_thumbnail(SwitcherEntry *e)
 	e->thumb_w   = tw;
 	e->thumb_h   = th;
 	e->has_thumb = 1;
+}
+
+/* Re-composite the thumbnail from the live compositor pixmap.
+ * Called periodically by the refresh timer while the switcher is open.
+ * Reuses the existing destination pixmap/picture/surface if the window
+ * size has not changed; rebuilds them if it has (or if has_thumb is 0).
+ *
+ * Uses comp_capture_thumb() (GL FBO + glReadPixels) to get a fresh cairo
+ * image surface from the live GL texture.  This is the only path that
+ * returns current content on the EGL compositor backend. */
+static void
+refresh_thumbnail(SwitcherEntry *e)
+{
+	cairo_surface_t *surf;
+
+	if (!e->has_thumb || !e->c)
+		return;
+
+	/* Capture a fresh frame from the live GL texture */
+	surf = comp_capture_thumb(e->c, SW_MAX_THUMB_W, SW_MAX_THUMB_H);
+	if (!surf)
+		return;
+
+	/* Swap in the new surface, release the old one */
+	if (e->thumb_surf)
+		cairo_surface_destroy(e->thumb_surf);
+	e->thumb_surf = surf;
+
+	/* Update dimensions in case the window was resized */
+	e->thumb_w = cairo_image_surface_get_width(surf);
+	e->thumb_h = cairo_image_surface_get_height(surf);
+}
+
+/* GLib timer callback — refresh all thumbnails and queue redraws */
+static gboolean
+sw_refresh_cb(gpointer data)
+{
+	(void) data;
+	if (!sw_active)
+		return G_SOURCE_REMOVE;
+
+	for (int i = 0; i < sw_nentries; i++) {
+		refresh_thumbnail(&sw_entries[i]);
+		if (sw_entries[i].card)
+			gtk_widget_queue_draw(sw_entries[i].card);
+	}
+	return G_SOURCE_CONTINUE;
 }
 
 /* -------------------------------------------------------------------------
@@ -364,14 +471,13 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 
 	/* Background */
 	if (selected) {
-		/* selection highlight: use selbgcolor-derived colour */
 		Clr *bg = &scheme[SchemeSel][ColBg];
 		cairo_set_source_rgba(cr, (double) bg->r / 65535.0,
 		    (double) bg->g / 65535.0, (double) bg->b / 65535.0, 1.0);
 	} else {
 		Clr *bg = &scheme[SchemeNorm][ColBg];
 		cairo_set_source_rgba(cr, (double) bg->r / 65535.0,
-		    (double) bg->g / 65535.0, (double) bg->b / 65535.0, 0.85);
+		    (double) bg->g / 65535.0, (double) bg->b / 65535.0, 0.90);
 	}
 	cairo_rectangle(cr, 0, 0, w, h);
 	cairo_fill(cr);
@@ -380,37 +486,57 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 	if (e->has_thumb && e->thumb_surf) {
 		int tx = (w - e->thumb_w) / 2;
 		int ty = SW_CARD_PAD;
+		cairo_save(cr);
 		cairo_set_source_surface(cr, e->thumb_surf, tx, ty);
-		cairo_paint(cr);
+		cairo_rectangle(cr, tx, ty, e->thumb_w, e->thumb_h);
+		cairo_fill(cr);
+		cairo_restore(cr);
 	} else {
 		/* Placeholder: dim rect where thumbnail would be */
 		int ph = h - SW_TITLE_H - 2 * SW_CARD_PAD;
-		if (ph < 0)
-			ph = 0;
-		cairo_set_source_rgba(cr, 0.1, 0.1, 0.1, 0.5);
-		cairo_rectangle(cr, SW_CARD_PAD, SW_CARD_PAD, w - 2 * SW_CARD_PAD, ph);
-		cairo_fill(cr);
+		if (ph > 0) {
+			cairo_set_source_rgba(cr, 0.1, 0.1, 0.1, 0.5);
+			cairo_rectangle(
+			    cr, SW_CARD_PAD, SW_CARD_PAD, w - 2 * SW_CARD_PAD, ph);
+			cairo_fill(cr);
+		}
 	}
 
 	/* Title row — bottom of card */
 	int title_y = h - SW_TITLE_H;
 
+	/* Separator line above title */
+	{
+		cairo_set_source_rgba(cr, 0.3, 0.3, 0.3, 0.6);
+		cairo_set_line_width(cr, 1.0);
+		cairo_move_to(cr, 0, title_y);
+		cairo_line_to(cr, w, title_y);
+		cairo_stroke(cr);
+	}
+
 	/* Icon */
+	int icon_drawn_w = 0;
 	if (e->c->icon) {
-		int icon_x = SW_CARD_PAD;
-		int icon_y = title_y + (SW_TITLE_H - SW_ICON_SIZE) / 2;
-		cairo_save(cr);
-		cairo_translate(cr, icon_x, icon_y);
-		double icon_src_w = cairo_image_surface_get_width(e->c->icon);
-		double icon_src_h = cairo_image_surface_get_height(e->c->icon);
-		if (icon_src_w > 0 && icon_src_h > 0) {
-			double iscale = (double) SW_ICON_SIZE /
-			    (icon_src_w > icon_src_h ? icon_src_w : icon_src_h);
-			cairo_scale(cr, iscale, iscale);
+		cairo_surface_type_t stype      = cairo_surface_get_type(e->c->icon);
+		int                  icon_src_w = 0, icon_src_h = 0;
+		if (stype == CAIRO_SURFACE_TYPE_IMAGE) {
+			icon_src_w = cairo_image_surface_get_width(e->c->icon);
+			icon_src_h = cairo_image_surface_get_height(e->c->icon);
 		}
-		cairo_set_source_surface(cr, e->c->icon, 0, 0);
-		cairo_paint(cr);
-		cairo_restore(cr);
+		if (icon_src_w > 0 && icon_src_h > 0) {
+			int icon_x = SW_CARD_PAD;
+			int icon_y = title_y + (SW_TITLE_H - SW_ICON_SIZE) / 2;
+			cairo_save(cr);
+			cairo_translate(cr, icon_x, icon_y);
+			double larger = icon_src_w > icon_src_h ? (double) icon_src_w
+			                                        : (double) icon_src_h;
+			double iscale = (double) SW_ICON_SIZE / larger;
+			cairo_scale(cr, iscale, iscale);
+			cairo_set_source_surface(cr, e->c->icon, 0, 0);
+			cairo_paint(cr);
+			cairo_restore(cr);
+			icon_drawn_w = SW_ICON_SIZE + 4;
+		}
 	}
 
 	/* Window title text */
@@ -420,7 +546,7 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 		cairo_set_source_rgba(cr, (double) fg->r / 65535.0,
 		    (double) fg->g / 65535.0, (double) fg->b / 65535.0, 1.0);
 
-		int txt_x = SW_CARD_PAD + (e->c->icon ? SW_ICON_SIZE + 4 : 0);
+		int txt_x = SW_CARD_PAD + icon_drawn_w;
 		int txt_w = w - txt_x - SW_CARD_PAD;
 		if (txt_w > 0 && drw && drw->fonts && drw->fonts->desc) {
 			PangoLayout *layout = pango_cairo_create_layout(cr);
@@ -429,7 +555,14 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 			pango_layout_set_width(layout, txt_w * PANGO_SCALE);
 			pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
 			pango_layout_set_single_paragraph_mode(layout, TRUE);
-			int txt_y = title_y + (SW_TITLE_H - (int) drw->fonts->h) / 2;
+
+			/* Centre text vertically in title row */
+			int pw = 0, ph = 0;
+			pango_layout_get_pixel_size(layout, &pw, &ph);
+			int txt_y = title_y + (SW_TITLE_H - ph) / 2;
+			if (txt_y < title_y)
+				txt_y = title_y;
+
 			cairo_move_to(cr, txt_x, txt_y);
 			pango_cairo_show_layout(cr, layout);
 			g_object_unref(layout);
@@ -447,7 +580,7 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 		cairo_stroke(cr);
 	}
 
-	return FALSE; /* let GTK draw children if any */
+	return FALSE;
 }
 
 /* -------------------------------------------------------------------------
@@ -546,61 +679,18 @@ switcher_select(int idx)
 }
 
 /* -------------------------------------------------------------------------
- * Key event handlers
- * ---------------------------------------------------------------------- */
-
-static gboolean
-on_key_press(GtkWidget *widget, GdkEventKey *ev, gpointer data)
-{
-	(void) widget;
-	(void) data;
-
-	guint ks = ev->keyval;
-
-	if (ks == GDK_KEY_Escape) {
-		switcher_cancel();
-		return TRUE;
-	}
-	if (ks == GDK_KEY_Return || ks == GDK_KEY_KP_Enter) {
-		switcher_confirm();
-		return TRUE;
-	}
-	if (ks == GDK_KEY_Tab) {
-		switcher_select(sw_sel + 1);
-		return TRUE;
-	}
-	/* Shift+Tab generates ISO_Left_Tab at the GDK level */
-	if (ks == GDK_KEY_ISO_Left_Tab) {
-		switcher_select(sw_sel - 1);
-		return TRUE;
-	}
-	return FALSE;
-}
-
-static gboolean
-on_key_release(GtkWidget *widget, GdkEventKey *ev, gpointer data)
-{
-	(void) widget;
-	(void) data;
-
-	guint ks = ev->keyval;
-
-	/* Confirm on release of the modifier key that opened the switcher */
-	if (ks == GDK_KEY_Alt_L || ks == GDK_KEY_Alt_R || ks == GDK_KEY_Super_L ||
-	    ks == GDK_KEY_Super_R) {
-		switcher_confirm();
-		return TRUE;
-	}
-	return FALSE;
-}
-
-/* -------------------------------------------------------------------------
  * Show / hide / confirm / cancel
  * ---------------------------------------------------------------------- */
 
 static void
 switcher_hide(void)
 {
+	/* Stop the live thumbnail refresh timer */
+	if (sw_refresh_id) {
+		g_source_remove(sw_refresh_id);
+		sw_refresh_id = 0;
+	}
+
 	free_thumbnails();
 
 	if (sw_entries) {
@@ -608,6 +698,9 @@ switcher_hide(void)
 		sw_entries  = NULL;
 		sw_nentries = 0;
 	}
+
+	/* Release the keyboard grab we took in switcher_show_internal */
+	xcb_ungrab_keyboard(xc, XCB_CURRENT_TIME);
 
 	sw_active = 0;
 	if (sw_win)
@@ -620,9 +713,29 @@ switcher_confirm(void)
 {
 	Client *chosen =
 	    (sw_sel >= 0 && sw_sel < sw_nentries) ? sw_entries[sw_sel].c : NULL;
+	int all = sw_all_monitors;
 	switcher_hide();
-	if (chosen)
-		focus(chosen);
+	if (!chosen)
+		return;
+
+	if (all && !ISVISIBLE(chosen, chosen->mon)) {
+		/* Super+Tab and window is on a hidden tag: make the tag visible.
+		 * Switch selmon to the monitor that owns the window first, then
+		 * call view() on the window's tag so it becomes visible. */
+		selmon = chosen->mon;
+		Arg a  = { .ui = chosen->tags };
+		view(&a);
+		/* seturgent so the bar highlights the tag */
+		seturgent(chosen, 1);
+	}
+
+	focus(chosen);
+	/* Warp the pointer to the centre of the chosen window unconditionally.
+	 * This is required for focus-follows-mouse: without a warp the pointer
+	 * stays where it is and the next mouse-move will steal focus back. */
+	xcb_warp_pointer(xc, XCB_WINDOW_NONE, chosen->win, 0, 0, 0, 0,
+	    (int16_t) (chosen->w / 2), (int16_t) (chosen->h / 2));
+	xcb_flush(xc);
 }
 
 static void
@@ -632,67 +745,17 @@ switcher_cancel(void)
 }
 
 /* -------------------------------------------------------------------------
- * Public API
+ * Internal show helper
  * ---------------------------------------------------------------------- */
 
-void
-switcher_init(void)
+static void
+switcher_show_internal(int all_monitors, int start_prev)
 {
-	if (sw_win)
-		return; /* already initialised */
-
-	sw_win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-	gtk_window_set_title(GTK_WINDOW(sw_win), "awm-switcher");
-	gtk_window_set_decorated(GTK_WINDOW(sw_win), FALSE);
-	gtk_window_set_skip_taskbar_hint(GTK_WINDOW(sw_win), TRUE);
-	gtk_window_set_skip_pager_hint(GTK_WINDOW(sw_win), TRUE);
-	gtk_window_set_keep_above(GTK_WINDOW(sw_win), TRUE);
-	gtk_window_set_type_hint(GTK_WINDOW(sw_win), GDK_WINDOW_TYPE_HINT_DIALOG);
-
-	/* Semi-transparent background via RGBA visual if available */
-	{
-		GdkScreen *gscreen = gtk_widget_get_screen(sw_win);
-		GdkVisual *vis     = gdk_screen_get_rgba_visual(gscreen);
-		if (vis)
-			gtk_widget_set_visual(sw_win, vis);
-		gtk_widget_set_app_paintable(sw_win, TRUE);
-	}
-
-	/* WM_CLASS so applyrules() can match it */
-	gtk_window_set_wmclass(GTK_WINDOW(sw_win), "awm-switcher", "awm-switcher");
-
-	/* Container layout */
-	GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-	gtk_container_set_border_width(GTK_CONTAINER(outer), SW_WIN_PAD);
-	gtk_container_add(GTK_CONTAINER(sw_win), outer);
-
-	sw_scroll = gtk_scrolled_window_new(NULL, NULL);
-	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw_scroll),
-	    GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER);
-	gtk_box_pack_start(GTK_BOX(outer), sw_scroll, FALSE, FALSE, 0);
-
-	sw_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-	gtk_container_set_border_width(GTK_CONTAINER(sw_box), 0);
-	gtk_container_add(GTK_CONTAINER(sw_scroll), sw_box);
-
-	/* Key events */
-	gtk_widget_add_events(sw_win, GDK_KEY_PRESS_MASK | GDK_KEY_RELEASE_MASK);
-	g_signal_connect(
-	    sw_win, "key-press-event", G_CALLBACK(on_key_press), NULL);
-	g_signal_connect(
-	    sw_win, "key-release-event", G_CALLBACK(on_key_release), NULL);
-
-	/* Intercept window close button (shouldn't appear, but be safe) */
-	g_signal_connect(
-	    sw_win, "delete-event", G_CALLBACK(gtk_widget_hide_on_delete), NULL);
-}
-
-void
-switcher_show(const Arg *arg)
-{
-	int all_monitors = arg ? arg->i : 0;
-
 	if (!sw_win)
+		return;
+
+	/* If already showing, ignore (caller should use switcher_next/prev) */
+	if (sw_active)
 		return;
 
 	sw_all_monitors = all_monitors;
@@ -707,16 +770,13 @@ switcher_show(const Arg *arg)
 		return;
 	sw_nentries = 0;
 
-	/* Walk the global client list (cl->clients is insertion order) */
 	for (Client *c = cl->clients; c; c = c->next) {
-		/* Skip hidden, SNI, and the switcher window itself */
 		if (c->ishidden || c->issni)
 			continue;
-		/* Skip clients on other monitors when in single-monitor mode */
-		if (!all_monitors && c->mon != selmon)
-			continue;
-		/* Client must be visible on its monitor's current tagset */
-		if (!ISVISIBLE(c, c->mon))
+		/* all_monitors=1 (Super+Tab): every window on every tag.
+		 * all_monitors=0 (Alt+Tab):   every window currently visible
+		 *   on any monitor's active tagset (across all monitors). */
+		if (!all_monitors && !ISVISIBLE(c, c->mon))
 			continue;
 
 		if (sw_nentries >= capacity) {
@@ -742,9 +802,12 @@ switcher_show(const Arg *arg)
 		return;
 	}
 
-	/* Start selection on the window after the currently focused one
-	 * (classic Alt+Tab behaviour: second most recent = index 1). */
-	sw_sel = (sw_nentries > 1) ? 1 : 0;
+	/* Start selection: index 1 (next after current) for forward, or
+	 * (n-1) for backward.  Clamp for single-window case. */
+	if (start_prev)
+		sw_sel = (sw_nentries > 1) ? sw_nentries - 1 : 0;
+	else
+		sw_sel = (sw_nentries > 1) ? 1 : 0;
 
 	/* Build thumbnails */
 	for (int i = 0; i < sw_nentries; i++)
@@ -766,9 +829,8 @@ switcher_show(const Arg *arg)
 			if (ch > max_h)
 				max_h = ch;
 		}
-		total_w += SW_WIN_PAD; /* trailing gap */
+		total_w += SW_WIN_PAD;
 
-		/* Cap to screen width */
 		Monitor *m = selmon;
 		if (total_w > m->ww)
 			total_w = m->ww;
@@ -783,7 +845,161 @@ switcher_show(const Arg *arg)
 
 	sw_active = 1;
 	gtk_widget_show_all(sw_win);
-	gtk_window_present(GTK_WINDOW(sw_win));
+
+	/* Start the live thumbnail refresh timer */
+	sw_refresh_id = g_timeout_add(SW_REFRESH_MS, sw_refresh_cb, NULL);
+
+	/* Process pending GTK events so the window gets mapped and drawn
+	 * before we return to the main loop. */
+	while (gtk_events_pending())
+		gtk_main_iteration_do(FALSE);
+
+	/* Raise the switcher window to the top of the stack via XCB.
+	 * We do this after GTK has mapped it so the XID is valid. */
+	{
+		GdkWindow *gwin = gtk_widget_get_window(sw_win);
+		if (gwin) {
+			xcb_window_t xwin = (xcb_window_t) gdk_x11_window_get_xid(gwin);
+			if (xwin) {
+				uint32_t stack_above = XCB_STACK_MODE_ABOVE;
+				xcb_configure_window(
+				    xc, xwin, XCB_CONFIG_WINDOW_STACK_MODE, &stack_above);
+				xcb_flush(xc);
+			}
+		}
+	}
+
+	/* Grab the keyboard so we receive all key events (including releases of
+	 * Alt/Super) while the switcher is open.  This supplements the passive
+	 * grabs on individual keybindings. */
+	xcb_grab_keyboard(xc, 0, root, XCB_CURRENT_TIME, XCB_GRAB_MODE_ASYNC,
+	    XCB_GRAB_MODE_ASYNC);
+	xcb_flush(xc);
+}
+
+/* -------------------------------------------------------------------------
+ * Public API
+ * ---------------------------------------------------------------------- */
+
+void
+switcher_init(void)
+{
+	if (sw_win)
+		return;
+
+	sw_win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+	gtk_window_set_title(GTK_WINDOW(sw_win), "awm-switcher");
+	gtk_window_set_decorated(GTK_WINDOW(sw_win), FALSE);
+	gtk_window_set_skip_taskbar_hint(GTK_WINDOW(sw_win), TRUE);
+	gtk_window_set_skip_pager_hint(GTK_WINDOW(sw_win), TRUE);
+	gtk_window_set_type_hint(GTK_WINDOW(sw_win), GDK_WINDOW_TYPE_HINT_DIALOG);
+
+	/* Semi-transparent background via RGBA visual if available */
+	{
+		GdkScreen *gscreen = gtk_widget_get_screen(sw_win);
+		GdkVisual *vis     = gdk_screen_get_rgba_visual(gscreen);
+		if (vis)
+			gtk_widget_set_visual(sw_win, vis);
+		gtk_widget_set_app_paintable(sw_win, TRUE);
+	}
+
+	/* WM_CLASS so applyrules() could match (harmless for override_redirect) */
+	gtk_window_set_wmclass(GTK_WINDOW(sw_win), "awm-switcher", "awm-switcher");
+
+	/* Override-redirect: awm will not manage this window.
+	 * Must be set before the window is realized. */
+	gtk_window_set_type_hint(
+	    GTK_WINDOW(sw_win), GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+	{
+		/* Realize now so we can set override_redirect on the GdkWindow */
+		gtk_widget_realize(sw_win);
+		GdkWindow *gwin = gtk_widget_get_window(sw_win);
+		if (gwin)
+			gdk_window_set_override_redirect(gwin, TRUE);
+	}
+
+	/* Container layout */
+	GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	gtk_container_set_border_width(GTK_CONTAINER(outer), SW_WIN_PAD);
+	gtk_container_add(GTK_CONTAINER(sw_win), outer);
+
+	sw_scroll = gtk_scrolled_window_new(NULL, NULL);
+	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw_scroll),
+	    GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER);
+	gtk_box_pack_start(GTK_BOX(outer), sw_scroll, FALSE, FALSE, 0);
+
+	sw_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_container_set_border_width(GTK_CONTAINER(sw_box), 0);
+	gtk_container_add(GTK_CONTAINER(sw_scroll), sw_box);
+
+	/* Intercept window close button */
+	g_signal_connect(
+	    sw_win, "delete-event", G_CALLBACK(gtk_widget_hide_on_delete), NULL);
+
+	gtk_widget_hide(sw_win);
+}
+
+void
+switcher_show(const Arg *arg)
+{
+	int all_monitors = arg ? arg->i : 0;
+	if (sw_active) {
+		switcher_next(NULL);
+		return;
+	}
+	switcher_show_internal(all_monitors, 0);
+}
+
+void
+switcher_show_prev(const Arg *arg)
+{
+	int all_monitors = arg ? arg->i : 0;
+	if (sw_active) {
+		switcher_prev(NULL);
+		return;
+	}
+	switcher_show_internal(all_monitors, 1);
+}
+
+void
+switcher_next(const Arg *arg)
+{
+	(void) arg;
+	if (!sw_active)
+		return;
+	switcher_select(sw_sel + 1);
+	/* Flush GTK redraws immediately */
+	while (gtk_events_pending())
+		gtk_main_iteration_do(FALSE);
+}
+
+void
+switcher_prev(const Arg *arg)
+{
+	(void) arg;
+	if (!sw_active)
+		return;
+	switcher_select(sw_sel - 1);
+	while (gtk_events_pending())
+		gtk_main_iteration_do(FALSE);
+}
+
+void
+switcher_confirm_xkb(const Arg *arg)
+{
+	(void) arg;
+	if (!sw_active)
+		return;
+	switcher_confirm();
+}
+
+void
+switcher_cancel_xkb(const Arg *arg)
+{
+	(void) arg;
+	if (!sw_active)
+		return;
+	switcher_cancel();
 }
 
 void
@@ -822,6 +1038,31 @@ switcher_init(void)
 }
 void
 switcher_show(const Arg *arg)
+{
+	(void) arg;
+}
+void
+switcher_show_prev(const Arg *arg)
+{
+	(void) arg;
+}
+void
+switcher_next(const Arg *arg)
+{
+	(void) arg;
+}
+void
+switcher_prev(const Arg *arg)
+{
+	(void) arg;
+}
+void
+switcher_confirm_xkb(const Arg *arg)
+{
+	(void) arg;
+}
+void
+switcher_cancel_xkb(const Arg *arg)
 {
 	(void) arg;
 }

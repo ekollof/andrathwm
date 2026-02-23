@@ -574,10 +574,54 @@ keypress(xcb_generic_event_t *e)
 	last_event_time = ev->time;
 	keysym =
 	    xcb_key_symbols_get_keysym(keysyms, (xcb_keycode_t) ev->detail, 0);
+
+	/* While the switcher is open, handle Tab/Escape/Return directly here
+	 * and suppress the normal keybinding dispatch.  The switcher GTK window
+	 * cannot receive key events because awm holds the X passive grab. */
+	if (switcher_active()) {
+		if ((KeySym) keysym == XKB_KEY_Escape) {
+			switcher_cancel_xkb(NULL);
+			return;
+		}
+		if ((KeySym) keysym == XKB_KEY_Return ||
+		    (KeySym) keysym == XKB_KEY_KP_Enter) {
+			switcher_confirm_xkb(NULL);
+			return;
+		}
+		if ((KeySym) keysym == XKB_KEY_Tab) {
+			/* Shift+Tab — state has Shift modifier */
+			if (ev->state & XCB_MOD_MASK_SHIFT)
+				switcher_prev(NULL);
+			else
+				switcher_next(NULL);
+			return;
+		}
+		/* Any other key while switcher is open: ignore */
+		return;
+	}
+
 	for (i = 0; i < LENGTH(keys); i++)
 		if ((KeySym) keysym == keys[i].keysym &&
 		    CLEANMASK(keys[i].mod) == CLEANMASK(ev->state) && keys[i].func)
 			keys[i].func(&(keys[i].arg));
+}
+
+void
+keyrelease(xcb_generic_event_t *e)
+{
+	xcb_key_release_event_t *ev = (xcb_key_release_event_t *) e;
+	xcb_keysym_t             keysym =
+	    xcb_key_symbols_get_keysym(keysyms, (xcb_keycode_t) ev->detail, 0);
+
+	/* Confirm the switcher when the modifier that opened it is released */
+	if (switcher_active()) {
+		if ((KeySym) keysym == XKB_KEY_Alt_L ||
+		    (KeySym) keysym == XKB_KEY_Alt_R ||
+		    (KeySym) keysym == XKB_KEY_Super_L ||
+		    (KeySym) keysym == XKB_KEY_Super_R) {
+			switcher_confirm_xkb(NULL);
+		}
+	}
 }
 
 int

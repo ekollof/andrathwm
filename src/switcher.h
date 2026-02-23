@@ -17,8 +17,41 @@ void switcher_init(void);
  *   arg->i == 0 : show clients on the current monitor only  (Alt+Tab)
  *   arg->i == 1 : show clients on all monitors              (Super+Tab)
  * Bound directly in config.h keys[].
+ * If switcher is already active, behaves like switcher_next().
  */
 void switcher_show(const Arg *arg);
+
+/*
+ * switcher_show_prev() — like switcher_show() but pre-selects the previous
+ * entry (for Shift+Tab as the opening keystroke).
+ *   arg->i == 0 : current monitor only
+ *   arg->i == 1 : all monitors
+ */
+void switcher_show_prev(const Arg *arg);
+
+/*
+ * switcher_next() — advance selection one step forward.
+ * No-op if switcher is not active.
+ */
+void switcher_next(const Arg *arg);
+
+/*
+ * switcher_prev() — advance selection one step backward.
+ * No-op if switcher is not active.
+ */
+void switcher_prev(const Arg *arg);
+
+/*
+ * switcher_confirm_xkb() — confirm and hide the switcher (focus chosen
+ * window). Called from the key-release handler on Alt/Super release.
+ */
+void switcher_confirm_xkb(const Arg *arg);
+
+/*
+ * switcher_cancel_xkb() — cancel the switcher without changing focus.
+ * Called on Escape keypress.
+ */
+void switcher_cancel_xkb(const Arg *arg);
 
 /*
  * switcher_cleanup() — destroy the GTK window and free all resources.
