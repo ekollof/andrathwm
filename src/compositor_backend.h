@@ -125,14 +125,16 @@ typedef struct CompShared {
 	xcb_window_t overlay;
 
 	/* Damage tracking */
-	int   damage_ev_base;
-	int   damage_err_base;
-	int   damage_req_base;
-	int   xfixes_ev_base;
-	int   xfixes_err_base;
-	guint repaint_id;          /* GLib idle source id, 0 = none            */
-	int   paused;              /* 1 = overlay hidden, repaints suppressed  */
-	xcb_xfixes_region_t dirty; /* accumulated dirty region (server-side)   */
+	int      damage_ev_base;
+	int      damage_err_base;
+	int      damage_req_base;
+	int      xfixes_ev_base;
+	int      xfixes_err_base;
+	guint    repaint_id;  /* GLib idle source id, 0 = none            */
+	int      paused;      /* 1 = ALL monitors bypassed, repaints off  */
+	uint32_t paused_mask; /* bitmask: bit N set = monitor num N bypassed */
+	xcb_xfixes_region_t dirty; /* accumulated dirty region (server-side) */
+	xcb_xfixes_region_t bypass_region; /* union of bypassed monitor rects */
 
 	/* CPU-side dirty bounding box — updated whenever dirty is modified.
 	 * Avoids a synchronous xcb_xfixes_fetch_region round-trip per frame.

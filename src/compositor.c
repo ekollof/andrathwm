@@ -300,6 +300,12 @@ compositor_init(GMainContext *ctx)
 		comp_dirty_full();
 	}
 
+	/* --- Bypass region (starts empty — no monitors bypassed) ----------- */
+	{
+		comp.bypass_region = xcb_generate_id(xc);
+		xcb_xfixes_create_region(xc, comp.bypass_region, 0, NULL);
+	}
+
 	/* --- Subscribe overlay to Present for vsync vblank notifications -----
 	 * We use a dedicated event id distinct from per-window ids.
 	 * Event id 0 is reserved as "overlay vblank channel" so we allocate
@@ -471,6 +477,8 @@ compositor_cleanup(void)
 
 	if (comp.dirty)
 		xcb_xfixes_destroy_region(xc, comp.dirty);
+	if (comp.bypass_region)
+		xcb_xfixes_destroy_region(xc, comp.bypass_region);
 
 	xcb_composite_unredirect_subwindows(
 	    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
@@ -958,51 +966,52 @@ compositor_bypass_window(Client *c, int bypass)
 static xcb_window_t comp_pending_bypass_win = XCB_NONE;
 static guint        comp_pending_bypass_id  = 0;
 
-/* Watchdog timer — fires every 5 s while the compositor is paused.
- * If no fullscreen window justifies the pause, force a resume.
- * This is a belt-and-suspenders against any edge case that leaves
- * comp.paused stuck at 1. */
+/* Watchdog timer — fires every 5 s while any bypass is active.
+ * Calls compositor_check_unredirect() unconditionally so it can recompute
+ * the mask from scratch.  If a fullscreen window disappeared without
+ * triggering the normal resume path this will catch it within 5 s. */
 static guint comp_pause_watchdog_id = 0;
 
 static gboolean
 comp_pause_watchdog_cb(gpointer data)
 {
+	uint32_t expected_mask;
 	Monitor *m;
-	int      still_fullscreen;
 	(void) data;
 
-	if (!comp.active || !comp.paused) {
+	if (!comp.active || comp.paused_mask == 0) {
 		comp_pause_watchdog_id = 0;
 		return G_SOURCE_REMOVE;
 	}
 
-	still_fullscreen = 0;
+	/* Recompute what the mask should be right now */
+	expected_mask = 0;
 	for (m = mons; m; m = m->next) {
 		Client *c;
+		if (m->num >= 32)
+			continue;
 		for (c = m->cl->clients; c; c = c->next) {
 			if (!ISVISIBLE(c, m))
 				continue;
 			if (c->isfullscreen && c->opacity >= 1.0 && c->x == m->mx &&
 			    c->y == m->my && c->w == m->mw && c->h == m->mh) {
-				awm_debug("compositor: watchdog: paused justified by "
-				          "window 0x%lx on mon %dx%d+%d+%d",
-				    (unsigned long) c->win, m->mw, m->mh, m->mx, m->my);
-				still_fullscreen = 1;
+				expected_mask |= (1u << (unsigned) m->num);
 				break;
 			}
 		}
-		if (still_fullscreen)
-			break;
 	}
 
-	if (!still_fullscreen) {
-		awm_warn("compositor: watchdog: paused but no fullscreen window "
-		         "found — forcing resume");
+	if (expected_mask != comp.paused_mask) {
+		awm_warn("compositor: watchdog: paused_mask=0x%x but expected 0x%x "
+		         "— forcing recheck",
+		    comp.paused_mask, expected_mask);
 		comp_pause_watchdog_id = 0;
 		compositor_check_unredirect();
 		return G_SOURCE_REMOVE;
 	}
 
+	awm_debug("compositor: watchdog: paused_mask=0x%x still justified",
+	    comp.paused_mask);
 	return G_SOURCE_CONTINUE;
 }
 
@@ -1151,59 +1160,151 @@ compositor_raise_overlay(void)
 	}
 }
 
+/* Update the overlay window's bounding shape to punch holes for every
+ * bypassed monitor.  Called whenever paused_mask changes.
+ *
+ * When paused_mask == 0: restore the overlay to a full-screen rectangle
+ * (no holes — the compositor covers everything).
+ *
+ * When paused_mask != 0: build a region that is the full screen minus the
+ * union of all bypassed monitor rectangles, then set that as the bounding
+ * shape.  This lets direct-scanout windows on bypassed monitors reach the
+ * display unobstructed while the overlay keeps compositing every other
+ * monitor.
+ *
+ * When ALL monitors are bypassed (comp.paused) we lower the overlay below
+ * all windows instead, and the shape is irrelevant.
+ */
+static void
+comp_update_overlay_shape(void)
+{
+	Monitor        *m;
+	xcb_rectangle_t full;
+
+	if (!comp.active || !comp.has_xshape)
+		return;
+
+	if (comp.paused_mask == 0) {
+		/* No bypass — restore bounding shape to full screen rectangle */
+		full.x      = 0;
+		full.y      = 0;
+		full.width  = (uint16_t) sw;
+		full.height = (uint16_t) sh;
+		xcb_xfixes_set_window_shape_region(xc, (xcb_window_t) comp.overlay,
+		    XCB_SHAPE_SK_BOUNDING, 0, 0, XCB_NONE);
+		/* XCB_NONE resets to the default (entire window) */
+		return;
+	}
+
+	if (comp.paused) {
+		/* All monitors bypassed — overlay is lowered, shape irrelevant */
+		return;
+	}
+
+	/* Partial bypass: start with full-screen region, subtract each
+	 * bypassed monitor's rectangle. */
+	{
+		xcb_xfixes_region_t full_rgn, hole_rgn, result_rgn;
+
+		full.x      = 0;
+		full.y      = 0;
+		full.width  = (uint16_t) sw;
+		full.height = (uint16_t) sh;
+
+		full_rgn   = xcb_generate_id(xc);
+		hole_rgn   = xcb_generate_id(xc);
+		result_rgn = xcb_generate_id(xc);
+
+		xcb_xfixes_create_region(xc, full_rgn, 1, &full);
+		xcb_xfixes_create_region(xc, hole_rgn, 0, NULL);
+		xcb_xfixes_create_region(xc, result_rgn, 0, NULL);
+
+		for (m = mons; m; m = m->next) {
+			if (m->num >= 32)
+				continue;
+			if (!(comp.paused_mask & (1u << (unsigned) m->num)))
+				continue;
+			{
+				xcb_rectangle_t mr = { (int16_t) m->mx, (int16_t) m->my,
+					(uint16_t) m->mw, (uint16_t) m->mh };
+				xcb_xfixes_union_region(xc, hole_rgn, hole_rgn, hole_rgn);
+				/* Add this monitor's rect to hole_rgn */
+				xcb_xfixes_set_region(xc, result_rgn, 1, &mr);
+				xcb_xfixes_union_region(xc, hole_rgn, result_rgn, hole_rgn);
+			}
+		}
+
+		/* result = full - holes */
+		xcb_xfixes_subtract_region(xc, full_rgn, hole_rgn, result_rgn);
+
+		xcb_xfixes_set_window_shape_region(xc, (xcb_window_t) comp.overlay,
+		    XCB_SHAPE_SK_BOUNDING, 0, 0, result_rgn);
+
+		/* Also update comp.bypass_region for potential backend use */
+		xcb_xfixes_copy_region(xc, hole_rgn, comp.bypass_region);
+
+		xcb_xfixes_destroy_region(xc, full_rgn);
+		xcb_xfixes_destroy_region(xc, hole_rgn);
+		xcb_xfixes_destroy_region(xc, result_rgn);
+	}
+	xcb_flush(xc);
+}
+
 void
 compositor_check_unredirect(void)
 {
 	Monitor *m;
-	Client  *bypass_client;
-	int      should_pause;
+	uint32_t new_mask, old_mask, added, removed;
 
 	if (!comp.active)
 		return;
 
-	/* Pause the compositor if ANY monitor has a fullscreen window covering
-	 * its entire output.  We scan all visible clients — not just m->sel —
-	 * so that a notification or launcher stealing focus on the same monitor
-	 * does not falsely resume the compositor while the video is still there.
-	 */
-	should_pause  = 0;
-	bypass_client = NULL;
+	/* Build a new paused_mask by scanning all monitors.
+	 * For each monitor: set its bit if it has a visible, opaque,
+	 * monitor-covering fullscreen window; clear it otherwise.
+	 * We scan all visible clients, not just m->sel, so that focus
+	 * changes (notifications, launcher) don't falsely resume bypass. */
+	new_mask = 0;
 	for (m = mons; m; m = m->next) {
 		Client *c;
+		if (m->num >= 32)
+			continue;
 		for (c = m->cl->clients; c; c = c->next) {
 			if (!ISVISIBLE(c, m))
 				continue;
 			if (c->isfullscreen && c->opacity >= 1.0 && c->x == m->mx &&
 			    c->y == m->my && c->w == m->mw && c->h == m->mh) {
-				should_pause  = 1;
-				bypass_client = c;
+				new_mask |= (1u << (unsigned) m->num);
 				break;
 			}
 		}
-		if (should_pause)
-			break;
 	}
 
-	awm_debug("compositor_check_unredirect: should_pause=%d comp.paused=%d "
-	          "bypass_client=0x%lx",
-	    should_pause, comp.paused,
-	    bypass_client ? (unsigned long) bypass_client->win : 0UL);
+	old_mask = comp.paused_mask;
 
-	if (should_pause == comp.paused)
+	awm_debug("compositor_check_unredirect: old_mask=0x%x new_mask=0x%x",
+	    old_mask, new_mask);
+
+	if (new_mask == old_mask)
 		return;
 
-	comp.paused = should_pause;
+	comp.paused_mask = new_mask;
 
-	if (comp.paused) {
-		if (comp.repaint_id) {
-			g_source_remove(comp.repaint_id);
-			comp.repaint_id = 0;
-		}
+	/* comp.paused = 1 only when every monitor is bypassed — this keeps
+	 * schedule_repaint/comp_arm_vblank fast-paths correct for the
+	 * single-monitor and all-monitors-bypassed cases. */
+	{
+		uint32_t full_mask = 0;
+		for (m = mons; m; m = m->next)
+			if (m->num < 32)
+				full_mask |= (1u << (unsigned) m->num);
+		comp.paused = (new_mask == full_mask && full_mask != 0);
+	}
 
-		/* Cancel any deferred fullscreen bypass that may fire after teardown.
-		 * If the timer was still pending (< 40ms since setfullscreen), we take
-		 * over the bypass work here including the raise-above-bar and
-		 * xcb_clear_area that the callback would have done. */
+	/* --- Handle monitors that just became bypassed (bit 0→1) ----------- */
+	added = new_mask & ~old_mask;
+	if (added) {
+		/* Cancel any deferred bypass timer — we take over inline. */
 		if (comp_pending_bypass_id) {
 			awm_debug("compositor: cancelling pending bypass timer for "
 			          "window 0x%x — taking over inline",
@@ -1212,12 +1313,21 @@ compositor_check_unredirect(void)
 			comp_pending_bypass_id  = 0;
 			comp_pending_bypass_win = XCB_NONE;
 		}
-		comp.vblank_armed    = 0;
-		comp.repaint_pending = 0;
+
+		/* Unredirect fullscreen windows on newly bypassed monitors. */
 		{
 			CompWin *cw;
 			for (cw = comp.windows; cw; cw = cw->next) {
-				if (cw->client && cw->client->isfullscreen && cw->redirected) {
+				Monitor *cm;
+				if (!cw->client || !cw->client->isfullscreen ||
+				    !cw->redirected)
+					continue;
+				cm = cw->client->mon;
+				if (!cm || cm->num >= 32)
+					continue;
+				if (!(added & (1u << (unsigned) cm->num)))
+					continue;
+				{
 					xcb_void_cookie_t    ck;
 					xcb_generic_error_t *err;
 
@@ -1228,20 +1338,14 @@ compositor_check_unredirect(void)
 					cw->redirected = 0;
 					comp.backend->release_pixmap(cw);
 					comp_free_win(cw);
-					awm_debug("compositor: inline unredirect of fullscreen "
-					          "window 0x%lx",
-					    cw->win);
+					awm_debug("compositor: unredirect fullscreen "
+					          "window 0x%lx (mon %d)",
+					    cw->win, cm->num);
 
-					/* Raise the fullscreen window above the bar window, then
-					 * poke it with xcb_clear_area so the DRI scanout path
-					 * activates.  This mirrors comp_fullscreen_bypass_cb which
-					 * does the same work via the deferred timer — when the
-					 * timer is cancelled we must do it here instead. */
-					if (cw->client->mon) {
-						uint32_t vals[2] = {
-							(uint32_t) cw->client->mon->barwin,
-							XCB_STACK_MODE_ABOVE
-						};
+					/* Raise above bar and kick DRI scanout. */
+					{
+						uint32_t vals[2] = { (uint32_t) cm->barwin,
+							XCB_STACK_MODE_ABOVE };
 						xcb_configure_window(xc, (xcb_window_t) cw->win,
 						    XCB_CONFIG_WINDOW_SIBLING |
 						        XCB_CONFIG_WINDOW_STACK_MODE,
@@ -1251,29 +1355,26 @@ compositor_check_unredirect(void)
 				}
 			}
 		}
-		{
-			uint32_t stack = XCB_STACK_MODE_BELOW;
-			xcb_configure_window(
-			    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
-		}
-		xcb_flush(xc);
-		awm_debug("compositor: suspended (fullscreen unredirect)");
+	}
 
-		/* Start watchdog — fires every 5 s to force-resume if the
-		 * fullscreen window disappears without triggering our normal
-		 * resume path. */
-		if (!comp_pause_watchdog_id)
-			comp_pause_watchdog_id =
-			    g_timeout_add(5000, comp_pause_watchdog_cb, NULL);
-	} else {
+	/* --- Handle monitors that just resumed (bit 1→0) ------------------- */
+	removed = old_mask & ~new_mask;
+	if (removed) {
 		CompWin *cw;
 		for (cw = comp.windows; cw; cw = cw->next) {
-			if (cw->client && !cw->redirected) {
+			Monitor *cm;
+			if (!cw->client || cw->redirected)
+				continue;
+			if (cw->client->bypass_compositor == 1)
+				continue;
+			cm = cw->client->mon;
+			if (!cm || cm->num >= 32)
+				continue;
+			if (!(removed & (1u << (unsigned) cm->num)))
+				continue;
+			{
 				xcb_void_cookie_t    ck;
 				xcb_generic_error_t *err;
-
-				if (cw->client->bypass_compositor == 1)
-					continue;
 
 				ck = xcb_composite_redirect_window_checked(
 				    xc, (xcb_window_t) cw->win, XCB_COMPOSITE_REDIRECT_MANUAL);
@@ -1287,23 +1388,62 @@ compositor_check_unredirect(void)
 					    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
 				}
 				comp_subscribe_present(cw);
-				awm_debug("compositor: re-redirected fullscreen "
-				          "window 0x%lx on resume",
-				    cw->win);
+				awm_debug("compositor: re-redirected window 0x%lx "
+				          "on resume (mon %d)",
+				    cw->win, cm->num);
 			}
 		}
-		{
-			uint32_t stack = XCB_STACK_MODE_ABOVE;
-			xcb_configure_window(
-			    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
-		}
-		/* Cancel the watchdog — we resumed normally. */
+	}
+
+	/* --- Update overlay stack order and shape -------------------------- */
+	if (new_mask == 0) {
+		/* All monitors composited — overlay goes above everything, full shape
+		 */
+		uint32_t stack = XCB_STACK_MODE_ABOVE;
+		xcb_configure_window(
+		    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		comp_update_overlay_shape();
+		/* Cancel the watchdog — we resumed completely. */
 		if (comp_pause_watchdog_id) {
 			g_source_remove(comp_pause_watchdog_id);
 			comp_pause_watchdog_id = 0;
 		}
 		compositor_damage_all();
-		awm_debug("compositor: resumed");
+		awm_debug("compositor: fully resumed (all monitors composited)");
+	} else if (comp.paused) {
+		/* ALL monitors bypassed — lower the overlay so it doesn't obstruct
+		 * direct scanout.  Stop the repaint loop entirely. */
+		if (comp.repaint_id) {
+			g_source_remove(comp.repaint_id);
+			comp.repaint_id = 0;
+		}
+		comp.vblank_armed    = 0;
+		comp.repaint_pending = 0;
+		{
+			uint32_t stack = XCB_STACK_MODE_BELOW;
+			xcb_configure_window(
+			    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		}
+		xcb_flush(xc);
+		awm_debug("compositor: fully suspended (all monitors bypassed)");
+		if (!comp_pause_watchdog_id)
+			comp_pause_watchdog_id =
+			    g_timeout_add(5000, comp_pause_watchdog_cb, NULL);
+	} else {
+		/* Partial bypass: overlay stays ABOVE, punch holes for bypassed
+		 * monitors, keep compositing the rest.  Start watchdog if this
+		 * is the first bypass transition. */
+		comp_update_overlay_shape();
+		xcb_flush(xc);
+		if (removed) {
+			/* Some monitors resumed — repaint them. */
+			compositor_damage_all();
+		}
+		if (!comp_pause_watchdog_id)
+			comp_pause_watchdog_id =
+			    g_timeout_add(5000, comp_pause_watchdog_cb, NULL);
+		awm_debug("compositor: partial bypass (mask=0x%x -> 0x%x)", old_mask,
+		    new_mask);
 	}
 }
 
