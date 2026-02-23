@@ -1106,19 +1106,27 @@ compositor_raise_overlay(void)
 void
 compositor_check_unredirect(void)
 {
-	Client *sel;
-	int     should_pause;
+	Monitor *m;
+	Client  *sel;
+	int      should_pause;
 
 	if (!comp.active)
 		return;
 
-	sel          = selmon ? selmon->sel : NULL;
+	/* Pause the compositor if ANY monitor has a focused fullscreen window
+	 * that covers its entire output.  Checking only selmon->sel caused the
+	 * bar on a fullscreen monitor to reappear whenever focus moved to a
+	 * different monitor (selmon changed, so the fullscreen window was no
+	 * longer selmon->sel and should_pause fell to 0). */
 	should_pause = 0;
-
-	if (sel && sel->isfullscreen && sel->opacity >= 1.0 &&
-	    sel->x == sel->mon->mx && sel->y == sel->mon->my &&
-	    sel->w == sel->mon->mw && sel->h == sel->mon->mh) {
-		should_pause = 1;
+	for (m = mons; m; m = m->next) {
+		sel = m->sel;
+		if (sel && sel->isfullscreen && sel->opacity >= 1.0 &&
+		    sel->x == m->mx && sel->y == m->my && sel->w == m->mw &&
+		    sel->h == m->mh) {
+			should_pause = 1;
+			break;
+		}
 	}
 
 	if (should_pause == comp.paused)
@@ -1390,6 +1398,8 @@ compositor_handle_event(xcb_generic_event_t *ev)
 			CompWin *prev = NULL, *cw;
 			for (cw = comp.windows; cw; cw = cw->next) {
 				if (cw->win == dev->window) {
+					int was_bypassed = !cw->redirected;
+
 					comp_dirty_add_rect(
 					    cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
 					if (prev)
@@ -1399,6 +1409,18 @@ compositor_handle_event(xcb_generic_event_t *ev)
 					comp.backend->release_pixmap(cw);
 					comp_free_win(cw);
 					free(cw);
+
+					/* Belt-and-suspenders: if the destroyed window was in
+					 * compositor-bypass state (unredirected), re-evaluate
+					 * whether the compositor should resume.  The normal path
+					 * goes through unmanage→focus→compositor_check_unredirect,
+					 * but if that chain fails (e.g. DestroyNotify arrives
+					 * before UnmapNotify, or the client is already gone from
+					 * the managed list) we must not leave the compositor
+					 * permanently frozen. */
+					if (was_bypassed)
+						compositor_check_unredirect();
+
 					schedule_repaint();
 					return;
 				}
