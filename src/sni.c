@@ -8,11 +8,16 @@
 #ifdef STATUSNOTIFIER
 
 #include <cairo/cairo-xcb.h>
+#include <errno.h>
+#include <sys/socket.h>
 #include <xcb/xcb.h>
 #include <xcb/render.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#include <gtk/gtk.h>
+#include <gdk/gdkx.h>
 
 #include "dbus.h"
 #include "drw.h"
@@ -20,6 +25,7 @@
 #include "log.h"
 #include "menu.h"
 #include "sni.h"
+#include "ui_proto.h"
 
 /* globals from awm.c needed here */
 extern int screen;
@@ -71,11 +77,49 @@ static Drw         *sni_drw    = NULL;
 static Clr        **sni_scheme = NULL;
 static unsigned int sniconsize = 22; /* Set during sni_init() */
 
-/* Shared menu instance */
+/* Permanent 1×1 OR input-only GdkWindow used as the grab_win for
+ * gtk_menu_popup_at_pointer().  Created in sni_init(), stays mapped. */
+static GdkWindow *sni_grab_win = NULL;
+
+/* Persistent Menu instance for SNI context menus — created in sni_init() */
 static Menu *sni_menu = NULL;
+
+/* SNI item that triggered the most recent menu show.
+ * Set in sni_get_layout_notify, read in sni_menu_item_activate(). */
+static SNIItem *sni_current_menu_item = NULL;
+
+/* Set to 1 from the moment we start a GetLayout D-Bus call until the menu is
+ * dismissed (UI_MSG_DISMISSED from awm-ui).  Used to drop duplicate
+ * right-click events that arrive while a menu is pending or already visible —
+ * firing a second gtk_menu_popup while the first is still active corrupts
+ * GTK's internal seat-grab stack and causes all subsequent gdk_seat_grab calls
+ * (e.g. in launcher_show) to return GDK_GRAB_STATUS_INVALID_TIME. */
+static int sni_menu_pending = 0;
 
 /* Forward declarations for internal functions */
 static void sni_menu_item_activated(int item_id, SNIItem *item);
+
+/* MenuCallback adaptor: bridges menu.c's (int, void*) signature to
+ * sni_menu_item_activated(int, SNIItem*). */
+static void
+sni_menu_item_activated_cb(int item_id, void *data)
+{
+	sni_menu_item_activated(item_id, (SNIItem *) data);
+	sni_current_menu_item = NULL;
+	sni_menu_pending      = 0;
+}
+
+/* MenuDismissCallback: called whenever the GTK menu is deactivated,
+ * whether or not an item was activated.  Clears the pending flag so the
+ * next right-click is accepted. */
+static void
+sni_menu_dismiss_cb(void *data)
+{
+	(void) data;
+	sni_current_menu_item = NULL;
+	sni_menu_pending      = 0;
+}
+
 static void sni_register_host(void);
 static void sni_queue_icon_load(SNIItem *item);
 
@@ -92,19 +136,6 @@ static DBusHandlerResult sni_handle_item_signal(
     DBusConnection *conn, DBusMessage *msg, void *data);
 static DBusHandlerResult sni_handle_name_owner_changed(
     DBusConnection *conn, DBusMessage *msg, void *data);
-
-/* Menu item activation callback */
-static void
-sni_menu_activated(int item_id, void *data)
-{
-	SNIItem *item = (SNIItem *) data;
-
-	if (!item)
-		return;
-
-	awm_debug("SNI: Menu item %d selected for %s", item_id, item->service);
-	sni_menu_item_activated(item_id, item);
-}
 
 static void sni_fetch_item_properties(SNIItem *item);
 
@@ -195,16 +226,40 @@ sni_init(xcb_connection_t *xc_in, xcb_connection_t *cairo_xcb,
 	/* Register host */
 	sni_register_host();
 
-	/* Initialize icon module */
-	icon_init();
-
-	/* Create menu instance */
-	sni_menu = menu_create(sni_xc, sni_root, sni_drw, sni_scheme);
-	if (!sni_menu)
-		awm_warn("SNI: Failed to create menu");
-
 	awm_debug("SNI: StatusNotifier support initialized (service: %s)",
 	    sni_watcher->unique_name);
+
+	/* Create a permanent 1×1 OR input-only GdkWindow for grab_win.
+	 * Must be done after gtk_init() (called in awm.c:main() before setup()).
+	 */
+	{
+		GdkDisplay   *dpy      = gdk_display_get_default();
+		GdkScreen    *gscr     = gdk_display_get_default_screen(dpy);
+		GdkWindow    *root_win = gdk_screen_get_root_window(gscr);
+		GdkWindowAttr attr;
+		attr.window_type       = GDK_WINDOW_CHILD;
+		attr.wclass            = GDK_INPUT_ONLY;
+		attr.x                 = 0;
+		attr.y                 = 0;
+		attr.width             = 1;
+		attr.height            = 1;
+		attr.override_redirect = TRUE;
+		attr.event_mask        = 0;
+		sni_grab_win           = gdk_window_new(
+            root_win, &attr, GDK_WA_X | GDK_WA_Y | GDK_WA_NOREDIR);
+		gdk_window_show(sni_grab_win);
+		gdk_display_flush(dpy);
+		awm_debug("SNI: grab_win created and mapped");
+	}
+
+	/* Create persistent Menu instance. */
+	sni_menu = menu_create();
+	if (sni_menu) {
+		sni_menu->timing_win       = sni_grab_win;
+		sni_menu->grab_win         = sni_grab_win;
+		sni_menu->dismiss_callback = sni_menu_dismiss_cb;
+		sni_menu->dismiss_data     = NULL;
+	}
 
 	return 1;
 }
@@ -226,10 +281,18 @@ sni_cleanup(void)
 	/* Clean up icon module */
 	icon_cleanup();
 
-	/* Clean up menu */
+	/* Free persistent menu */
 	if (sni_menu) {
+		sni_menu->timing_win = NULL; /* owned by grab_win, freed below */
+		sni_menu->grab_win   = NULL;
 		menu_free(sni_menu);
 		sni_menu = NULL;
+	}
+
+	/* Destroy the grab window */
+	if (sni_grab_win) {
+		gdk_window_destroy(sni_grab_win);
+		sni_grab_win = NULL;
 	}
 
 	/* Release D-Bus name and close the private connection.
@@ -643,6 +706,14 @@ sni_remove_item(SNIItem *item)
 	}
 
 	item->generation++; /* invalidate any in-flight async ctx */
+
+	/* If a menu was open for this item, clear the global pointer and the
+	 * pending flag so the next right-click on any icon is accepted. */
+	if (sni_current_menu_item == item) {
+		sni_current_menu_item = NULL;
+		sni_menu_pending      = 0;
+	}
+
 	free(item);
 }
 
@@ -912,19 +983,30 @@ sni_fetch_item_properties(SNIItem *item)
 	 * before this reply arrives */
 	item->properties_fetching = 1;
 
-	/* Subscribe to property changes */
-	snprintf(match, sizeof(match),
-	    "type='signal',sender='%s',interface='org.freedesktop.DBus."
-	    "Properties'",
-	    item->service);
-	if (!dbus_helper_add_match(sni_watcher->conn, match))
-		awm_warn("SNI: Failed to add Properties match for %s", item->service);
+	/* Subscribe to property changes — add match rules only once per item.
+	 * sni_fetch_item_properties() is also called from sni_update_item()
+	 * (on every NewIcon/PropertiesChanged signal), so without the guard
+	 * the match rule table grows unboundedly. */
+	if (!item->matches_added) {
+		item->matches_added = 1;
 
-	/* Also subscribe to item-specific signals */
-	snprintf(match, sizeof(match), "type='signal',sender='%s',interface='%s'",
-	    item->service, ITEM_INTERFACE);
-	if (!dbus_helper_add_match(sni_watcher->conn, match))
-		awm_warn("SNI: Failed to add item signal match for %s", item->service);
+		/* Subscribe to property changes */
+		snprintf(match, sizeof(match),
+		    "type='signal',sender='%s',interface='org.freedesktop.DBus."
+		    "Properties'",
+		    item->service);
+		if (!dbus_helper_add_match(sni_watcher->conn, match))
+			awm_warn(
+			    "SNI: Failed to add Properties match for %s", item->service);
+
+		/* Also subscribe to item-specific signals */
+		snprintf(match, sizeof(match),
+		    "type='signal',sender='%s',interface='%s'", item->service,
+		    ITEM_INTERFACE);
+		if (!dbus_helper_add_match(sni_watcher->conn, match))
+			awm_warn(
+			    "SNI: Failed to add item signal match for %s", item->service);
+	}
 }
 
 void
@@ -1204,14 +1286,17 @@ sni_icon_loaded_cb(cairo_surface_t *surface, void *userdata)
 
 	item = data->item;
 
-	/* Guard against use-after-free: check generation and list membership. */
-	if (item && item->generation == data->generation && sni_watcher) {
+	/* Guard against use-after-free: walk the live list first to confirm the
+	 * item pointer is still valid, THEN check the generation.  Reading
+	 * item->generation before the list walk would dereference a potentially
+	 * freed pointer. */
+	if (item && sni_watcher) {
 		SNIItem *p;
 		for (p = sni_watcher->items; p; p = p->next) {
 			if (p == item)
 				break;
 		}
-		if (p == item && surface &&
+		if (p == item && p->generation == data->generation && surface &&
 		    cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS) {
 			sni_icon_render(item, surface);
 		}
@@ -1383,7 +1468,25 @@ sni_handle_click(
 	 * otherwise send ContextMenu and let the app render its own menu. */
 	if (button == 3) {
 		if (item->menu_path) {
+			/* Ignore a second right-click while a menu is already
+			 * pending (D-Bus reply in flight) or visible.  Firing
+			 * gtk_menu_popup twice in quick succession corrupts
+			 * GTK's internal seat-grab stack and causes the next
+			 * gdk_seat_grab (e.g. launcher_show) to receive
+			 * GDK_GRAB_STATUS_INVALID_TIME. */
+			if (sni_menu_pending) {
+				awm_debug("SNI: menu already pending/visible, ignoring click");
+				return;
+			}
 			awm_debug("SNI: Showing DBusMenu for %s", item->service);
+			/* Explicitly release any active XCB pointer grab before
+			 * handing over to GTK's seat-grab inside menu_show().
+			 * xcb_allow_events(ASYNC_POINTER) was already called above
+			 * to unfreeze the pointer, but the passive grab may still
+			 * be "active" (button physically held).  xcb_ungrab_pointer
+			 * forces it gone so gdk_seat_grab() succeeds. */
+			xcb_ungrab_pointer(sni_xc, event_time);
+			xcb_flush(sni_xc);
 			sni_show_menu(item, x, y, event_time);
 			return;
 		}
@@ -1649,9 +1752,12 @@ sni_build_menu_from_layout(SNIItem *item, DBusMessageIter *iter, int depth)
 	return head;
 }
 
-/* Context passed to the async GetLayout reply callback */
+/* Context passed to the async GetLayout reply callback.
+ * generation mirrors item->generation at call time so the callback can
+ * detect if the item was freed before the reply arrived. */
 typedef struct {
 	SNIItem        *item;
+	uint32_t        generation;
 	int             x;
 	int             y;
 	xcb_timestamp_t event_time;
@@ -1672,23 +1778,50 @@ sni_get_layout_notify(DBusPendingCall *pending, void *user_data)
 	reply = dbus_pending_call_steal_reply(pending);
 	dbus_pending_call_unref(pending);
 
-	if (!ctx)
+	if (!ctx) {
+		/* Should never happen, but be safe. */
+		sni_menu_pending = 0;
 		goto done;
+	}
 
 	item       = ctx->item;
 	x          = ctx->x;
 	y          = ctx->y;
 	event_time = ctx->event_time;
+
+	/* Guard against use-after-free: walk the live list and verify the item
+	 * pointer is still valid and has not been recycled (generation check).
+	 * Same pattern as SNIGetAllCtx in sni_properties_received(). */
+	{
+		SNIItem *p;
+		int      still_alive = 0;
+		if (sni_watcher) {
+			for (p = sni_watcher->items; p; p = p->next) {
+				if (p == item && p->generation == ctx->generation) {
+					still_alive = 1;
+					break;
+				}
+			}
+		}
+		if (!still_alive) {
+			awm_debug("DBusMenu: item gone before GetLayout reply arrived");
+			free(ctx);
+			sni_menu_pending = 0;
+			goto done;
+		}
+	}
 	free(ctx);
 
 	if (!reply) {
 		awm_error("DBusMenu: No reply to GetLayout");
+		sni_menu_pending = 0;
 		return;
 	}
 
 	if (dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_ERROR) {
 		awm_error("DBusMenu: GetLayout failed: %s",
 		    dbus_message_get_error_name(reply));
+		sni_menu_pending = 0;
 		goto done;
 	}
 
@@ -1717,24 +1850,37 @@ sni_get_layout_notify(DBusPendingCall *pending, void *user_data)
 				int count = menu_items_count(menu_items);
 				awm_debug("DBusMenu: Built menu with %d items", count);
 #endif
+				/* Track which item triggered this menu for the
+				 * activation callback */
+				sni_current_menu_item = item;
 
-				/* Set items and show menu (menu_show handles monitor
-				 * detection) */
-				menu_set_items(sni_menu, menu_items);
-				menu_show(
-				    sni_menu, x, y, sni_menu_activated, item, event_time);
+				if (sni_menu) {
+					/* Callback wrapper: call sni_menu_item_activated
+					 * directly instead of round-tripping over the socket. */
+					menu_set_items(sni_menu, menu_items);
+					menu_show(sni_menu, x, y,
+					    (MenuCallback) sni_menu_item_activated_cb, item,
+					    (xcb_timestamp_t) event_time);
+				} else {
+					awm_warn("DBusMenu: sni_menu not initialised");
+					sni_menu_pending = 0;
+					menu_items_free(menu_items);
+				}
 
 				awm_debug("DBusMenu: Menu shown");
 			} else {
 				awm_debug("DBusMenu: No menu items parsed");
+				sni_menu_pending = 0;
 			}
 		} else {
 			awm_debug("DBusMenu: Children is not an array (type=%c)",
 			    dbus_message_iter_get_arg_type(&struct_iter));
+			sni_menu_pending = 0;
 		}
 	} else {
 		awm_debug("DBusMenu: Root layout is not a struct (type=%c)",
 		    dbus_message_iter_get_arg_type(&iter));
+		sni_menu_pending = 0;
 	}
 
 done:
@@ -1754,6 +1900,10 @@ sni_show_menu(SNIItem *item, int x, int y, xcb_timestamp_t event_time)
 
 	if (!item || !item->service || !item->menu_path || !sni_menu)
 		return;
+
+	/* Mark a menu as in-flight immediately so duplicate right-clicks are
+	 * dropped in sni_handle_click while the async D-Bus reply is pending. */
+	sni_menu_pending = 1;
 
 	awm_debug(
 	    "DBusMenu: Fetching menu from %s%s", item->service, item->menu_path);
@@ -1795,9 +1945,11 @@ sni_show_menu(SNIItem *item, int x, int y, xcb_timestamp_t event_time)
 	ctx = malloc(sizeof(SNIMenuContext));
 	if (!ctx) {
 		dbus_message_unref(msg);
+		sni_menu_pending = 0;
 		return;
 	}
 	ctx->item       = item;
+	ctx->generation = item->generation;
 	ctx->x          = x;
 	ctx->y          = y;
 	ctx->event_time = event_time;
@@ -1808,12 +1960,14 @@ sni_show_menu(SNIItem *item, int x, int y, xcb_timestamp_t event_time)
 	        sni_watcher->conn, msg, &pending, -1)) {
 		dbus_message_unref(msg);
 		free(ctx);
+		sni_menu_pending = 0;
 		return;
 	}
 	dbus_message_unref(msg);
 
 	if (!pending) {
 		free(ctx);
+		sni_menu_pending = 0;
 		return;
 	}
 
@@ -1822,18 +1976,9 @@ sni_show_menu(SNIItem *item, int x, int y, xcb_timestamp_t event_time)
 		dbus_pending_call_cancel(pending);
 		dbus_pending_call_unref(pending);
 		free(ctx);
+		sni_menu_pending = 0;
 	}
 	/* pending is unref'd inside sni_get_layout_notify when reply arrives */
-}
-
-/* Public API for handling menu events from awm */
-int
-sni_handle_menu_event(xcb_generic_event_t *ev)
-{
-	if (!sni_menu)
-		return 0;
-
-	return menu_handle_event(sni_menu, ev);
 }
 
 #endif /* STATUSNOTIFIER */

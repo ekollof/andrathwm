@@ -55,6 +55,7 @@ typedef struct SNIItem {
 	int          mapped;             /* Window mapped state */
 	int          properties_fetched; /* Set when GetAll reply arrives */
 	int properties_fetching; /* In-flight guard: prevents re-sending GetAll */
+	int matches_added; /* D-Bus match rules added (add only once per item) */
 	uint32_t
 	    generation; /* Incremented when item is freed (use-after-free guard) */
 
@@ -110,7 +111,6 @@ void sni_scroll(SNIItem *item, int delta, const char *orientation);
 /* Menu support */
 void sni_show_menu(SNIItem *item, int x, int y, xcb_timestamp_t event_time);
 void sni_free_menu(SNIMenuItem *menu);
-int  sni_handle_menu_event(xcb_generic_event_t *ev);
 
 /* D-Bus helpers */
 DBusMessage *sni_call_method(const char *service, const char *path,

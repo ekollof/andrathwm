@@ -2,16 +2,17 @@
  *
  * Reusable menu system for awm — GTK backend
  *
- * Public API is identical to the old XCB implementation so all callers
- * (sni.c, awm.c) require zero changes.  The drw/scheme parameters accepted
- * by menu_create() are silently ignored; all rendering is handled by GTK.
+ * Provides GTK-based popup menus with keyboard and mouse support.
+ * All XCB dependencies have been removed; xcb_timestamp_t is typedef'd as
+ * uint32_t in menu.h for the event_time parameter used by menu_show().
  */
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <gtk/gtk.h>
-#include <xcb/xcb.h>
+#include <gdk/gdkx.h>
 
 #include "log.h"
 #include "menu.h"
@@ -107,7 +108,11 @@ on_menu_deactivate(GtkMenuShell *shell, gpointer user_data)
 {
 	Menu *menu = (Menu *) user_data;
 	(void) shell;
+	awm_debug("menu: on_menu_deactivate fired");
 	menu->visible = 0;
+
+	if (menu->dismiss_callback)
+		menu->dismiss_callback(menu->dismiss_data);
 }
 
 /* -------------------------------------------------------------------------
@@ -115,20 +120,14 @@ on_menu_deactivate(GtkMenuShell *shell, gpointer user_data)
  * ---------------------------------------------------------------------- */
 
 Menu *
-menu_create(xcb_connection_t *xc, xcb_window_t root, Drw *drw, Clr **scheme)
+menu_create(void)
 {
 	Menu *menu;
-
-	/* Suppress unused-parameter warnings — these args exist for API compat */
-	(void) root;
-	(void) drw;
-	(void) scheme;
 
 	menu = calloc(1, sizeof(Menu));
 	if (!menu)
 		return NULL;
 
-	menu->xc         = xc;
 	menu->owns_items = 1;
 	menu->visible    = 0;
 	menu->gtk_menu   = NULL;
@@ -146,6 +145,11 @@ menu_free(Menu *menu)
 		menu_hide(menu);
 
 	if (menu->gtk_menu) {
+		if (menu->deactivate_handler) {
+			g_signal_handler_disconnect(
+			    menu->gtk_menu, menu->deactivate_handler);
+			menu->deactivate_handler = 0;
+		}
 		gtk_widget_destroy(menu->gtk_menu);
 		menu->gtk_menu = NULL;
 	}
@@ -165,11 +169,15 @@ menu_set_items(Menu *menu, MenuItem *items)
 	if (menu->owns_items && menu->items)
 		menu_items_free(menu->items);
 
-	menu->items      = items;
-	menu->item_count = menu_items_count(items);
+	menu->items = items;
 
 	/* Destroy old GTK menu so it gets rebuilt fresh on next show */
 	if (menu->gtk_menu) {
+		if (menu->deactivate_handler) {
+			g_signal_handler_disconnect(
+			    menu->gtk_menu, menu->deactivate_handler);
+			menu->deactivate_handler = 0;
+		}
 		gtk_widget_destroy(menu->gtk_menu);
 		menu->gtk_menu = NULL;
 	}
@@ -179,18 +187,23 @@ void
 menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
     xcb_timestamp_t event_time)
 {
-	GdkRectangle    rect;
-	GdkEvent       *trigger;
-	GdkEventButton *btn;
-
 	if (!menu || !menu->items)
 		return;
+
+	awm_debug("menu_show: x=%d y=%d", x, y);
 
 	menu->callback      = callback;
 	menu->callback_data = data;
 
-	/* (Re)build the GTK widget tree from the MenuItem list */
+	/* (Re)build the GTK widget tree from the MenuItem list. */
 	if (menu->gtk_menu) {
+		if (menu->visible)
+			gtk_menu_popdown(GTK_MENU(menu->gtk_menu));
+		if (menu->deactivate_handler) {
+			g_signal_handler_disconnect(
+			    menu->gtk_menu, menu->deactivate_handler);
+			menu->deactivate_handler = 0;
+		}
 		gtk_widget_destroy(menu->gtk_menu);
 		menu->gtk_menu = NULL;
 	}
@@ -199,42 +212,65 @@ menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
 	if (!menu->gtk_menu)
 		return;
 
-	g_signal_connect(
+	menu->deactivate_handler = g_signal_connect(
 	    menu->gtk_menu, "deactivate", G_CALLBACK(on_menu_deactivate), menu);
 
 	menu->visible = 1;
 
-	/* Position at (x, y) using a zero-size anchor rectangle */
-	rect.x      = x;
-	rect.y      = y;
-	rect.width  = 1;
-	rect.height = 1;
+	/* Popup the GtkMenu.
+	 *
+	 * We do NOT call gdk_seat_grab() ourselves — GTK does it internally
+	 * inside gtk_menu_popup_at_pointer().  Calling it beforehand causes
+	 * GDK_GRAB_ALREADY_GRABBED because GTK registers passive XGrabButton
+	 * handlers on every mapped GdkWindow (including our grab_win), and an
+	 * explicit active gdk_seat_grab() on the same window triggers the
+	 * AlreadyGrabbed error from the X server.
+	 *
+	 * We use:
+	 *  - timing_win for gdk_x11_get_server_time (PropertyNotify round-trip)
+	 *    to obtain a fresh server timestamp
+	 *  - grab_win as ev->button.window — GTK passes this to its internal
+	 *    gdk_seat_grab() call so it must be a viewable (mapped) window
+	 */
+	{
+		GdkDisplay *dpy  = gtk_widget_get_display(menu->gtk_menu);
+		GdkSeat    *seat = gdk_display_get_default_seat(dpy);
+		GdkDevice  *ptr  = gdk_seat_get_pointer(seat);
+		GdkWindow  *twin = menu->timing_win;
+		GdkWindow  *gwin = menu->grab_win ? menu->grab_win : twin;
+		guint32     ts =
+            twin ? gdk_x11_get_server_time(twin) : (guint32) event_time;
 
-	/* Build a synthetic GdkEventButton carrying the real X server timestamp
-	 * and root coordinates.  Without this, gtk_menu_popup_at_rect uses
-	 * GDK_CURRENT_TIME for its seat grab — which races against the XCB
-	 * button-press awm already consumed — causing the grab to fail or the
-	 * menu to appear without proper input ownership, leaving hotkeys dead. */
-	trigger = gdk_event_new(GDK_BUTTON_PRESS);
-	btn     = (GdkEventButton *) trigger;
-	btn->window =
-	    g_object_ref(gdk_screen_get_root_window(gdk_screen_get_default()));
-	btn->send_event = TRUE;
-	btn->time       = (guint32) event_time;
-	btn->x_root     = (gdouble) x;
-	btn->y_root     = (gdouble) y;
-	btn->x          = (gdouble) x;
-	btn->y          = (gdouble) y;
-	btn->button     = 3;
-	btn->state      = 0;
-	btn->device     = gdk_seat_get_pointer(
-        gdk_display_get_default_seat(gdk_display_get_default()));
+		awm_debug("menu_show: ts=%u twin=%p gwin=%p", ts, (void *) twin,
+		    (void *) gwin);
 
-	gtk_menu_popup_at_rect(GTK_MENU(menu->gtk_menu),
-	    gdk_screen_get_root_window(gdk_screen_get_default()), &rect,
-	    GDK_GRAVITY_NORTH_WEST, GDK_GRAVITY_NORTH_WEST, trigger);
+		/* Ungrab any stale GDK grab left by a previous failed popup
+		 * (e.g. GTK's internal grab-transfer-window).  Do NOT probe with
+		 * an explicit gdk_seat_grab — see comment above. */
+		gdk_seat_ungrab(seat);
+		gdk_display_flush(dpy);
 
-	gdk_event_free(trigger);
+		GdkEvent *ev      = gdk_event_new(GDK_BUTTON_PRESS);
+		ev->button.time   = ts;
+		ev->button.button = 3;
+		ev->button.window = gwin ? g_object_ref(gwin) : NULL;
+		gdk_event_set_device(ev, ptr);
+		gtk_menu_popup_at_pointer(GTK_MENU(menu->gtk_menu), ev);
+		gdk_event_free(ev);
+
+		gdk_display_flush(dpy);
+	}
+
+	if (menu->visible && menu->gtk_menu &&
+	    !gtk_widget_get_mapped(menu->gtk_menu)) {
+		awm_warn(
+		    "menu_show: menu not mapped after popup — forcing self-dismiss");
+		on_menu_deactivate(GTK_MENU_SHELL(menu->gtk_menu), menu);
+	} else if (!menu->visible) {
+		awm_warn("menu_show: menu was immediately dismissed");
+	} else {
+		awm_debug("menu_show: menu mapped OK");
+	}
 }
 
 void
@@ -249,18 +285,8 @@ menu_hide(Menu *menu)
 	menu->visible = 0;
 }
 
-/* GTK processes all input through the GLib main loop — no XCB event
- * handling needed.  Always return 0 so the WM continues normal dispatch. */
-int
-menu_handle_event(Menu *menu, xcb_generic_event_t *ev)
-{
-	(void) menu;
-	(void) ev;
-	return 0;
-}
-
 /* -------------------------------------------------------------------------
- * Menu item helpers  (unchanged from original)
+ * Menu item helpers
  * ---------------------------------------------------------------------- */
 
 MenuItem *

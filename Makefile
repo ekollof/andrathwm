@@ -18,12 +18,17 @@ endif
 
 SRC = $(DRW_SRC) awm.c util.c menu.c dbus.c icon.c sni.c log.c \
 	client.c monitor.c events.c ewmh.c systray.c spawn.c xrdb.c \
-	status.c status_util.c status_components.c launcher.c xsource.c \
+	status.c status_util.c status_components.c xsource.c \
 	compositor.c compositor_egl.c compositor_xrender.c
 SRCS = $(addprefix $(SRCDIR)/,$(SRC))
 OBJ = $(addprefix $(BUILDDIR)/,$(SRC:.c=.o))
 
-all: $(BUILDDIR) compile_flags.txt awm xidle
+# awm-ui: separate GTK helper process (launcher + SNI menus)
+UI_SRC  = $(DRW_SRC) awm_ui.c launcher.c icon.c log.c util.c
+UI_SRCS = $(addprefix $(SRCDIR)/,$(UI_SRC))
+UI_OBJ  = $(addprefix $(BUILDDIR)/ui_,$(UI_SRC:.c=.o))
+
+all: $(BUILDDIR) compile_flags.txt awm awm-ui xidle
 
 $(BUILDDIR):
 	mkdir -p $(BUILDDIR)
@@ -38,6 +43,14 @@ config.h:
 # Link awm
 awm: $(OBJ)
 	${CC} -o $@ ${OBJ} ${LDFLAGS}
+
+# Compile object files for awm-ui (prefixed with ui_ to avoid collisions)
+$(BUILDDIR)/ui_%.o: $(SRCDIR)/%.c config.h status_config.h config.mk | $(BUILDDIR)
+	${CC} -c ${CFLAGS} -o $@ $<
+
+# Link awm-ui
+awm-ui: $(UI_OBJ)
+	${CC} -o $@ ${UI_OBJ} ${LDFLAGS}
 
 # Build xidle (XCB screensaver — no Xlib dependency)
 xidle: $(SRCDIR)/xidle.c
@@ -57,7 +70,7 @@ for l in sys.stdin if re.search(r'src/\S+\.c$$',l)]; print(json.dumps(entries,in
 	$(MAKE)
 
 clean:
-	rm -rf awm xidle $(BUILDDIR) awm-${VERSION}.tar.gz compile_flags.txt
+	rm -rf awm awm-ui xidle $(BUILDDIR) awm-${VERSION}.tar.gz compile_flags.txt
 
 dist: clean
 	mkdir -p awm-${VERSION}
@@ -71,6 +84,8 @@ install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
 	cp -f awm ${DESTDIR}${PREFIX}/bin
 	chmod 755 ${DESTDIR}${PREFIX}/bin/awm
+	cp -f awm-ui ${DESTDIR}${PREFIX}/bin
+	chmod 755 ${DESTDIR}${PREFIX}/bin/awm-ui
 	cp -f xidle ${DESTDIR}${PREFIX}/bin
 	chmod 755 ${DESTDIR}${PREFIX}/bin/xidle
 	mkdir -p ${DESTDIR}${MANPREFIX}/man1
@@ -79,6 +94,7 @@ install: all
 
 uninstall:
 	rm -f ${DESTDIR}${PREFIX}/bin/awm\
+		${DESTDIR}${PREFIX}/bin/awm-ui\
 		${DESTDIR}${PREFIX}/bin/xidle\
 		${DESTDIR}${MANPREFIX}/man1/awm.1
 

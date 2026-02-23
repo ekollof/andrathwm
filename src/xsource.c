@@ -6,9 +6,11 @@
 
 #include <xcb/xcb.h>
 #include <glib.h>
+#include <gtk/gtk.h>
 
-/* GMainLoop to quit on X server death; set via xsource_set_quit_loop(). */
-static GMainLoop *xsource_quit_loop = NULL;
+/* Whether to call gtk_main_quit() (instead of exit) on X server death.
+ * Set to 1 via xsource_set_quit_loop(). */
+static int xsource_use_gtk_quit = 0;
 
 /* Internal structure — GSource must be the first member so that the
  * GLib vtable functions can cast between GSource* and XSource*. */
@@ -62,9 +64,9 @@ xsource_dispatch(GSource *src, GSourceFunc callback, gpointer user_data)
 	XSource *xs = (XSource *) src;
 
 	if (xs->pollfd.revents & (G_IO_HUP | G_IO_ERR)) {
-		if (xsource_quit_loop) {
+		if (xsource_use_gtk_quit) {
 			/* Quit cleanly so cleanup() and xcb_disconnect() can run. */
-			g_main_loop_quit(xsource_quit_loop);
+			gtk_main_quit();
 			return G_SOURCE_REMOVE;
 		}
 		exit(1);
@@ -77,7 +79,10 @@ xsource_dispatch(GSource *src, GSourceFunc callback, gpointer user_data)
 }
 
 static GSourceFuncs xsource_funcs = {
-	xsource_prepare, xsource_check, xsource_dispatch, NULL, /* finalize */
+	xsource_prepare,
+	xsource_check,
+	xsource_dispatch,
+	NULL, /* finalize */
 	NULL, /* closure_callback */
 	NULL, /* closure_marshal */
 };
@@ -121,7 +126,7 @@ xsource_attach(xcb_connection_t *xc, GMainContext *ctx, GSourceFunc callback,
 }
 
 void
-xsource_set_quit_loop(GMainLoop *loop)
+xsource_use_gtk_main_quit(void)
 {
-	xsource_quit_loop = loop;
+	xsource_use_gtk_quit = 1;
 }

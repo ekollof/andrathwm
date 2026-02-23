@@ -85,6 +85,8 @@ static const Rule rules[] = {
 	// 0, 0.0 },
 	{ NULL, NULL, "notepad", 0, 1, 1, -1, 's', 0.0 },
 	{ NULL, NULL, "mpd", 0, 1, 1, -1, 'm', 0.0 },
+	/* awm's own launcher — floating, centered, shown on all tags */
+	{ "awm-launcher", NULL, NULL, 0, 1, 1, -1, 0, 0.0 },
 };
 
 /* layout(s) */

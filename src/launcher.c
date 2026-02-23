@@ -14,20 +14,21 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #include <gtk/gtk.h>
-#include <xcb/xcb.h>
+#include <gdk/gdkx.h>
 
 #include "icon.h"
 #include "launcher.h"
 #include "log.h"
+#include "ui_proto.h"
 #include "util.h"
 
 /* -------------------------------------------------------------------------
@@ -693,7 +694,7 @@ launcher_sort_func(GtkListBoxRow *a, GtkListBoxRow *b, gpointer user_data)
 	return launcher_item_cmp(&pa, &pb);
 }
 
-/* Launch the currently selected row */
+/* Launch the currently selected row — sends UI_MSG_LAUNCHER_EXEC to awm */
 static void
 launcher_launch_row(Launcher *launcher, LauncherItem *item)
 {
@@ -705,28 +706,30 @@ launcher_launch_row(Launcher *launcher, LauncherItem *item)
 
 	launcher_hide(launcher);
 
-	pid_t pid = fork();
-	if (pid < 0) {
-		awm_error("launcher: fork failed: %s", strerror(errno));
-		return;
+	/* Build the command string.  For terminal apps prefix with the
+	 * configured terminal emulator so awm can exec it unchanged. */
+	char cmd[2048];
+	if (item->terminal) {
+		const char *term = launcher->terminal;
+		if (!term || !*term)
+			term = "st";
+		snprintf(cmd, sizeof(cmd), "%s -e sh -c %s", term, item->exec);
+	} else {
+		snprintf(cmd, sizeof(cmd), "%s", item->exec);
 	}
-	if (pid == 0) {
-		signal(SIGCHLD, SIG_DFL);
-		if (launcher->xc)
-			close(xcb_get_file_descriptor(launcher->xc));
-		setsid();
-		if (item->terminal) {
-			const char *term = launcher->terminal;
-			if (!term || !*term)
-				term = getenv("TERMINAL");
-			if (!term || !*term)
-				term = "st";
-			execlp(term, term, "-e", "sh", "-c", item->exec, NULL);
-		} else {
-			execlp("sh", "sh", "-c", item->exec, NULL);
-		}
-		exit(1);
-	}
+
+	/* Send command to awm */
+	size_t       len = strlen(cmd) + 1; /* include NUL */
+	uint8_t      buf[sizeof(UiMsgHeader) + 2048];
+	UiMsgHeader *hdr = (UiMsgHeader *) buf;
+	hdr->type        = (uint32_t) UI_MSG_LAUNCHER_EXEC;
+	hdr->payload_len = (uint32_t) len;
+	memcpy(buf + sizeof(UiMsgHeader), cmd, len);
+
+	ssize_t n =
+	    send(launcher->ui_fd, buf, sizeof(UiMsgHeader) + len, MSG_NOSIGNAL);
+	if (n < 0)
+		awm_error("launcher: send EXEC failed: %s", strerror(errno));
 }
 
 /* Signal: row activated (double-click or Enter on a row) */
@@ -740,6 +743,27 @@ on_row_activated(GtkListBox *listbox, GtkListBoxRow *row, gpointer user_data)
 	launcher_launch_row(launcher, item);
 }
 
+/* Idle callback: select the first visible row after the filter has been
+ * applied by GTK.  gtk_list_box_invalidate_filter schedules a relayout;
+ * row visibility is not updated synchronously, so we must defer the
+ * selection until the next idle pass when GTK has re-run the filter. */
+static gboolean
+select_first_visible_idle(gpointer user_data)
+{
+	Launcher      *launcher = (Launcher *) user_data;
+	GtkListBox    *lb       = GTK_LIST_BOX(launcher->listbox);
+	GtkListBoxRow *row;
+	int            i = 0;
+
+	while ((row = gtk_list_box_get_row_at_index(lb, i++))) {
+		if (gtk_widget_get_child_visible(GTK_WIDGET(row))) {
+			gtk_list_box_select_row(lb, row);
+			break;
+		}
+	}
+	return G_SOURCE_REMOVE; /* one-shot */
+}
+
 /* Signal: search text changed — re-filter and re-sort rows */
 static void
 on_search_changed(GtkSearchEntry *entry, gpointer user_data)
@@ -750,28 +774,38 @@ on_search_changed(GtkSearchEntry *entry, gpointer user_data)
 	gtk_list_box_invalidate_filter(GTK_LIST_BOX(launcher->listbox));
 	gtk_list_box_invalidate_sort(GTK_LIST_BOX(launcher->listbox));
 
-	/* Select first visible row */
-	GtkListBoxRow *first =
-	    gtk_list_box_get_row_at_index(GTK_LIST_BOX(launcher->listbox), 0);
-	/* Iterate to find first visible row */
-	int i = 0;
-	while (first && !gtk_widget_get_visible(GTK_WIDGET(first)))
-		first = gtk_list_box_get_row_at_index(
-		    GTK_LIST_BOX(launcher->listbox), ++i);
-	if (first)
-		gtk_list_box_select_row(GTK_LIST_BOX(launcher->listbox), first);
+	/* Defer selection until GTK has re-run the filter function and updated
+	 * row visibility.  Checking gtk_widget_get_visible immediately after
+	 * invalidate_filter reads stale state (filter runs asynchronously). */
+	g_idle_add(select_first_visible_idle, launcher);
 }
 
-/* Signal: realize — set override-redirect so the WM does not manage this
- * window.  This must be done on the underlying GdkWindow after it is
- * created but before it is mapped. */
+/* Signal: realize — notify awm of our X window ID.  The window is managed
+ * by awm via its normal MapRequest/manage() path; awm's applyrules() will
+ * match the "awm-launcher" WM_CLASS and apply isfloating+iscentered, then
+ * setfocus() gives us keyboard focus without any cross-process ordering
+ * race. */
 static void
 on_window_realize(GtkWidget *widget, gpointer user_data)
 {
-	(void) user_data;
-	GdkWindow *gdk_win = gtk_widget_get_window(widget);
-	if (gdk_win)
-		gdk_window_set_override_redirect(gdk_win, TRUE);
+	Launcher  *launcher = (Launcher *) user_data;
+	GdkWindow *gdk_win  = gtk_widget_get_window(widget);
+	if (!gdk_win)
+		return;
+
+	if (launcher) {
+		/* Tell awm our X window ID so it can focus us directly. */
+		struct {
+			UiMsgHeader            hdr;
+			UiLauncherReadyPayload pay;
+		} msg;
+		msg.hdr.type        = (uint32_t) UI_MSG_LAUNCHER_READY;
+		msg.hdr.payload_len = sizeof(msg.pay);
+		msg.pay.xwin        = (uint32_t) gdk_x11_window_get_xid(gdk_win);
+		awm_debug("launcher: realize xwin=0x%x, sending LAUNCHER_READY",
+		    msg.pay.xwin);
+		send(launcher->ui_fd, &msg, sizeof(msg), MSG_NOSIGNAL);
+	}
 }
 
 /* Signal: delete-event — hide instead of destroying the window */
@@ -829,7 +863,6 @@ on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
 					gtk_list_box_select_row(lb, r);
 					GtkWidget *sw = gtk_widget_get_parent(
 					    gtk_widget_get_parent(launcher->listbox));
-					gtk_widget_activate(GTK_WIDGET(r));
 					/* scroll into view */
 					GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(
 					    GTK_SCROLLED_WINDOW(sw));
@@ -893,22 +926,15 @@ on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
  * ---------------------------------------------------------------------- */
 
 Launcher *
-launcher_create(xcb_connection_t *xc, xcb_window_t root, Clr **scheme,
-    const char **fonts, size_t fontcount, const char *term)
+launcher_create(int ui_fd, const char *term)
 {
 	Launcher *launcher;
 	char     *home;
 	char      path[512];
 	int       i;
 
-	/* Suppress unused-parameter warnings — API compat only */
-	(void) root;
-	(void) scheme;
-	(void) fonts;
-	(void) fontcount;
-
 	launcher           = ecalloc(1, sizeof(Launcher));
-	launcher->xc       = xc;
+	launcher->ui_fd    = ui_fd;
 	launcher->terminal = (term && *term) ? term : "st";
 
 	/* Resolve history path */
@@ -950,8 +976,12 @@ launcher_create(xcb_connection_t *xc, xcb_window_t root, Clr **scheme,
 	gtk_window_set_decorated(GTK_WINDOW(launcher->window), FALSE);
 	gtk_window_set_skip_taskbar_hint(GTK_WINDOW(launcher->window), TRUE);
 	gtk_window_set_skip_pager_hint(GTK_WINDOW(launcher->window), TRUE);
+	/* UTILITY avoids the "popup without a parent" GDK warning that
+	 * POPUP_MENU triggers, while still suppressing the taskbar entry.
+	 * The window is made override-redirect in launcher_show() anyway,
+	 * so the WM never sees it regardless of hint. */
 	gtk_window_set_type_hint(
-	    GTK_WINDOW(launcher->window), GDK_WINDOW_TYPE_HINT_POPUP_MENU);
+	    GTK_WINDOW(launcher->window), GDK_WINDOW_TYPE_HINT_UTILITY);
 	gtk_window_set_default_size(GTK_WINDOW(launcher->window), 420, 400);
 	gtk_window_set_resizable(GTK_WINDOW(launcher->window), FALSE);
 
@@ -985,13 +1015,21 @@ launcher_create(xcb_connection_t *xc, xcb_window_t root, Clr **scheme,
 	g_signal_connect(launcher->listbox, "row-activated",
 	    G_CALLBACK(on_row_activated), launcher);
 	g_signal_connect(
-	    launcher->window, "realize", G_CALLBACK(on_window_realize), NULL);
+	    launcher->window, "realize", G_CALLBACK(on_window_realize), launcher);
 	g_signal_connect(launcher->window, "key-press-event",
 	    G_CALLBACK(on_key_press), launcher);
 	g_signal_connect(launcher->window, "delete-event",
 	    G_CALLBACK(on_delete_event), launcher);
 
-	/* Hide by default */
+	/* Set WM_CLASS so awm's applyrules() can match this window and apply
+	 * isfloating + iscentered.  awm will manage the launcher as a normal
+	 * floating window, giving it focus via setfocus() on every MapRequest. */
+	gtk_window_set_wmclass(
+	    GTK_WINDOW(launcher->window), "awm-launcher", "awm-launcher");
+
+	/* Realize early so the window is ready before the first show. */
+	gtk_widget_realize(launcher->window);
+	/* Keep window hidden until launcher_show() is called. */
 	gtk_widget_hide(launcher->window);
 
 	return launcher;
@@ -1048,22 +1086,14 @@ launcher_show(Launcher *launcher, int x, int y)
 	if (first)
 		gtk_list_box_select_row(GTK_LIST_BOX(launcher->listbox), first);
 
-	/* Realize first so gtk_window_move takes effect before mapping.
-	 * Also set override-redirect here defensively — the 'realize' signal
-	 * fires only once; if GTK already realized the window internally (e.g.
-	 * during gtk_widget_hide at create time) the signal callback is a no-op
-	 * for subsequent show calls, so we must apply it unconditionally. */
-	gtk_widget_realize(launcher->window);
-	{
-		GdkWindow *gdk_win = gtk_widget_get_window(launcher->window);
-		if (gdk_win)
-			gdk_window_set_override_redirect(gdk_win, TRUE);
-	}
+	/* Move to requested position and show.
+	 * awm will receive a MapRequest, run manage() → applyrules() → focus(),
+	 * and give us keyboard focus via setfocus() — no cross-process hack
+	 * needed. */
 	gtk_window_move(GTK_WINDOW(launcher->window), x, y);
 	gtk_widget_show_all(launcher->window);
-	gtk_window_present(GTK_WINDOW(launcher->window));
 
-	/* Give keyboard focus to the search entry */
+	/* Give keyboard focus to the search entry (GTK-internal widget focus). */
 	gtk_widget_grab_focus(launcher->search);
 
 	launcher->visible = 1;
@@ -1077,33 +1107,15 @@ launcher_hide(Launcher *launcher)
 
 	gtk_widget_hide(launcher->window);
 	launcher->visible = 0;
+
+	/* Notify awm so it can clear the launcher-visible flag and resume
+	 * normal focus-follows-mouse behaviour. */
+	{
+		UiMsgHeader hdr;
+		hdr.type        = (uint32_t) UI_MSG_LAUNCHER_DISMISSED;
+		hdr.payload_len = 0;
+		send(launcher->ui_fd, &hdr, sizeof(hdr), MSG_NOSIGNAL);
+	}
 }
 
-/* GTK handles all input through its own event loop.  Return 1 when visible
- * so that awm.c's keybinding handler knows to swallow the triggering event
- * and not re-dispatch it as a WM shortcut. */
-int
-launcher_handle_event(Launcher *launcher, xcb_generic_event_t *ev)
-{
-	(void) ev;
-
-	if (!launcher || !launcher->visible)
-		return 0;
-
-	return 1;
-}
-
-/* Launch the currently selected row (called from awm.c if needed) */
-void
-launcher_launch_selected(Launcher *launcher)
-{
-	if (!launcher)
-		return;
-
-	GtkListBoxRow *row =
-	    gtk_list_box_get_selected_row(GTK_LIST_BOX(launcher->listbox));
-	if (!row)
-		return;
-
-	launcher_launch_row(launcher, row_get_item(row));
-}
+/* end of launcher.c */

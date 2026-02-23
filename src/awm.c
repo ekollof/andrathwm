@@ -21,27 +21,37 @@
  * To understand everything else, start reading main().
  */
 #include <stdint.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include <glib-unix.h>
+#include <gtk/gtk.h>
 
 #include "awm.h"
 #include "client.h"
 #include "events.h"
 #include "ewmh.h"
 #include "icon.h"
-#include "launcher.h"
 #include "monitor.h"
 #include "spawn.h"
 #include "status.h"
 #include "systray.h"
+#include "ui_proto.h"
 #include "xrdb.h"
 #include "xsource.h"
 #define AWM_CONFIG_IMPL
 #include "config.h"
 
 /* variables */
-Systray     *systray  = NULL;
-Launcher    *launcher = NULL;
+Systray     *systray          = NULL;
+static pid_t ui_pid           = -1; /* awm-ui child process */
+static int   ui_fd            = -1; /* socket fd to awm-ui */
+int          launcher_visible = 0;  /* 1 while the launcher window is open */
+xcb_window_t launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
 char         stext[STATUS_TEXT_LEN];
 int          screen;
 int          sw, sh; /* X display screen geometry width, height */
@@ -78,7 +88,6 @@ xcb_atom_t         utf8string_atom; /* UTF8_STRING — used in setup() */
 int                restart         = 0;
 int                barsdirty       = 0;
 xcb_timestamp_t    last_event_time = XCB_CURRENT_TIME;
-static GMainLoop  *main_loop       = NULL;
 Cur               *cursor[CurLast];
 Clr              **scheme;
 xcb_connection_t  *xc;
@@ -144,7 +153,17 @@ cleanup(void)
 		free(systray);
 	}
 	status_cleanup();
-	launcher_free(launcher);
+	/* Signal awm-ui to exit and reap it.
+	 * setup() sets SA_NOCLDWAIT so children are auto-reaped; just kill and
+	 * give the process a moment to exit — no waitpid needed. */
+	if (ui_pid > 0) {
+		kill(ui_pid, SIGTERM);
+		ui_pid = -1;
+	}
+	if (ui_fd >= 0) {
+		close(ui_fd);
+		ui_fd = -1;
+	}
 #ifdef COMPOSITOR
 	compositor_cleanup();
 #endif
@@ -184,27 +203,42 @@ quit(const Arg *arg)
 {
 	if (arg->i)
 		restart = 1;
-	if (main_loop)
-		g_main_loop_quit(main_loop);
+	gtk_main_quit();
 }
 
 void
 launchermenu(const Arg *arg)
 {
-	int x, y;
+	UiMsgHeader           hdr;
+	UiLauncherShowPayload p;
+	uint8_t buf[sizeof(UiMsgHeader) + sizeof(UiLauncherShowPayload)];
+	(void) arg;
 
-	if (!launcher)
+	if (ui_fd < 0)
 		return;
 
 	Monitor *m = selmon;
-	x          = m->wx + (m->ww - 600) / 2;
-	y          = m->wy + (m->wh - 400) / 2;
-	if (x < m->wx)
-		x = m->wx;
-	if (y < m->wy)
-		y = m->wy;
+	p.x        = (int32_t) (m->wx + (m->ww - 420) / 2);
+	p.y        = (int32_t) (m->wy + (m->wh - 400) / 2);
+	if (p.x < (int32_t) m->wx)
+		p.x = (int32_t) m->wx;
+	if (p.y < (int32_t) m->wy)
+		p.y = (int32_t) m->wy;
 
-	launcher_show(launcher, x, y);
+	hdr.type        = (uint32_t) UI_MSG_LAUNCHER_SHOW;
+	hdr.payload_len = sizeof(p);
+	memcpy(buf, &hdr, sizeof(hdr));
+	memcpy(buf + sizeof(hdr), &p, sizeof(p));
+
+	if (send(ui_fd, buf, sizeof(buf), MSG_NOSIGNAL) < 0) {
+		awm_error("launchermenu: send: %s", strerror(errno));
+	} else {
+		launcher_visible = 1;
+		/* awm-ui owns X focus for the launcher: launcher_show() calls
+		 * gdk_display_sync() then gdk_window_focus() on its own GDK
+		 * connection, which guarantees the window is mapped before
+		 * XSetInputFocus is sent — no cross-process race. */
+	}
 }
 
 /* ---------------------------------------------------------------------------
@@ -244,28 +278,13 @@ x_dispatch_cb(gpointer user_data)
 			arrange(NULL);
 		} else
 #endif
-#ifdef STATUSNOTIFIER
-			/* Handle menu events BEFORE normal handlers if menu is visible */
-			if (!sni_handle_menu_event(ev)) {
-#endif
-				/* Handle launcher events if visible */
-				if (launcher && launcher->visible) {
+		{
 #ifdef COMPOSITOR
-					compositor_handle_event(ev);
+			compositor_handle_event(ev);
 #endif
-					if (!launcher_handle_event(launcher, ev) &&
-					    type < LASTEvent && handler[type])
-						handler[type](ev);
-				} else {
-#ifdef COMPOSITOR
-					compositor_handle_event(ev);
-#endif
-					if (type < LASTEvent && handler[type])
-						handler[type](ev);
-				}
-#ifdef STATUSNOTIFIER
-			}
-#endif
+			if (type < LASTEvent && handler[type])
+				handler[type](ev);
+		}
 		free(ev);
 	}
 
@@ -317,13 +336,11 @@ static gboolean dbus_reconnect_cb(gpointer user_data);
 void
 sni_schedule_reconnect(void)
 {
-	GMainContext *ctx;
-
 	if (dbus_retry_id > 0)
 		return; /* already scheduled */
 
-	ctx           = g_main_loop_get_context(main_loop);
-	dbus_retry_id = g_timeout_add_seconds(1, dbus_reconnect_cb, ctx);
+	dbus_retry_id =
+	    g_timeout_add_seconds(1, dbus_reconnect_cb, g_main_context_default());
 	awm_warn("D-Bus: name-loss detected — reconnect scheduled in 1 s");
 }
 
@@ -359,8 +376,12 @@ dbus_dispatch_cb(gint fd, GIOCondition condition, gpointer user_data)
 		awm_error("D-Bus connection lost (HUP/ERR) — scheduling reconnect");
 		dbus_src_id = 0; /* source is being removed by returning REMOVE */
 		/* Schedule a reconnect attempt 2 s from now on the same context. */
+		if (dbus_retry_id > 0) {
+			g_source_remove(dbus_retry_id);
+			dbus_retry_id = 0;
+		}
 		dbus_retry_id = g_timeout_add_seconds(
-		    2, dbus_reconnect_cb, g_main_loop_get_context(main_loop));
+		    2, dbus_reconnect_cb, g_main_context_default());
 		return G_SOURCE_REMOVE;
 	}
 
@@ -370,6 +391,199 @@ dbus_dispatch_cb(gint fd, GIOCondition condition, gpointer user_data)
 }
 
 #endif /* STATUSNOTIFIER */
+
+/* -------------------------------------------------------------------------
+ * awm-ui helper process — fork/socket infrastructure
+ * ---------------------------------------------------------------------- */
+
+/* GSource for reading messages from awm-ui over ui_fd */
+typedef struct {
+	GSource source;
+	GPollFD pfd;
+} UiSource;
+
+static gboolean
+ui_source_prepare(GSource *src, gint *timeout)
+{
+	(void) src;
+	*timeout = -1;
+	return FALSE;
+}
+
+static gboolean
+ui_source_check(GSource *src)
+{
+	UiSource *s = (UiSource *) src;
+	return (s->pfd.revents & (G_IO_IN | G_IO_HUP | G_IO_ERR)) != 0;
+}
+
+/* Handle a single message received from awm-ui */
+static void
+ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
+{
+	switch (type) {
+	case UI_MSG_LAUNCHER_EXEC: {
+		/* payload is a NUL-terminated command string */
+		launcher_visible = 0;
+		if (len == 0)
+			break;
+		char   cmd[4096];
+		size_t cmdlen = len < sizeof(cmd) ? len : sizeof(cmd) - 1;
+		memcpy(cmd, payload, cmdlen);
+		cmd[cmdlen] = '\0';
+		awm_debug("awm: exec from ui: %s", cmd);
+
+		pid_t epid = fork();
+		if (epid < 0) {
+			awm_error("awm: fork for exec: %s", strerror(errno));
+		} else if (epid == 0) {
+			setsid();
+			execlp("sh", "sh", "-c", cmd, NULL);
+			_exit(1);
+		}
+		break;
+	}
+	case UI_MSG_LAUNCHER_DISMISSED:
+		launcher_visible = 0;
+		break;
+	case UI_MSG_LAUNCHER_READY: {
+		/* awm-ui sends this once after the launcher window is realized,
+		 * giving us its X window ID so we can call xcb_set_input_focus
+		 * directly on our own connection (avoids the _NET_ACTIVE_WINDOW
+		 * redirect race).  Store it for use in launchermenu(). */
+		if (len < sizeof(UiLauncherReadyPayload))
+			break;
+		UiLauncherReadyPayload p;
+		memcpy(&p, payload, sizeof(p));
+		launcher_xwin = (xcb_window_t) p.xwin;
+		awm_debug("awm: launcher ready, xwin=0x%x", (unsigned) launcher_xwin);
+		break;
+	}
+	default:
+		awm_warn("awm: unknown message from awm-ui: type=%u", (unsigned) type);
+		break;
+	}
+}
+
+static gboolean
+ui_source_dispatch(GSource *src, GSourceFunc cb, gpointer data)
+{
+	(void) cb;
+	(void) data;
+	UiSource *s = (UiSource *) src;
+
+	if (s->pfd.revents & (G_IO_HUP | G_IO_ERR)) {
+		awm_warn("awm: awm-ui socket closed — will not respawn");
+		return G_SOURCE_REMOVE;
+	}
+
+	uint8_t buf[sizeof(UiMsgHeader) + UI_MSG_MAX_PAYLOAD];
+	ssize_t n = recv(ui_fd, buf, sizeof(buf), 0);
+	if (n <= 0) {
+		awm_warn("awm: awm-ui recv: %s", n == 0 ? "EOF" : strerror(errno));
+		return G_SOURCE_REMOVE;
+	}
+	if ((size_t) n < sizeof(UiMsgHeader))
+		return G_SOURCE_CONTINUE;
+
+	UiMsgHeader hdr;
+	memcpy(&hdr, buf, sizeof(hdr));
+	if (hdr.payload_len > UI_MSG_MAX_PAYLOAD)
+		return G_SOURCE_CONTINUE;
+	if ((size_t) n < sizeof(UiMsgHeader) + hdr.payload_len)
+		return G_SOURCE_CONTINUE;
+
+	ui_handle_message(
+	    (UiMsgType) hdr.type, buf + sizeof(UiMsgHeader), hdr.payload_len);
+	return G_SOURCE_CONTINUE;
+}
+
+static GSourceFuncs ui_source_funcs = {
+	ui_source_prepare,
+	ui_source_check,
+	ui_source_dispatch,
+	NULL,
+	NULL,
+	NULL,
+};
+
+/* Spawn awm-ui.  Creates a socketpair, forks, passes the child fd via
+ * argv[1].  Returns 0 on success, -1 on failure. */
+static int
+ui_spawn(GMainContext *ctx)
+{
+	int fds[2];
+
+	if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fds) < 0) {
+		awm_error("ui_spawn: socketpair: %s", strerror(errno));
+		return -1;
+	}
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		awm_error("ui_spawn: fork: %s", strerror(errno));
+		close(fds[0]);
+		close(fds[1]);
+		return -1;
+	}
+
+	if (pid == 0) {
+		/* child — close the parent end */
+		close(fds[0]);
+
+		/* Close the XCB connection fd so awm's X connection doesn't
+		 * leak into awm-ui.  awm-ui uses GDK's own X connection. */
+		if (xc)
+			close(xcb_get_file_descriptor(xc));
+
+		/* Force GDK to use the X11 backend.  If awm is running inside
+		 * a Wayland session WAYLAND_DISPLAY is set in the environment
+		 * and GTK 3 would otherwise prefer the Wayland backend, causing
+		 * awm-ui to connect to the outer compositor rather than to the
+		 * X display we are managing (e.g. Xephyr).  Clearing
+		 * WAYLAND_DISPLAY and setting GDK_BACKEND=x11 ensures awm-ui
+		 * always opens on the same X display as awm. */
+		unsetenv("WAYLAND_DISPLAY");
+		setenv("GDK_BACKEND", "x11", 1);
+
+		/* Build argv: awm-ui <child_fd> */
+		char fd_str[32];
+		snprintf(fd_str, sizeof(fd_str), "%d", fds[1]);
+
+		/* Look for awm-ui in PATH */
+		execlp("awm-ui", "awm-ui", fd_str, NULL);
+
+		awm_error("ui_spawn: exec awm-ui failed: %s", strerror(errno));
+		_exit(1);
+	}
+
+	/* parent */
+	close(fds[1]);
+	ui_fd  = fds[0];
+	ui_pid = pid;
+
+	/* Mark the parent end close-on-exec so it is automatically closed when
+	 * awm restarts via execvp().  Without this the fd survives into the new
+	 * image and the old awm-ui stays alive with a dangling socket. */
+	{
+		int flags = fcntl(ui_fd, F_GETFD);
+		if (flags >= 0)
+			fcntl(ui_fd, F_SETFD, flags | FD_CLOEXEC);
+	}
+
+	/* Register the parent end with GLib */
+	UiSource *src =
+	    (UiSource *) g_source_new(&ui_source_funcs, sizeof(UiSource));
+	src->pfd.fd      = ui_fd;
+	src->pfd.events  = G_IO_IN | G_IO_HUP | G_IO_ERR;
+	src->pfd.revents = 0;
+	g_source_add_poll((GSource *) src, &src->pfd);
+	g_source_attach((GSource *) src, ctx);
+	g_source_unref((GSource *) src);
+
+	awm_debug("awm: awm-ui spawned (pid=%d, fd=%d)", (int) ui_pid, ui_fd);
+	return 0;
+}
 
 void
 run(void)
@@ -388,14 +602,15 @@ run(void)
 	sni_attach_dbus_source(ctx);
 #endif
 
-	main_loop = g_main_loop_new(ctx, FALSE);
-	/* Let xsource_dispatch quit the loop cleanly on X server death
+	/* Spawn awm-ui helper (launcher + SNI menus).  Non-fatal if absent. */
+	if (ui_spawn(ctx) < 0)
+		awm_warn(
+		    "awm: failed to spawn awm-ui — launcher and SNI menus disabled");
+
+	/* Let xsource_dispatch quit cleanly on X server death
 	 * instead of calling exit(1), so cleanup() can run. */
-	xsource_set_quit_loop(main_loop);
-	g_main_loop_run(main_loop);
-	xsource_set_quit_loop(NULL);
-	g_main_loop_unref(main_loop);
-	main_loop = NULL;
+	xsource_use_gtk_main_quit();
+	gtk_main();
 }
 
 void
@@ -702,9 +917,6 @@ setup(void)
 	if (!sni_init(xc, xc, drw->xcb_visual, root, drw, scheme, sniconsize))
 		awm_warn("Failed to initialize StatusNotifier support");
 #endif
-	/* Initialize launcher */
-	launcher =
-	    launcher_create(xc, root, scheme, fonts, LENGTH(fonts), termcmd[0]);
 #ifdef COMPOSITOR
 	if (compositor_init(g_main_context_default()) < 0)
 		awm_warn("compositor: init failed, running without compositing");
@@ -730,6 +942,13 @@ main(int argc, char *argv[])
 	xc = xcb_connect(NULL, &screen);
 	if (!xc || xcb_connection_has_error(xc))
 		die("awm: cannot open X display");
+	/* Initialise GTK on the same X display.  GTK uses the DISPLAY env var
+	 * which must already be set (awm opens xc successfully just above).
+	 * We force GDK_BACKEND=x11 so GTK doesn't pick Wayland when run inside
+	 * a nested session. */
+	unsetenv("WAYLAND_DISPLAY");
+	setenv("GDK_BACKEND", "x11", 1);
+	gtk_init(&argc, &argv);
 	checkotherwm();
 	loadxrdb();
 	setup();
@@ -749,6 +968,13 @@ main(int argc, char *argv[])
 	run();
 	if (restart) {
 		setenv("RESTARTED", "1", 1); /* overwrite=1: always update */
+		/* Terminate awm-ui before exec so the new awm image spawns a fresh
+		 * one.  cleanup() is skipped on restart so we must do this here.
+		 * SA_NOCLDWAIT means no waitpid needed. */
+		if (ui_pid > 0) {
+			kill(ui_pid, SIGTERM);
+			ui_pid = -1;
+		}
 #ifdef STATUSNOTIFIER
 		/* Release D-Bus name and connection before exec so the new process
 		 * image can claim org.kde.StatusNotifierWatcher immediately.

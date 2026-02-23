@@ -280,7 +280,10 @@ extern xcb_atom_t        utf8string_atom;
 extern char              stext[STATUS_TEXT_LEN];
 extern int               restart;
 extern int               barsdirty;
-extern unsigned int      numlockmask;
+extern int launcher_visible; /* 1 while launcher window is open */
+extern xcb_window_t
+    launcher_xwin; /* X window ID of the launcher (from LAUNCHER_READY) */
+extern unsigned int numlockmask;
 extern xcb_timestamp_t
     last_event_time; /* timestamp of the most recent user event */
 extern xcb_key_symbols_t *keysyms;

@@ -107,8 +107,11 @@ buttonpress(xcb_generic_event_t *e)
 			/* Release the passive-grab pointer sync before handing off to
 			 * GTK — without this the X server keeps the pointer frozen and
 			 * GTK's subsequent seat-grab (for the popup menu) either fails
-			 * or never releases, killing awm's key bindings. */
-			xcb_allow_events(xc, XCB_ALLOW_SYNC_POINTER, ev->time);
+			 * or never releases, killing awm's key bindings.
+			 * Use ASYNC_POINTER (not SYNC_POINTER) so the pointer is freed
+			 * unconditionally without replaying the event back to the root,
+			 * which would cause a grab race with GTK's menu seat-grab. */
+			xcb_allow_events(xc, XCB_ALLOW_ASYNC_POINTER, ev->time);
 			xcb_flush(xc);
 			sni_handle_click(
 			    ev->event, ev->detail, ev->root_x, ev->root_y, ev->time);
@@ -432,6 +435,12 @@ enternotify(xcb_generic_event_t *e)
 	        ev->detail == XCB_NOTIFY_DETAIL_INFERIOR) &&
 	    ev->event != root)
 		return;
+
+	/* While the launcher is open it owns keyboard focus; suppress
+	 * focus-follows-mouse so hover over another window does not steal it. */
+	if (launcher_visible)
+		return;
+
 	c = wintoclient(ev->event);
 	m = c ? c->mon : wintomon(ev->event);
 	if (m != selmon) {
@@ -489,6 +498,22 @@ focusin(xcb_generic_event_t *e)
 	 * to the top-level client window, making those widgets unreachable. */
 	if (iswindowdescendant(ev->event, selmon->sel->win))
 		return;
+
+	/* Allow focus to move to override-redirect windows (e.g. the launcher).
+	 * These are unmanaged by the WM by design; stealing focus back would
+	 * make them permanently unfocusable. */
+	{
+		xcb_get_window_attributes_cookie_t ck =
+		    xcb_get_window_attributes(xc, ev->event);
+		xcb_get_window_attributes_reply_t *r =
+		    xcb_get_window_attributes_reply(xc, ck, NULL);
+		if (r) {
+			int or = r->override_redirect;
+			free(r);
+			if (or)
+				return;
+		}
+	}
 
 	setfocus(selmon->sel);
 }

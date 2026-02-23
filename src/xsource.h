@@ -38,13 +38,12 @@ guint xsource_attach(xcb_connection_t *xc, GMainContext *ctx,
     GSourceFunc callback, gpointer user_data);
 
 /*
- * xsource_set_quit_loop - register the GMainLoop to quit on X server death.
+ * xsource_use_gtk_main_quit - call gtk_main_quit() on X server death.
  *
  * When the X connection is lost (HUP/ERR on the fd), the dispatch function
- * will call g_main_loop_quit(@loop) instead of exit(1), allowing the WM's
- * normal cleanup path to run.  Must be called after g_main_loop_new().
- * Pass NULL to revert to the exit(1) fallback.
+ * will call gtk_main_quit() instead of exit(1), allowing the WM's normal
+ * cleanup path to run.  Must be called after gtk_init().
  */
-void xsource_set_quit_loop(GMainLoop *loop);
+void xsource_use_gtk_main_quit(void);
 
 #endif /* XSOURCE_H */
