@@ -67,6 +67,98 @@ xcb_connection_t *xc = XGetXCBConnection(dpy);
 | `875085b` | Phase 5 complete: eliminate all remaining Xlib symbolic constants, dead headers and `Bool`/`True`/`False` — `awm.h`: drop `X11/Xatom.h`, `X11/Xutil.h`, `X11/keysym.h`, `X11/X.h`, `X11/extensions/scrnsaver.h` (XSS block); add `<xkbcommon/xkbcommon-keysyms.h>`; `CLEANMASK` uses `XCB_MOD_MASK_*`; `config.def.h`+`config.h`: `XK_*`→`XKB_KEY_*`, `ShiftMask`/`ControlMask`/`Mod[1-5]Mask`/`LockMask`→`XCB_MOD_MASK_*`, `MODKEY`/`ALTKEY` → `XCB_MOD_MASK_4`/`XCB_MOD_MASK_1`; `awm.c`: cursor integer literals replace `XC_*`, drop `X11/cursorfont.h`, all event masks → `XCB_EVENT_MASK_*`, `IsViewable`→`XCB_MAP_STATE_VIEWABLE`, `IconicState`→`XCB_ICCCM_WM_STATE_ICONIC`; `client.c`: `Bool`/`True`/`False`→`int`/`1`/`0`, `NoEventMask`→`0`, `XA_WM_NAME`→`XCB_ATOM_WM_NAME`, WM state/event mask consts replaced; `ewmh.c`: `True`/`False`→`1`/`0`, `NoEventMask`→`0`; `events.c`: `X11/XKBlib.h`→`xkbcommon-keysyms.h`, `XK_Num_Lock`→`XKB_KEY_Num_Lock`, all `XA_*`/state/event mask consts replaced; `monitor.c`: `False`→`0`, event masks replaced; `systray.c`: `False`→`0`, WM state + event mask consts replaced; `compositor.c`: `None`→`0` on pixmap/picture fields, event masks replaced; `menu.c`+`launcher.c`: `X11/keysym.h`→`xkbcommon-keysyms.h`, `XK_*`→`XKB_KEY_*` |
 | `dfb7153` | Phase 6 — replace Xlib `xerror()`/`XSetErrorHandler` with pure XCB error handler; drop all Xlib link deps (`libX11`, `libXinerama`, `libXrandr`, `libXss`, `libXcomposite`, `libXdamage`, `libXrender`, `libXfixes`, `libXext`, `libX11-xcb`) removed from `config.mk`; `X11INC`/`X11LIB` path vars removed; `xcb_error_handler()` + `xcb_error_text()` replace `xerror()` in `events.c/h`; wired into `x_dispatch_cb()` for `response_type == 0` errors |
 | `1343b5d`, `7d8e76d` | Phase 6b — replace `<X11/X.h>` and `<X11/Xproto.h>` with XCB names and new `src/x11_constants.h`; all X11 event type constants (`ButtonPress`, `KeyPress`, `MapNotify`, etc.) → `XCB_BUTTON_PRESS`, `XCB_KEY_PRESS`, `XCB_MAP_NOTIFY`, etc. throughout `awm.c` and `compositor.c`; `LockMask` → `XCB_MOD_MASK_LOCK` in `client.c` and `events.c`; `ResizeRedirectMask` → `XCB_EVENT_MASK_RESIZE_REDIRECT` in `events.c`; `SelectionClear` → `XCB_SELECTION_CLEAR` in `compositor.c`; `Button1`–`Button5` → `XCB_BUTTON_INDEX_1`–`XCB_BUTTON_INDEX_3` in `config.h` and `config.def.h`; `x11_constants.h` now contains only `KeySym` typedef, `LASTEvent`, and the eight `X_` request opcodes (which XCB has no equivalent for) |
+| `9912d55` | Audit fix: `drw_fontset_getwidth_clamp` `invert` arg corrected (was passing `n` where `0` was required); `xcb-migration.md` updated to reflect completed migration |
+| `af0e300` | **Phase 7 (first Xephyr run — bar/compositor fixes):** (1) `drw`: eliminate dedicated `cairo_xcb` connection — Cairo surface now uses `drw->xc` directly, eliminating two-connection race where `xcb_copy_area` could run before Cairo flushed text; `drw_map()` calls `cairo_surface_flush()` before `xcb_copy_area`; removes blocking round-trip syncs that starved the status timer. (2) `compositor`: fix `comp_repaint_idle()` discarding non-damage events — drain loop now dispatches all event types through `compositor_handle_event`; fix fullscreen unredirect condition (`!cw->redirected` not `cw->client->isfullscreen`). (3) `events`/`monitor`: fix `checkotherwm()` using uninitialised `root` — derives root from `xcb_get_setup` before `setup()` runs; add `compositor_handle_event` calls to `arrange()` and `restack()` drain loops |
+| `bee5b95` | `compositor`: add `compositor_defer_fullscreen_bypass()` with 40 ms GLib timeout so clients process `ConfigureNotify` (TIOCSWINSZ) before bypass; `client`: `setfullscreen()` uses deferred bypass; `monitor`: fix `tile()` gap accumulation (advance by ideal slot height, not hint-snapped `HEIGHT(c)`); `restack()` calls `compositor_raise_overlay()` to keep overlay on top; `events`: `xcb_error_handler` suppresses benign `BadIDChoice` from stale XDamage/Present EID refs; `awm`: intern additional `_NET_WM_WINDOW_TYPE` atoms (Dock, Toolbar, Utility, Splash); fix `sni_init()` passing `cairo_xcb` conn instead of `xc` |
+| `2598c82` | Full code audit — 18 bugs fixed: `util`: add `_Noreturn` to `die()`; `client`: fix `getwmicon` 64-bit `uint32_t` truncation, `resizeclient` used `selmon` instead of `c->mon`, `updatesizehints` aspect hint div-by-zero; `spawn`: fix UAF/heap overflow/`snprintf` size; `events`: `configurerequest` isfullscreen guard, `configurenotify` protect old\* for fullscreen; `monitor`: `createmon` NULL return checks, remove duplicate init loop; `systray`: `removesystrayicon` `if(*ii)` fix, `updatesystray` unsigned underflow; `drw`: `xfont_create` NULL cairo surface guard, `drw_text` unsigned underflow `w-lpad`, `drw_pic` UB on `w==0`/`h==0`; `ewmh`/`awm`: `setdesktopnames` use cached atom, `updateworkarea` write `4*TAGSLENGTH` tuples; `awm`: `cleanup()` free global `cl` |
+| `6c0b442` | Fix wallpaper not displayed: `xcb_intern_atom` passed wrong string lengths for `_XROOTPMAP_ID` (12→13) and `ESETROOT_PMAP_ID` (15→16), so atoms never matched `feh`-set properties; handle `xcb_render_create_picture` failure in `comp_update_wallpaper` |
+| `154c562` | Fix systray icons not docking: (1) `events.c` sent `XEMBED_EMBEDDED_NOTIFY` with `netatom[Xembed]` (`_NET_WM_NAME`) instead of `xatom[Xembed]` (`_XEMBED`); (2) `systray.c` overwrote initial event mask with a second `xcb_change_window_attributes` call — folded all flags into the `xcb_create_window` call |
+| `6bcc1ba` | EGL/GL compositor correctness fixes: warn instead of silently return on `eglCreateImageKHR` failure; skip XRender picture for wallpaper in GL mode; check `GL_OES_EGL_image` GL extension after `eglMakeCurrent`; check `EGL_KHR_image_base` alongside `EGL_KHR_image_pixmap`; remove dead `u_flip_y` uniform (shader, struct field, all `glUniform1i` calls) |
+| `25caf9e` | Compositor: replace blocking vsync with X Present vblank loop — `eglSwapInterval(0)`; `schedule_repaint()` arms `xcb_present_notify_msc` instead of blocking in `eglSwapBuffers`; add CPU-side dirty bbox in `CompShared`; split compositor into `compositor.c`, `compositor_egl.c`, `compositor_xrender.c`, `compositor_backend.h` |
+| `13ab97e` | `awm`: add `-s` flag to skip autostart (useful for test runs; forwarded on `Mod+Shift+R` restart); fix `scan()` tiling XEMBED icon windows on restart by skipping windows with `_XEMBED_INFO` set |
+| `d99912b` | `sni`: restore real icon rendering that was deleted during the XCB migration |
+| `ad2f43d` | Compositor audit — 12 findings fixed: double-free in EGL/XRender cleanup, cancel bypass timeout in `compositor_cleanup`, early return on `NameWindowPixmap` failure, guard invalid XID on `CreatePicture` failure, remove tautological ternary in `xrender_init`, warn on defensive picture-free path, route `ShapeNotify` through vtable `apply_shape` slot, validate `xcb_create_pixmap` with checked variant, guard `compositor_damage_errors` on `comp.active`, flush before `xcb_request_check` in `comp_free_win`, remove dead `int i` |
+| `5cf6bd0` | `launcher`: fix `xkb_keysym_to_utf8` NUL terminator off-by-one — subtract 1 from return value before passing to `launcher_insert_text` so embedded NULs do not break `strstr` filtering |
+| `6a533bc` | Audit — 9 bugs fixed: `events.c` NULL systray guard, `xflush()` after `xcb_allow_events`, `numlockmask \|=` fix, `xflush()` outside `if(!sendevent)`; `systray.c` NULL guard; `client.c` ungrab before early return, `sendmon()` list detach/attach, operator precedence `(curtag-1)%LENGTH`, `int32_t` cast for off-screen hide; `awm.c` free systray icons list + colormap; `drw.c` remove dead cursor-context block, check `cairo_surface_status` after surface create |
+| `d3c10da` | `drw`: add pure Cairo backend `src/drw_cairo.c` (selectable via `DRW_CAIRO=1`) — `drw_rect`/`drw_text`/`drw_pic` use only Cairo in the hot path; `drw_clr_create` does hex parse only (no `xcb_alloc_color` round-trip); `drw_map` remains `xcb_copy_area` |
+| `2ec7cac` | `drw`: make `drw_cairo.c` the default backend; use `make DRW_LEGACY=1` to fall back to `drw.c` |
+| `d791ad4` | `menu`/`launcher`: migrate from custom XCB override-redirect windows + `drw_*` rendering to native GTK widgets (`GtkMenu` / `GtkWindow` + `GtkSearchEntry` + `GtkListBox`); public API preserved, no callers changed |
+| `68657d8` | `launcher`: connect `delete-event` to hide instead of destroy |
+| `1f456cb` | `launcher`: set `override_redirect` on `GdkWindow` at realize time so awm does not manage the launcher window as a tiled client |
+| `d9ffcc1` | `events`/`launcher`/`menu`: fix grab freeze (`xcb_allow_events(SYNC_POINTER)` before `sni_handle_click`), launcher `override_redirect` re-applied unconditionally in `launcher_show`, SNI menu popup uses synthetic `GdkEventButton` with real timestamp so GTK acquires a valid seat grab |
+| `af0f487` | `sni`: for absolute `.svg`/`.SVG` icon paths, fall back to synchronous `icon_load_svg()` via librsvg/Cairo instead of the `gdk_pixbuf` async path (which requires an SVG loader that may be absent) |
+| `b4094bd` | `awm`/`sni`/`menu`/`launcher`: IPC refactor — split launcher/SNI menus into `awm-ui` helper process over `SOCK_SEQPACKET` socketpair; awm forks selected commands itself via `UI_MSG_LAUNCHER_EXEC`; 16 code-review fixes (generation guards, `sni_menu_pending` reset, `deactivate_handler` disconnect, dead field removal, `dbus_retry_id` guard, `xsource_use_gtk_main_quit` rename, payload size reduction) |
+
+---
+
+## Post-migration work (Phase 7+)
+
+After the XCB migration was declared complete, a series of runtime correctness
+fixes and feature improvements were landed on this branch:
+
+### Phase 7 — First Xephyr run fixes (`af0e300`, `bee5b95`, `2598c82`)
+
+Three bugs found on first real run in Xephyr and fixed:
+
+1. **`checkotherwm()` used uninitialised `root`** — `root` global set in
+   `setup()` but `checkotherwm()` called before it; added early root derivation
+   from `xcb_get_setup` in `main()`.
+2. **Cairo rendered into wrong XCB connection** — `drw_create()` opened a
+   separate connection for Cairo; `xcb_copy_area` could race with Cairo's
+   internal queue. Fixed to share `drw->xc`; `drw_map()` calls
+   `cairo_surface_flush()` before the copy.
+3. **Present EIDs not proper XIDs** — `comp.present_eid_next` was a plain
+   counter; `xcb_present_select_input` requires `xcb_generate_id()` XIDs.
+   Fixed; `present_eid_next` field removed.
+
+### Compositor refactor (`25caf9e`)
+
+Split the monolithic `compositor.c` into:
+- `src/compositor.c` — shared state, public API
+- `src/compositor_egl.c` — EGL/GL backend
+- `src/compositor_xrender.c` — XRender fallback backend
+- `src/compositor_backend.h` — vtable + shared inline helpers
+
+Replaced blocking vsync (`eglSwapInterval(1)`) with an X Present vblank
+loop: `schedule_repaint()` arms `xcb_present_notify_msc`; vblank fires the
+repaint and re-arms. CPU-side dirty bbox in `CompShared` eliminates a
+synchronous `xcb_xfixes_fetch_region` round-trip before every swap.
+
+### GTK migration for launcher and menu (`d791ad4`–`b4094bd`)
+
+`launcher.c` and `menu.c` were rewritten from custom XCB override-redirect
+windows with `drw_*` rendering to native GTK widgets (`GtkWindow` +
+`GtkSearchEntry` + `GtkListBox`; `GtkMenu` + `popup_at_rect`).  Public API
+preserved; no callers required changes.  GTK drives input through the
+existing GLib main loop.
+
+The `awm-ui` helper process (`src/awm_ui.c`) was added in `b4094bd` to host
+GTK popup menus out-of-process via a `SOCK_SEQPACKET` socketpair, allowing
+awm to fork commands itself rather than routing through the UI process.
+
+### Pure-Cairo `drw` backend (`d3c10da`, `2ec7cac`)
+
+`src/drw_cairo.c` is a drop-in replacement for `src/drw.c` with no XCB
+drawing calls in the hot path.  It is now the default (`make`); use
+`make DRW_LEGACY=1` to fall back to `drw.c`.
+
+### Bug fix summary (post-migration)
+
+| Commit | Description |
+|--------|-------------|
+| `6c0b442` | Wallpaper: off-by-one atom name lengths for `_XROOTPMAP_ID` / `ESETROOT_PMAP_ID` |
+| `154c562` | Systray: wrong atom in `XEMBED_EMBEDDED_NOTIFY`; event mask overwrite in `xcb_create_window` |
+| `6bcc1ba` | EGL: warn on `eglCreateImageKHR` failure; correct `GL_OES_EGL_image` + `EGL_KHR_image_base` checks |
+| `13ab97e` | `-s` flag to skip autostart; `scan()` skips XEMBED icon windows on restart |
+| `d99912b` | SNI: restore real icon rendering deleted during migration |
+| `ad2f43d` | Compositor: 12 audit findings (double-free, bypass cancel, NULL guards, vtable routing) |
+| `5cf6bd0` | Launcher: `xkb_keysym_to_utf8` NUL off-by-one broke multi-character filtering |
+| `6a533bc` | 9 bugs: NULL systray guards, `numlockmask \|=`, `sendmon` list ops, operator precedence, colormap leak |
+| `2598c82` | 18 bugs: `_Noreturn die()`, 64-bit icon, spawn UAF, fullscreen guards, gap accumulation, aspect div-by-zero |
+| `bee5b95` | Deferred fullscreen bypass, tile gap fix, overlay z-order, `BadIDChoice` suppression |
+| `d9ffcc1` | Grab freeze (`SYNC_POINTER`), override-redirect re-apply, GTK seat grab synthetic event |
+| `af0f487` | SNI SVG icons via librsvg when gdk-pixbuf SVG loader absent |
+| `b4094bd` | IPC refactor + 16 code-review fixes (generation guards, stale callback disconnect, dead fields) |
 
 ---
 
@@ -239,3 +331,9 @@ Final state:
 - All event handlers are `void(*)(xcb_generic_event_t*)`.
 - Global connection is `xcb_connection_t *xc`, declared `extern` in `src/awm.h`.
 - Text rendering uses PangoCairo; font strings are Pango description format.
+- Compositor is split into `compositor.c` / `compositor_egl.c` /
+  `compositor_xrender.c` with a shared `compositor_backend.h` vtable.
+- Default `drw` backend is `src/drw_cairo.c` (pure Cairo, no XCB drawing in
+  hot path); `make DRW_LEGACY=1` selects the original `src/drw.c`.
+- `awm-ui` helper process (`src/awm_ui.c`) hosts GTK popup menus out-of-process
+  over a `SOCK_SEQPACKET` socketpair.
