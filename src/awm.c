@@ -24,6 +24,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -53,6 +54,8 @@ static pid_t ui_pid           = -1; /* awm-ui child process */
 static int   ui_fd            = -1; /* socket fd to awm-ui */
 int          launcher_visible = 0;  /* 1 while the launcher window is open */
 xcb_window_t launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
+static GMainContext *ui_ctx = NULL; /* GMainContext used by run() — kept for
+                                     * the respawn timer callback */
 char         stext[STATUS_TEXT_LEN];
 int          screen;
 int          sw, sh; /* X display screen geometry width, height */
@@ -74,6 +77,7 @@ void (*handler[LASTEvent])(xcb_generic_event_t *) = {
 	[XCB_CONFIGURE_NOTIFY]  = configurenotify,
 	[XCB_DESTROY_NOTIFY]    = destroynotify,
 	[XCB_ENTER_NOTIFY]      = enternotify,
+	[XCB_LEAVE_NOTIFY]      = leavenotify,
 	[XCB_EXPOSE]            = expose,
 	[XCB_FOCUS_IN]          = focusin,
 	[XCB_KEY_PRESS]         = keypress,
@@ -209,6 +213,252 @@ quit(const Arg *arg)
 	gtk_main_quit();
 }
 
+/* -------------------------------------------------------------------------
+ * IPC helpers — awm → awm-ui
+ * ---------------------------------------------------------------------- */
+
+/* Send a fixed-size inline payload to awm-ui.  Returns 0 on success. */
+static int
+ui_send_inline(UiMsgType type, const void *payload, uint32_t len)
+{
+	uint8_t buf[sizeof(UiMsgHeader) + UI_MSG_MAX_PAYLOAD];
+	ssize_t n;
+
+	if (ui_fd < 0)
+		return -1;
+	if (len > UI_MSG_MAX_PAYLOAD) {
+		awm_error("ui_send_inline: payload too large (%u)", len);
+		return -1;
+	}
+	{
+		UiMsgHeader *hdr = (UiMsgHeader *) buf;
+		hdr->type        = (uint32_t) type;
+		hdr->payload_len = len;
+		if (len > 0 && payload)
+			memcpy(buf + sizeof(UiMsgHeader), payload, len);
+	}
+	n = send(ui_fd, buf, sizeof(UiMsgHeader) + len, MSG_NOSIGNAL);
+	if (n < 0) {
+		awm_error("ui_send_inline: send: %s", strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+/* Broadcast current selmon workarea geometry to awm-ui so it can position
+ * popups correctly.  Called once on startup and again on monitor changes. */
+void
+ui_send_monitor_geom(void)
+{
+	UiMonitorGeomPayload p;
+
+	if (!selmon || ui_fd < 0)
+		return;
+	p.wx = (int32_t) selmon->wx;
+	p.wy = (int32_t) selmon->wy;
+	p.ww = (int32_t) selmon->ww;
+	p.wh = (int32_t) selmon->wh;
+	ui_send_inline(UI_MSG_MONITOR_GEOM, &p, sizeof(p));
+}
+
+/* Send current color scheme and bar font to awm-ui so notification popups
+ * can match the WM visual theme.  Called once on startup and after every
+ * xrdb reload. */
+void
+ui_send_theme(void)
+{
+	UiThemePayload p;
+
+	if (ui_fd < 0 || !scheme)
+		return;
+
+	p.norm_fg[0] = scheme[SchemeNorm][ColFg].r;
+	p.norm_fg[1] = scheme[SchemeNorm][ColFg].g;
+	p.norm_fg[2] = scheme[SchemeNorm][ColFg].b;
+	p.norm_fg[3] = scheme[SchemeNorm][ColFg].a;
+
+	p.norm_bg[0] = scheme[SchemeNorm][ColBg].r;
+	p.norm_bg[1] = scheme[SchemeNorm][ColBg].g;
+	p.norm_bg[2] = scheme[SchemeNorm][ColBg].b;
+	p.norm_bg[3] = scheme[SchemeNorm][ColBg].a;
+
+	p.norm_bd[0] = scheme[SchemeNorm][ColBorder].r;
+	p.norm_bd[1] = scheme[SchemeNorm][ColBorder].g;
+	p.norm_bd[2] = scheme[SchemeNorm][ColBorder].b;
+	p.norm_bd[3] = scheme[SchemeNorm][ColBorder].a;
+
+	p.sel_fg[0] = scheme[SchemeSel][ColFg].r;
+	p.sel_fg[1] = scheme[SchemeSel][ColFg].g;
+	p.sel_fg[2] = scheme[SchemeSel][ColFg].b;
+	p.sel_fg[3] = scheme[SchemeSel][ColFg].a;
+
+	p.sel_bg[0] = scheme[SchemeSel][ColBg].r;
+	p.sel_bg[1] = scheme[SchemeSel][ColBg].g;
+	p.sel_bg[2] = scheme[SchemeSel][ColBg].b;
+	p.sel_bg[3] = scheme[SchemeSel][ColBg].a;
+
+	p.sel_bd[0] = scheme[SchemeSel][ColBorder].r;
+	p.sel_bd[1] = scheme[SchemeSel][ColBorder].g;
+	p.sel_bd[2] = scheme[SchemeSel][ColBorder].b;
+	p.sel_bd[3] = scheme[SchemeSel][ColBorder].a;
+
+	p.font[0] = '\0';
+	if (fonts[0])
+		snprintf(p.font, sizeof(p.font), "%s", fonts[0]);
+
+	ui_send_inline(UI_MSG_THEME, &p, sizeof(p));
+}
+
+/* Send a bulk SHM message to awm-ui.  Creates an anonymous SHM fd, writes
+ * shm_size bytes from base into it, and transmits the fd via SCM_RIGHTS.
+ * The message header has type=type and payload_len=shm_size.
+ * Returns 0 on success, -1 on failure. */
+static int
+ui_send_shm(UiMsgType type, const void *base, size_t shm_size)
+{
+	int   shm_fd = -1;
+	void *mapped = MAP_FAILED;
+	char  name[32];
+	int   ret = -1;
+
+	/* Create anonymous SHM object */
+	snprintf(name, sizeof(name), "/awm-preview-%d", (int) getpid());
+	shm_fd = shm_open(name, O_CREAT | O_RDWR | O_TRUNC, 0600);
+	if (shm_fd < 0) {
+		awm_error("ui_send_shm: shm_open: %s", strerror(errno));
+		goto out;
+	}
+	shm_unlink(name); /* unlink immediately; fd keeps it alive */
+
+	if (ftruncate(shm_fd, (off_t) shm_size) < 0) {
+		awm_error("ui_send_shm: ftruncate: %s", strerror(errno));
+		goto out;
+	}
+
+	mapped =
+	    mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+	if (mapped == MAP_FAILED) {
+		awm_error("ui_send_shm: mmap: %s", strerror(errno));
+		goto out;
+	}
+	memcpy(mapped, base, shm_size);
+	munmap(mapped, shm_size);
+	mapped = MAP_FAILED;
+
+	/* Build SCM_RIGHTS message */
+	{
+		UiMsgHeader     hdr;
+		struct iovec    iov;
+		struct msghdr   mhdr;
+		uint8_t         cmsgbuf[CMSG_SPACE(sizeof(int))];
+		struct cmsghdr *cm;
+		ssize_t         n;
+
+		hdr.type        = (uint32_t) type;
+		hdr.payload_len = (uint32_t) shm_size;
+
+		iov.iov_base = &hdr;
+		iov.iov_len  = sizeof(hdr);
+
+		memset(&mhdr, 0, sizeof(mhdr));
+		mhdr.msg_iov        = &iov;
+		mhdr.msg_iovlen     = 1;
+		mhdr.msg_control    = cmsgbuf;
+		mhdr.msg_controllen = sizeof(cmsgbuf);
+
+		cm             = CMSG_FIRSTHDR(&mhdr);
+		cm->cmsg_level = SOL_SOCKET;
+		cm->cmsg_type  = SCM_RIGHTS;
+		cm->cmsg_len   = CMSG_LEN(sizeof(int));
+		memcpy(CMSG_DATA(cm), &shm_fd, sizeof(int));
+
+		n = sendmsg(ui_fd, &mhdr, MSG_NOSIGNAL);
+		if (n < 0) {
+			awm_error("ui_send_shm: sendmsg: %s", strerror(errno));
+			goto out;
+		}
+	}
+	ret = 0;
+
+out:
+	if (shm_fd >= 0)
+		close(shm_fd);
+	return ret;
+}
+
+/* Build and send a UI_MSG_PREVIEW_SHOW message for bar hover on Monitor m.
+ * Acquires fresh snapshot pixmaps from the compositor and transmits them
+ * to awm-ui via SHM + SCM_RIGHTS. */
+void
+bar_hover_enter(Monitor *m)
+{
+#ifdef COMPOSITOR
+	UiPreviewEntry      *entries;
+	unsigned int         count;
+	UiPreviewShowPayload hdr;
+	size_t               shm_size;
+	uint8_t             *shm_buf;
+
+	if (ui_fd < 0 || !m)
+		return;
+
+	entries = comp_snapshot_pixmaps(&count);
+	if (!entries || count == 0) {
+		free(entries);
+		return;
+	}
+
+	shm_size = sizeof(UiPreviewShowPayload) + count * sizeof(UiPreviewEntry);
+	shm_buf  = malloc(shm_size);
+	if (!shm_buf) {
+		/* Free any snapshot pixmaps we just acquired */
+		{
+			unsigned int k;
+			for (k = 0; k < count; k++)
+				if (entries[k].pixmap_xid)
+					xcb_free_pixmap(xc, (xcb_pixmap_t) entries[k].pixmap_xid);
+		}
+		free(entries);
+		return;
+	}
+
+	/* anchor_x/y: centre of the hovered bar window */
+	hdr.anchor_x = (int32_t) (m->mx + m->ww / 2);
+	hdr.anchor_y = (int32_t) (m->by + bh / 2);
+	hdr.count    = count;
+	memcpy(shm_buf, &hdr, sizeof(hdr));
+	memcpy(shm_buf + sizeof(hdr), entries, count * sizeof(UiPreviewEntry));
+	free(entries);
+
+	if (ui_send_shm(UI_MSG_PREVIEW_SHOW, shm_buf, shm_size) < 0) {
+		/* Send failed — free the snapshot pixmaps ourselves */
+		UiPreviewEntry *ep = (UiPreviewEntry *) (shm_buf + sizeof(hdr));
+		unsigned int    k;
+		for (k = 0; k < count; k++)
+			if (ep[k].pixmap_xid)
+				xcb_free_pixmap(xc, (xcb_pixmap_t) ep[k].pixmap_xid);
+	}
+	free(shm_buf);
+#else
+	(void) m;
+#endif
+}
+
+/* Send UI_MSG_PREVIEW_HIDE to awm-ui when the pointer leaves the bar. */
+void
+bar_hover_leave(void)
+{
+	ui_send_inline(UI_MSG_PREVIEW_HIDE, NULL, 0);
+}
+
+/* Keybind handler: trigger the window preview popup via bar_hover_enter. */
+void
+preview_show_keybind(const Arg *arg)
+{
+	(void) arg;
+	bar_hover_enter(selmon);
+}
+
 void
 launchermenu(const Arg *arg)
 {
@@ -291,6 +541,7 @@ x_dispatch_cb(gpointer user_data)
 #ifdef COMPOSITOR
 			compositor_notify_screen_resize();
 #endif
+			ui_send_monitor_geom();
 		} else
 #endif
 		{
@@ -411,6 +662,23 @@ dbus_dispatch_cb(gint fd, GIOCondition condition, gpointer user_data)
  * awm-ui helper process — fork/socket infrastructure
  * ---------------------------------------------------------------------- */
 
+static int ui_spawn(GMainContext *ctx); /* forward declaration */
+
+/* Timer callback: respawn awm-ui after a brief delay */
+static gboolean
+ui_respawn_cb(gpointer data)
+{
+	(void) data;
+	if (ui_fd >= 0 || ui_pid > 0) {
+		/* Already respawned by another path */
+		return G_SOURCE_REMOVE;
+	}
+	awm_info("awm: respawning awm-ui");
+	if (ui_spawn(ui_ctx) < 0)
+		awm_warn("awm: failed to respawn awm-ui");
+	return G_SOURCE_REMOVE;
+}
+
 /* GSource for reading messages from awm-ui over ui_fd */
 typedef struct {
 	GSource source;
@@ -474,6 +742,48 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 		awm_debug("awm: launcher ready, xwin=0x%x", (unsigned) launcher_xwin);
 		break;
 	}
+	case UI_MSG_PREVIEW_FOCUS: {
+		/* awm-ui reports that the user clicked a preview card. */
+		if (len < sizeof(UiPreviewFocusPayload))
+			break;
+		{
+			UiPreviewFocusPayload fp;
+			Client               *c;
+			memcpy(&fp, payload, sizeof(fp));
+			c = wintoclient((xcb_window_t) fp.xwin);
+			if (c) {
+				if (c->mon != selmon) {
+					unfocus(selmon->sel, 0);
+					selmon = c->mon;
+				}
+				if (!ISVISIBLE(c, c->mon)) {
+					Arg a = { .ui = c->tags };
+					view(&a);
+				}
+				focus(c);
+				xcb_warp_pointer(xc, XCB_WINDOW_NONE, c->win, 0, 0, 0, 0,
+				    (int16_t) (c->w / 2), (int16_t) (c->h / 2));
+				xcb_flush(xc);
+			}
+		}
+		break;
+	}
+	case UI_MSG_PREVIEW_DONE: {
+		/* awm-ui is finished with the snapshot pixmaps; free them. */
+		if (len < sizeof(UiPreviewDonePayload))
+			break;
+		{
+			UiPreviewDonePayload dp;
+			uint32_t             k;
+			memcpy(&dp, payload, sizeof(dp));
+			for (k = 0; k < dp.count && k < 32; k++) {
+				if (dp.xids[k])
+					xcb_free_pixmap(xc, (xcb_pixmap_t) dp.xids[k]);
+			}
+			xcb_flush(xc);
+		}
+		break;
+	}
 	default:
 		awm_warn("awm: unknown message from awm-ui: type=%u", (unsigned) type);
 		break;
@@ -488,7 +798,13 @@ ui_source_dispatch(GSource *src, GSourceFunc cb, gpointer data)
 	UiSource *s = (UiSource *) src;
 
 	if (s->pfd.revents & (G_IO_HUP | G_IO_ERR)) {
-		awm_warn("awm: awm-ui socket closed — will not respawn");
+		awm_warn("awm: awm-ui socket closed — scheduling respawn");
+		close(ui_fd);
+		ui_fd            = -1;
+		ui_pid           = -1;
+		launcher_xwin    = 0;
+		launcher_visible = 0;
+		g_timeout_add(2000, ui_respawn_cb, NULL);
 		return G_SOURCE_REMOVE;
 	}
 
@@ -496,6 +812,12 @@ ui_source_dispatch(GSource *src, GSourceFunc cb, gpointer data)
 	ssize_t n = recv(ui_fd, buf, sizeof(buf), 0);
 	if (n <= 0) {
 		awm_warn("awm: awm-ui recv: %s", n == 0 ? "EOF" : strerror(errno));
+		close(ui_fd);
+		ui_fd            = -1;
+		ui_pid           = -1;
+		launcher_xwin    = 0;
+		launcher_visible = 0;
+		g_timeout_add(2000, ui_respawn_cb, NULL);
 		return G_SOURCE_REMOVE;
 	}
 	if ((size_t) n < sizeof(UiMsgHeader))
@@ -597,6 +919,12 @@ ui_spawn(GMainContext *ctx)
 	g_source_unref((GSource *) src);
 
 	awm_debug("awm: awm-ui spawned (pid=%d, fd=%d)", (int) ui_pid, ui_fd);
+
+	/* Inform awm-ui of the initial monitor geometry so it can position
+	 * popups before any geometry-change events arrive. */
+	ui_send_monitor_geom();
+	/* Send initial color scheme and font so popups match the WM theme. */
+	ui_send_theme();
 	return 0;
 }
 
@@ -607,7 +935,8 @@ run(void)
 
 	xflush();
 
-	ctx = g_main_context_default();
+	ctx    = g_main_context_default();
+	ui_ctx = ctx; /* store for respawn timer callback */
 
 	/* X11 source — wakes the loop whenever X events are pending */
 	xsource_id = xsource_attach(xc, ctx, x_dispatch_cb, NULL);

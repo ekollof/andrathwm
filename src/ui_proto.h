@@ -6,6 +6,12 @@
  * remaining bytes (header.payload_len) are the variable payload defined per
  * message type below.
  *
+ * For messages that carry bulk data (PREVIEW_SHOW, PREVIEW_UPDATE), the
+ * payload is written into a POSIX SHM segment and the file descriptor is
+ * passed as SCM_RIGHTS ancillary data alongside the message.  The header's
+ * payload_len field then describes the byte size of the SHM mapping.
+ * Ordinary messages (no SHM fd) continue to use the inline payload path.
+ *
  * All integers are native byte order (both ends are the same process image).
  */
 
@@ -20,14 +26,20 @@
 
 typedef enum {
 	/* awm → awm-ui */
-	UI_MSG_LAUNCHER_SHOW = 1, /* payload: UiLauncherShowPayload  */
-	UI_MSG_LAUNCHER_HIDE = 2, /* payload: none (payload_len == 0) */
+	UI_MSG_LAUNCHER_SHOW  = 1, /* payload: UiLauncherShowPayload        */
+	UI_MSG_LAUNCHER_HIDE  = 2, /* payload: none (payload_len == 0)      */
+	UI_MSG_MONITOR_GEOM   = 3, /* payload: UiMonitorGeomPayload         */
+	UI_MSG_PREVIEW_SHOW   = 4, /* payload_len = SHM size; fd via SCM    */
+	UI_MSG_PREVIEW_HIDE   = 5, /* payload: none                         */
+	UI_MSG_PREVIEW_UPDATE = 6, /* payload_len = SHM size; fd via SCM    */
+	UI_MSG_THEME          = 7, /* payload: UiThemePayload               */
 
 	/* awm-ui → awm */
-	UI_MSG_LAUNCHER_EXEC = 10, /* payload: NUL-terminated command string */
-	UI_MSG_LAUNCHER_DISMISSED = 13, /* payload: none — launcher hidden */
-	UI_MSG_LAUNCHER_READY =
-	    14, /* payload: UiLauncherReadyPayload — sent once on startup */
+	UI_MSG_LAUNCHER_EXEC      = 10, /* payload: NUL-terminated cmd string */
+	UI_MSG_PREVIEW_FOCUS      = 11, /* payload: UiPreviewFocusPayload     */
+	UI_MSG_PREVIEW_DONE       = 12, /* payload: UiPreviewDonePayload      */
+	UI_MSG_LAUNCHER_DISMISSED = 13, /* payload: none — launcher hidden    */
+	UI_MSG_LAUNCHER_READY     = 14, /* payload: UiLauncherReadyPayload    */
 } UiMsgType;
 
 /* -------------------------------------------------------------------------
@@ -36,11 +48,11 @@ typedef enum {
 
 typedef struct {
 	uint32_t type;        /* UiMsgType */
-	uint32_t payload_len; /* bytes following this header */
+	uint32_t payload_len; /* bytes following this header (or SHM size)  */
 } UiMsgHeader;
 
 #define UI_MSG_MAX_PAYLOAD \
-	4096 /* sanity cap; largest payload is a command string */
+	4096 /* sanity cap for inline payloads; SHM messages are unlimited */
 
 /* -------------------------------------------------------------------------
  * awm → awm-ui payloads
@@ -51,6 +63,65 @@ typedef struct {
 	int32_t x;
 	int32_t y;
 } UiLauncherShowPayload;
+
+/* UI_MSG_MONITOR_GEOM — sent on startup and whenever monitor geometry
+ * changes.  Describes the primary (selmon) monitor's workarea so awm-ui
+ * can position popups correctly (bar height already subtracted). */
+typedef struct {
+	int32_t wx; /* workarea origin x */
+	int32_t wy; /* workarea origin y */
+	int32_t ww; /* workarea width    */
+	int32_t wh; /* workarea height   */
+} UiMonitorGeomPayload;
+
+/* UI_MSG_PREVIEW_SHOW / UI_MSG_PREVIEW_UPDATE
+ *
+ * The message header's payload_len carries the total byte size of the SHM
+ * segment.  The segment layout is:
+ *
+ *   UiPreviewShowPayload hdr     (fixed, at offset 0)
+ *   UiPreviewEntry       [0]     (at offset sizeof(UiPreviewShowPayload))
+ *   UiPreviewEntry       [1]
+ *   ...
+ *   UiPreviewEntry       [hdr.count - 1]
+ *
+ * The SHM fd is passed as SCM_RIGHTS ancillary data.  The receiver mmap()s
+ * the fd, reads the entries, then closes and munmap()s it.  The snapshot
+ * pixmap XIDs are owned by the receiver; it must return them via
+ * UI_MSG_PREVIEW_DONE so awm can call xcb_free_pixmap(). */
+
+typedef struct {
+	int32_t  anchor_x; /* hint: popup anchor point (bar button centre) */
+	int32_t  anchor_y;
+	uint32_t count; /* number of UiPreviewEntry structs that follow  */
+} UiPreviewShowPayload;
+
+/* One entry per candidate window. */
+typedef struct {
+	uint32_t xwin;       /* XCB window ID                              */
+	uint32_t pixmap_xid; /* XComposite snapshot pixmap XID, 0 = none  */
+	int32_t  w;          /* window width  (used for aspect ratio)      */
+	int32_t  h;          /* window height                              */
+	uint8_t  depth;      /* pixmap colour depth (24 or 32)             */
+	uint8_t  selected;   /* 1 = this window currently has focus        */
+	uint8_t  _pad[2];
+	char     title[64];     /* UTF-8 window title, NUL-terminated         */
+	char     icon_name[64]; /* icon name or empty string                  */
+} UiPreviewEntry;
+
+/* UI_MSG_THEME — sent on startup and after every xrdb reload.
+ * Colors are 16-bit per channel (matching the Clr struct).
+ * font[] is a NUL-terminated Pango font description string (e.g.
+ * "BerkeleyMono Nerd Font 12"). */
+typedef struct {
+	uint16_t norm_fg[4]; /* SchemeNorm ColFg  — r,g,b,a */
+	uint16_t norm_bg[4]; /* SchemeNorm ColBg  — r,g,b,a */
+	uint16_t norm_bd[4]; /* SchemeNorm ColBorder */
+	uint16_t sel_fg[4];  /* SchemeSel  ColFg  */
+	uint16_t sel_bg[4];  /* SchemeSel  ColBg  */
+	uint16_t sel_bd[4];  /* SchemeSel  ColBorder */
+	char     font[256];  /* Pango font description string, NUL-terminated */
+} UiThemePayload;
 
 /* -------------------------------------------------------------------------
  * awm-ui → awm payloads
@@ -65,8 +136,19 @@ typedef struct {
 	uint32_t xwin; /* X11 window ID of the launcher GdkWindow */
 } UiLauncherReadyPayload;
 
+/* UI_MSG_PREVIEW_FOCUS — user clicked a card; awm should focus that window. */
+typedef struct {
+	uint32_t xwin; /* XCB window ID to focus */
+} UiPreviewFocusPayload;
+
+/* UI_MSG_PREVIEW_DONE — preview is done; free the listed snapshot pixmaps. */
+typedef struct {
+	uint32_t count;    /* number of XIDs in xids[] */
+	uint32_t xids[32]; /* snapshot pixmap XIDs to free */
+} UiPreviewDonePayload;
+
 /* -------------------------------------------------------------------------
- * Helper: compute total message size
+ * Helper: compute total inline message size
  * ---------------------------------------------------------------------- */
 
 #define UI_MSG_TOTAL(payload_len) \

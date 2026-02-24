@@ -38,6 +38,16 @@ const unsigned int iconcachesize       = 128; /* icon cache hash table size */
 const unsigned int iconcachemaxentries = 128; /* max cached icons (LRU) */
 const unsigned int dbustimeout         = 100; /* D-Bus timeout (ms) */
 #endif
+
+/* notification daemon settings (awm-ui / notif.c) */
+#define NOTIF_ANCHOR TopRight /* TopRight BottomRight TopLeft BottomLeft */
+#define NOTIF_WIDTH 320       /* popup width in pixels               */
+#define NOTIF_DEFAULT_TIMEOUT 5000 /* auto-dismiss timeout in ms          */
+#define NOTIF_MAX_VISIBLE 5        /* max simultaneous popups             */
+#define NOTIF_MARGIN_X 12          /* horizontal gap from screen edge     */
+#define NOTIF_MARGIN_Y 12          /* vertical gap from screen edge       */
+#define NOTIF_GAP 6                /* gap between stacked popups          */
+
 static const char *fonts[] = {
 	"BerkeleyMono Nerd Font 12",
 };
@@ -186,6 +196,7 @@ static const Key keys[] = {
 	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_w, spawn, { .v = windowswitch } },
 	{ MODKEY, XKB_KEY_grave, togglescratch, { .v = notepadcmd } },
 	{ MODKEY, XKB_KEY_dead_grave, togglescratch, { .v = notepadcmd } },
+	{ MODKEY, XKB_KEY_BackSpace, preview_show_keybind, { 0 } },
 	{ MODKEY | XCB_MOD_MASK_SHIFT, XKB_KEY_m, togglescratch,
 	    { .v = musiccmd } },
 	{ MODKEY, XKB_KEY_b, togglebar, { 0 } },

@@ -20,7 +20,7 @@ static const char broken[] = "broken";
 void
 applyrules(Client *c)
 {
-	const char  *class, *instance;
+	const char *class, *instance;
 	unsigned int i;
 	const Rule  *r;
 	Monitor     *m;
@@ -77,8 +77,8 @@ applyrules(Client *c)
 			if (r->opacity > 0.0)
 				c->opacity = r->opacity;
 			for (m = mons; m && (m->tagset[m->seltags] & c->tags) == 0;
-			    m  = m->next)
-                ;
+			     m = m->next)
+				;
 			if (m)
 				c->mon = m;
 		}
@@ -313,8 +313,8 @@ focusstack(const Arg *arg)
 			;
 		if (!c)
 			for (c = selmon->cl->clients; c && !ISVISIBLE(c, selmon);
-			    c  = c->next)
-                ;
+			     c = c->next)
+				;
 	} else {
 		for (i = selmon->cl->clients; i != selmon->sel; i = i->next)
 			if (ISVISIBLE(i, selmon))
@@ -340,11 +340,12 @@ focusstackhidden(const Arg *arg)
 
 	if (arg->i > 0) {
 		for (c = selmon->sel->next;
-		    c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
+		     c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
 			;
 		if (!c)
 			for (c = selmon->cl->clients;
-			    c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
+			     c && !(c->tags & selmon->tagset[selmon->seltags]);
+			     c = c->next)
 				;
 	} else {
 		for (i = selmon->cl->clients; i != selmon->sel; i = i->next)
@@ -942,7 +943,7 @@ Client *
 nexttiled(Client *c, Monitor *m)
 {
 	for (; c && (c->isfloating || !ISVISIBLE(c, m) || c->ishidden);
-	    c = c->next)
+	     c = c->next)
 		;
 	return c;
 }
@@ -1323,7 +1324,8 @@ togglescratch(const Arg *arg)
 	unsigned int found = 0;
 
 	for (c = selmon->cl->clients;
-	    c && !(found = c->scratchkey == ((char **) arg->v)[0][0]); c = c->next)
+	     c && !(found = c->scratchkey == ((char **) arg->v)[0][0]);
+	     c = c->next)
 		;
 	if (found) {
 		if (ISVISIBLE(c, selmon)) {
@@ -1385,7 +1387,7 @@ toggleview(const Arg *arg)
 					selmon_curtag = 0;
 				else {
 					for (i = 0; !(selmon->tagset[selmon->seltags] & 1 << i);
-					    i++)
+					     i++)
 						;
 					selmon_curtag = i + 1;
 				}
@@ -1552,6 +1554,12 @@ unmanage(Client *c, int destroyed)
 	focus(NULL);
 	updateclientlist();
 	arrange(m);
+#ifdef COMPOSITOR
+	/* If the destroyed window was fullscreen and had bypassed the compositor,
+	 * paused_mask is still set.  Recompute unredirect state now so compositing
+	 * resumes immediately rather than waiting for the 5-second watchdog. */
+	compositor_check_unredirect();
+#endif
 }
 
 void
@@ -1837,11 +1845,11 @@ movestack(const Arg *arg)
 	if (arg->i > 0) {
 		/* find the client after selmon->sel */
 		for (c = selmon->sel->next;
-		    c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
+		     c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
 			;
 		if (!c)
 			for (c = selmon->cl->clients;
-			    c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
+			     c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
 				;
 
 	} else {

@@ -191,4 +191,5 @@ xrdb(const Arg *arg)
 	updatesystrayiconcolors();
 	focus(NULL);
 	arrange(NULL);
+	ui_send_theme();
 }

@@ -448,6 +448,14 @@ enternotify(xcb_generic_event_t *e)
 	if (switcher_active())
 		return;
 
+	/* Bar hover — trigger window preview popup */
+	for (m = mons; m; m = m->next) {
+		if (ev->event == m->barwin) {
+			bar_hover_enter(m);
+			return;
+		}
+	}
+
 	c = wintoclient(ev->event);
 	m = c ? c->mon : wintomon(ev->event);
 	if (m != selmon) {
@@ -456,6 +464,24 @@ enternotify(xcb_generic_event_t *e)
 	} else if (!c || c == selmon->sel)
 		return;
 	focus(c);
+}
+
+void
+leavenotify(xcb_generic_event_t *e)
+{
+	Monitor                  *m;
+	xcb_leave_notify_event_t *ev = (xcb_leave_notify_event_t *) e;
+
+	if (ev->mode != XCB_NOTIFY_MODE_NORMAL)
+		return;
+
+	/* Bar un-hover — hide window preview popup */
+	for (m = mons; m; m = m->next) {
+		if (ev->event == m->barwin) {
+			bar_hover_leave();
+			return;
+		}
+	}
 }
 
 void

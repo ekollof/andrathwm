@@ -35,6 +35,16 @@ static const unsigned int motionfps =
     60; /* motion event throttle FPS (higher = more responsive) */
 const unsigned int dbustimeout =
     100; /* D-Bus method call timeout in milliseconds */
+
+/* notification daemon settings (awm-ui / notif.c) */
+#define NOTIF_ANCHOR TopRight /* TopRight BottomRight TopLeft BottomLeft */
+#define NOTIF_WIDTH 320       /* popup width in pixels               */
+#define NOTIF_DEFAULT_TIMEOUT 5000 /* auto-dismiss timeout in ms          */
+#define NOTIF_MAX_VISIBLE 5        /* max simultaneous popups             */
+#define NOTIF_MARGIN_X 12          /* horizontal gap from screen edge     */
+#define NOTIF_MARGIN_Y 12          /* vertical gap from screen edge       */
+#define NOTIF_GAP 6                /* gap between stacked popups          */
+
 static const char *fonts[] = {
 	"BerkeleyMono Nerd Font 12",
 };

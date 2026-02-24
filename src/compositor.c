@@ -43,6 +43,7 @@
 #include "log.h"
 #include "compositor.h"
 #include "compositor_backend.h"
+#include "ui_proto.h"
 
 /* -------------------------------------------------------------------------
  * Shared compositor state — single instance, accessed by all backend files
@@ -1884,6 +1885,125 @@ comp_capture_thumb(Client *c, int max_w, int max_h)
 		return NULL;
 
 	return comp.backend->capture_thumb(cw, max_w, max_h);
+}
+
+/* -------------------------------------------------------------------------
+ * comp_snapshot_pixmaps — acquire dedicated snapshot pixmaps for all
+ * visible managed windows on selmon and fill UiPreviewEntry array.
+ *
+ * Returns a malloc'd array of *count_out entries on success; the caller
+ * owns each entry's pixmap_xid and must free them via UI_MSG_PREVIEW_DONE.
+ * Returns NULL (and sets *count_out = 0) if the compositor is inactive or
+ * there are no visible clients.
+ *
+ * The caller is responsible for free()ing the returned array.
+ * ---------------------------------------------------------------------- */
+
+UiPreviewEntry *
+comp_snapshot_pixmaps(unsigned int *count_out)
+{
+	UiPreviewEntry *entries;
+	unsigned int    n, i;
+	Client         *c;
+	Monitor        *m;
+
+	*count_out = 0;
+
+	if (!comp.active || !selmon)
+		return NULL;
+
+	/* Count visible managed clients on selmon */
+	m = selmon;
+	n = 0;
+	for (c = m->cl->clients; c; c = c->next)
+		if (ISVISIBLE(c, m) && !c->ishidden)
+			n++;
+	if (n == 0)
+		return NULL;
+
+	entries = calloc(n, sizeof(UiPreviewEntry));
+	if (!entries)
+		return NULL;
+
+	i = 0;
+	for (c = m->cl->clients; c; c = c->next) {
+		UiPreviewEntry *e;
+		CompWin        *cw;
+		xcb_pixmap_t    snap;
+
+		if (!ISVISIBLE(c, m) || c->ishidden)
+			continue;
+		if (i >= n)
+			break;
+
+		e = &entries[i++];
+
+		/* Window geometry */
+		e->xwin     = (uint32_t) c->win;
+		e->w        = (int32_t) c->w;
+		e->h        = (int32_t) c->h;
+		e->selected = (c == m->sel) ? 1 : 0;
+
+		/* Title */
+		strncpy(e->title, c->name, sizeof(e->title) - 1);
+		e->title[sizeof(e->title) - 1] = '\0';
+
+		/* icon_name: use WM_CLASS instance (res_name) if available */
+		{
+			xcb_get_property_cookie_t pck = xcb_get_property(
+			    xc, 0, c->win, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 0, 128);
+			xcb_get_property_reply_t *pr =
+			    xcb_get_property_reply(xc, pck, NULL);
+			if (pr && xcb_get_property_value_length(pr) > 0) {
+				const char *val = (const char *) xcb_get_property_value(pr);
+				int         len = xcb_get_property_value_length(pr);
+				int         sl  = (int) strnlen(val, (size_t) len);
+				if (sl > 0) {
+					strncpy(e->icon_name, val, sizeof(e->icon_name) - 1);
+					e->icon_name[sizeof(e->icon_name) - 1] = '\0';
+				}
+			}
+			free(pr);
+		}
+
+		/* Depth from CompWin if available */
+		cw = NULL;
+		{
+			CompWin *cw2;
+			for (cw2 = comp.windows; cw2; cw2 = cw2->next) {
+				if (cw2->client == c) {
+					cw = cw2;
+					break;
+				}
+			}
+		}
+		e->depth = cw ? (uint8_t) cw->depth : 24;
+
+		/* Acquire a fresh snapshot pixmap for this window */
+		snap = xcb_generate_id(xc);
+		{
+			xcb_void_cookie_t    vck;
+			xcb_generic_error_t *err;
+			vck = xcb_composite_name_window_pixmap_checked(
+			    xc, (xcb_window_t) c->win, snap);
+			xcb_flush(xc);
+			err = xcb_request_check(xc, vck);
+			if (err) {
+				free(err);
+				e->pixmap_xid = 0;
+				continue;
+			}
+		}
+		e->pixmap_xid = (uint32_t) snap;
+	}
+
+	/* Actual count may be lower if some NameWindowPixmap calls failed */
+	*count_out = i;
+	if (i == 0) {
+		free(entries);
+		return NULL;
+	}
+	return entries;
 }
 
 #endif /* COMPOSITOR */

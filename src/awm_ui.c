@@ -12,13 +12,20 @@
  * Communication with awm is over a Unix SOCK_SEQPACKET socket pair created
  * before the fork.  The child fd is passed in argv[1].  Each send()/recv() is
  * exactly one message: UiMsgHeader followed by payload_len bytes.
+ *
+ * Bulk messages (UI_MSG_PREVIEW_SHOW, UI_MSG_PREVIEW_UPDATE) carry a POSIX SHM
+ * fd as SCM_RIGHTS ancillary data.  The header's payload_len describes the
+ * byte size of the SHM segment.  The receiver mmap()s the fd, reads entries,
+ * then closes and munmap()s it.
  */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -28,6 +35,8 @@
 
 #include "launcher.h"
 #include "log.h"
+#include "notif.h"
+#include "preview.h"
 #include "ui_proto.h"
 
 /* Icon cache configuration — defined here since awm_ui doesn't include
@@ -42,6 +51,9 @@ const unsigned int iconcachemaxentries = 128;
 static int        ui_fd     = -1; /* socket fd to awm */
 static GMainLoop *main_loop = NULL;
 static Launcher  *launcher  = NULL;
+
+/* Monitor workarea — updated by UI_MSG_MONITOR_GEOM */
+static int mon_wx = 0, mon_wy = 0, mon_ww = 0, mon_wh = 0;
 
 /* -------------------------------------------------------------------------
  * Send helpers
@@ -108,6 +120,38 @@ dispatch_launcher_show(const uint8_t *payload, uint32_t len)
 }
 
 static void
+dispatch_monitor_geom(const uint8_t *payload, uint32_t len)
+{
+	UiMonitorGeomPayload p;
+
+	if (len < sizeof(p)) {
+		awm_warn("awm-ui: MONITOR_GEOM payload too short");
+		return;
+	}
+	memcpy(&p, payload, sizeof(p));
+	mon_wx = (int) p.wx;
+	mon_wy = (int) p.wy;
+	mon_ww = (int) p.ww;
+	mon_wh = (int) p.wh;
+	awm_debug(
+	    "awm-ui: monitor geom %dx%d+%d+%d", mon_ww, mon_wh, mon_wx, mon_wy);
+	notif_update_geom(mon_wx, mon_wy, mon_ww, mon_wh);
+}
+
+static void
+dispatch_theme(const uint8_t *payload, uint32_t len)
+{
+	UiThemePayload t;
+
+	if (len < sizeof(t)) {
+		awm_warn("awm-ui: THEME payload too short");
+		return;
+	}
+	memcpy(&t, payload, sizeof(t));
+	notif_update_theme(&t);
+}
+
+static void
 handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 {
 	switch (type) {
@@ -117,10 +161,63 @@ handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 	case UI_MSG_LAUNCHER_HIDE:
 		launcher_hide(launcher);
 		break;
+	case UI_MSG_MONITOR_GEOM:
+		dispatch_monitor_geom(payload, len);
+		break;
+	case UI_MSG_THEME:
+		dispatch_theme(payload, len);
+		break;
+	case UI_MSG_PREVIEW_HIDE:
+		preview_hide();
+		break;
 	default:
 		awm_warn("awm-ui: unknown message type %u", (unsigned) type);
 		break;
 	}
+}
+
+/* Handle a bulk SHM message (PREVIEW_SHOW / PREVIEW_UPDATE).
+ * shm_fd is the POSIX SHM fd received via SCM_RIGHTS; shm_size is the
+ * mapping byte length from header.payload_len.  This function owns shm_fd
+ * and must close it before returning. */
+static void
+handle_shm_message(UiMsgType type, int shm_fd, size_t shm_size)
+{
+	void *base;
+
+	base = mmap(NULL, shm_size, PROT_READ, MAP_SHARED, shm_fd, 0);
+	close(shm_fd);
+	if (base == MAP_FAILED) {
+		awm_error("awm-ui: mmap SHM fd: %s", strerror(errno));
+		return;
+	}
+
+	switch (type) {
+	case UI_MSG_PREVIEW_SHOW:
+	case UI_MSG_PREVIEW_UPDATE: {
+		UiPreviewShowPayload hdr;
+		if (shm_size < sizeof(hdr))
+			break;
+		memcpy(&hdr, base, sizeof(hdr));
+		{
+			unsigned int count = hdr.count;
+			size_t       exp   = sizeof(hdr) + count * sizeof(UiPreviewEntry);
+			const UiPreviewEntry *entries;
+			if (shm_size < exp)
+				break;
+			entries = (const UiPreviewEntry *) ((const uint8_t *) base +
+			    sizeof(hdr));
+			preview_show(
+			    entries, count, (int) hdr.anchor_x, (int) hdr.anchor_y);
+		}
+		break;
+	}
+	default:
+		awm_warn("awm-ui: unexpected SHM message type %u", (unsigned) type);
+		break;
+	}
+
+	munmap(base, shm_size);
 }
 
 /* -------------------------------------------------------------------------
@@ -160,14 +257,23 @@ socket_dispatch(GSource *src, GSourceFunc cb, gpointer data)
 		return G_SOURCE_REMOVE;
 	}
 
-	/* Read one full message */
-	uint8_t buf[sizeof(UiMsgHeader) + UI_MSG_MAX_PAYLOAD];
-	ssize_t n = recv(ui_fd, buf, sizeof(buf), 0);
+	/* Receive one message; use recvmsg so we can pick up any SCM_RIGHTS
+	 * ancillary data carrying a SHM fd for bulk PREVIEW messages. */
+	uint8_t       buf[sizeof(UiMsgHeader) + UI_MSG_MAX_PAYLOAD];
+	uint8_t       cmsgbuf[CMSG_SPACE(sizeof(int))];
+	struct iovec  iov   = { buf, sizeof(buf) };
+	struct msghdr mhdr  = { 0 };
+	mhdr.msg_iov        = &iov;
+	mhdr.msg_iovlen     = 1;
+	mhdr.msg_control    = cmsgbuf;
+	mhdr.msg_controllen = sizeof(cmsgbuf);
+
+	ssize_t n = recvmsg(ui_fd, &mhdr, 0);
 	if (n <= 0) {
 		if (n == 0 || errno == ECONNRESET) {
 			awm_warn("awm-ui: socket disconnected — exiting");
 		} else {
-			awm_error("awm-ui: recv: %s", strerror(errno));
+			awm_error("awm-ui: recvmsg: %s", strerror(errno));
 		}
 		g_main_loop_quit(main_loop);
 		return G_SOURCE_REMOVE;
@@ -181,6 +287,25 @@ socket_dispatch(GSource *src, GSourceFunc cb, gpointer data)
 	UiMsgHeader hdr;
 	memcpy(&hdr, buf, sizeof(hdr));
 
+	/* Check for SCM_RIGHTS fd (bulk SHM path) */
+	int shm_fd = -1;
+	{
+		struct cmsghdr *cm = CMSG_FIRSTHDR(&mhdr);
+		if (cm && cm->cmsg_level == SOL_SOCKET &&
+		    cm->cmsg_type == SCM_RIGHTS &&
+		    cm->cmsg_len >= CMSG_LEN(sizeof(int))) {
+			memcpy(&shm_fd, CMSG_DATA(cm), sizeof(int));
+		}
+	}
+
+	if (shm_fd >= 0) {
+		/* Bulk SHM message: payload_len is the SHM byte size */
+		handle_shm_message(
+		    (UiMsgType) hdr.type, shm_fd, (size_t) hdr.payload_len);
+		return G_SOURCE_CONTINUE;
+	}
+
+	/* Inline payload */
 	if (hdr.payload_len > UI_MSG_MAX_PAYLOAD) {
 		awm_warn("awm-ui: payload_len %u exceeds cap", hdr.payload_len);
 		return G_SOURCE_CONTINUE;
@@ -211,6 +336,29 @@ static GSourceFuncs socket_funcs = {
  * main
  * ---------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------
+ * GLib/GTK log bridge — routes g_warning/g_critical/g_error through syslog
+ * ---------------------------------------------------------------------- */
+
+static void
+glib_log_handler(const gchar *domain, GLogLevelFlags level,
+    const gchar *message, gpointer user_data)
+{
+	(void) user_data;
+	const char *d = domain ? domain : "GLib";
+
+	if (level & (G_LOG_LEVEL_ERROR | G_LOG_LEVEL_CRITICAL)) {
+		awm_error("awm-ui: [%s] %s", d, message ? message : "(null)");
+	} else if (level & G_LOG_LEVEL_WARNING) {
+		awm_warn("awm-ui: [%s] %s", d, message ? message : "(null)");
+	} else {
+		awm_info("awm-ui: [%s] %s", d, message ? message : "(null)");
+	}
+
+	/* For fatal levels (ERROR) GLib will abort() after this returns,
+	 * which is fine — the message is now in syslog. */
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -230,6 +378,20 @@ main(int argc, char *argv[])
 	/* Ignore SIGPIPE — we detect broken socket via send() errno */
 	signal(SIGPIPE, SIG_IGN);
 
+	/* Route all GLib/GTK log messages through the awm logging system so
+	 * g_warning, g_critical, and g_error output appears in journald.
+	 * Register for every domain we care about; NULL catches the default
+	 * domain and anything not explicitly matched. */
+	{
+		GLogLevelFlags mask = G_LOG_LEVEL_ERROR | G_LOG_LEVEL_CRITICAL |
+		    G_LOG_LEVEL_WARNING | G_LOG_LEVEL_MESSAGE | G_LOG_LEVEL_INFO;
+		g_log_set_handler(NULL, mask, glib_log_handler, NULL);
+		g_log_set_handler("GLib", mask, glib_log_handler, NULL);
+		g_log_set_handler("Gtk", mask, glib_log_handler, NULL);
+		g_log_set_handler("Gdk", mask, glib_log_handler, NULL);
+		g_log_set_handler("GLib-GObject", mask, glib_log_handler, NULL);
+	}
+
 	/* Initialise GTK */
 	gtk_init(&argc, &argv);
 
@@ -239,6 +401,12 @@ main(int argc, char *argv[])
 		awm_error("awm-ui: failed to create launcher");
 		return 1;
 	}
+
+	/* Start notification daemon */
+	notif_init(mon_wx, mon_wy, mon_ww, mon_wh);
+
+	/* Initialise preview popup module */
+	preview_init(ui_fd);
 
 	/* Register GLib socket source */
 	UiSocketSource *sock_src =
@@ -256,6 +424,8 @@ main(int argc, char *argv[])
 
 	/* Cleanup */
 	g_main_loop_unref(main_loop);
+	preview_cleanup();
+	notif_cleanup();
 	launcher_free(launcher);
 	close(ui_fd);
 	log_cleanup();

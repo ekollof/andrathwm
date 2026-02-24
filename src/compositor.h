@@ -5,6 +5,7 @@
 
 #include <glib.h>
 #include <cairo/cairo.h>
+#include "ui_proto.h"
 
 /*
  * compositor.h is included from awm.h *after* the Client typedef/struct,
@@ -159,6 +160,16 @@ void compositor_notify_screen_resize(void);
  * The caller owns the returned surface and must cairo_surface_destroy() it.
  */
 cairo_surface_t *comp_capture_thumb(Client *c, int max_w, int max_h);
+
+/*
+ * Acquire snapshot pixmaps for all visible managed windows on selmon.
+ * Returns a malloc'd array of *count_out UiPreviewEntry structs on success;
+ * each entry with pixmap_xid != 0 owns that pixmap and the caller must
+ * return them via UI_MSG_PREVIEW_DONE so awm can call xcb_free_pixmap().
+ * Returns NULL if the compositor is inactive or there are no visible clients.
+ * The caller must free() the returned array.
+ */
+UiPreviewEntry *comp_snapshot_pixmaps(unsigned int *count_out);
 
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */

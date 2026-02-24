@@ -322,6 +322,11 @@ xcb_screen_root_depth(xcb_connection_t *xc, int scr_num)
 /* core WM functions (defined in awm.c) */
 void quit(const Arg *arg);
 void launchermenu(const Arg *arg);
+void ui_send_monitor_geom(void);
+void ui_send_theme(void);
+void bar_hover_enter(Monitor *m);
+void bar_hover_leave(void);
+void preview_show_keybind(const Arg *arg);
 void switcher_show(const Arg *arg);
 void switcher_show_prev(const Arg *arg);
 
