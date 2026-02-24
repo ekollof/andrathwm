@@ -9,6 +9,8 @@
 #ifndef NOTIF_H
 #define NOTIF_H
 
+#include "ui_proto.h"
+
 /* Initialise the notification daemon.
  * Registers org.freedesktop.Notifications on the session bus and creates
  * the persistent (initially empty) popup stack.
@@ -19,6 +21,10 @@ int notif_init(int mon_wx, int mon_wy, int mon_ww, int mon_wh);
 /* Update the monitor workarea used for popup placement.
  * Call whenever a UI_MSG_MONITOR_GEOM message is received. */
 void notif_update_geom(int mon_wx, int mon_wy, int mon_ww, int mon_wh);
+
+/* Update the visual theme used for notification popups.
+ * Call whenever a UI_MSG_THEME message is received. */
+void notif_update_theme(const UiThemePayload *t);
 
 /* Pump D-Bus dispatching.
  * Must be called periodically (e.g. from a GLib idle/timer source, or

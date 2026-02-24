@@ -261,6 +261,54 @@ ui_send_monitor_geom(void)
 	ui_send_inline(UI_MSG_MONITOR_GEOM, &p, sizeof(p));
 }
 
+/* Send current color scheme and bar font to awm-ui so notification popups
+ * can match the WM visual theme.  Called once on startup and after every
+ * xrdb reload. */
+void
+ui_send_theme(void)
+{
+	UiThemePayload p;
+
+	if (ui_fd < 0 || !scheme)
+		return;
+
+	p.norm_fg[0] = scheme[SchemeNorm][ColFg].r;
+	p.norm_fg[1] = scheme[SchemeNorm][ColFg].g;
+	p.norm_fg[2] = scheme[SchemeNorm][ColFg].b;
+	p.norm_fg[3] = scheme[SchemeNorm][ColFg].a;
+
+	p.norm_bg[0] = scheme[SchemeNorm][ColBg].r;
+	p.norm_bg[1] = scheme[SchemeNorm][ColBg].g;
+	p.norm_bg[2] = scheme[SchemeNorm][ColBg].b;
+	p.norm_bg[3] = scheme[SchemeNorm][ColBg].a;
+
+	p.norm_bd[0] = scheme[SchemeNorm][ColBorder].r;
+	p.norm_bd[1] = scheme[SchemeNorm][ColBorder].g;
+	p.norm_bd[2] = scheme[SchemeNorm][ColBorder].b;
+	p.norm_bd[3] = scheme[SchemeNorm][ColBorder].a;
+
+	p.sel_fg[0] = scheme[SchemeSel][ColFg].r;
+	p.sel_fg[1] = scheme[SchemeSel][ColFg].g;
+	p.sel_fg[2] = scheme[SchemeSel][ColFg].b;
+	p.sel_fg[3] = scheme[SchemeSel][ColFg].a;
+
+	p.sel_bg[0] = scheme[SchemeSel][ColBg].r;
+	p.sel_bg[1] = scheme[SchemeSel][ColBg].g;
+	p.sel_bg[2] = scheme[SchemeSel][ColBg].b;
+	p.sel_bg[3] = scheme[SchemeSel][ColBg].a;
+
+	p.sel_bd[0] = scheme[SchemeSel][ColBorder].r;
+	p.sel_bd[1] = scheme[SchemeSel][ColBorder].g;
+	p.sel_bd[2] = scheme[SchemeSel][ColBorder].b;
+	p.sel_bd[3] = scheme[SchemeSel][ColBorder].a;
+
+	p.font[0] = '\0';
+	if (fonts[0])
+		snprintf(p.font, sizeof(p.font), "%s", fonts[0]);
+
+	ui_send_inline(UI_MSG_THEME, &p, sizeof(p));
+}
+
 /* Send a bulk SHM message to awm-ui.  Creates an anonymous SHM fd, writes
  * shm_size bytes from base into it, and transmits the fd via SCM_RIGHTS.
  * The message header has type=type and payload_len=shm_size.
@@ -875,6 +923,8 @@ ui_spawn(GMainContext *ctx)
 	/* Inform awm-ui of the initial monitor geometry so it can position
 	 * popups before any geometry-change events arrive. */
 	ui_send_monitor_geom();
+	/* Send initial color scheme and font so popups match the WM theme. */
+	ui_send_theme();
 	return 0;
 }
 

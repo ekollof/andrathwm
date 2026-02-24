@@ -157,6 +157,10 @@ static int notif_mon_wy = 0;
 static int notif_mon_ww = 1920;
 static int notif_mon_wh = 1080;
 
+/* Visual theme — updated by notif_update_theme() */
+static UiThemePayload notif_theme;
+static int            notif_theme_set = 0;
+
 /* Forward declarations */
 static void notif_item_close(NotifItem *it, uint32_t reason);
 static void notif_restack(void);
@@ -170,15 +174,21 @@ static int
 popup_height(NotifItem *it)
 {
 	/* title + body + padding + icon area */
-	PangoLayout  *lay;
-	PangoContext *ctx;
-	int           text_h = 0;
-	int           bh     = 0;
+	PangoLayout          *lay;
+	PangoContext         *ctx;
+	PangoFontDescription *fdesc;
+	int                   text_h = 0;
+	int                   bh     = 0;
 
 	ctx = pango_font_map_create_context(pango_cairo_font_map_get_default());
 
 	/* Summary line */
 	lay = pango_layout_new(ctx);
+	if (notif_theme_set && notif_theme.font[0]) {
+		fdesc = pango_font_description_from_string(notif_theme.font);
+		pango_layout_set_font_description(lay, fdesc);
+		pango_font_description_free(fdesc);
+	}
 	pango_layout_set_width(
 	    lay, (NOTIF_WIDTH - 56) * PANGO_SCALE); /* 56 = icon(32)+pad(12)*2 */
 	layout_set_markup_safe(lay, it->summary ? it->summary : "");
@@ -191,6 +201,11 @@ popup_height(NotifItem *it)
 
 	/* Body */
 	if (it->body && it->body[0]) {
+		if (notif_theme_set && notif_theme.font[0]) {
+			fdesc = pango_font_description_from_string(notif_theme.font);
+			pango_layout_set_font_description(lay, fdesc);
+			pango_font_description_free(fdesc);
+		}
 		pango_layout_set_width(lay, (NOTIF_WIDTH - 56) * PANGO_SCALE);
 		layout_set_markup_safe(lay, it->body);
 		pango_layout_set_wrap(lay, PANGO_WRAP_WORD_CHAR);
@@ -266,8 +281,14 @@ on_popup_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 	int        w  = gtk_widget_get_allocated_width(widget);
 	int        h  = gtk_widget_get_allocated_height(widget);
 
-	/* Background — dark semi-transparent */
-	cairo_set_source_rgba(cr, 0.13, 0.13, 0.13, 0.93);
+	/* Background — use theme norm_bg if available, else dark fallback */
+	if (notif_theme_set) {
+		cairo_set_source_rgba(cr, notif_theme.norm_bg[0] / 65535.0,
+		    notif_theme.norm_bg[1] / 65535.0, notif_theme.norm_bg[2] / 65535.0,
+		    0.93);
+	} else {
+		cairo_set_source_rgba(cr, 0.13, 0.13, 0.13, 0.93);
+	}
 	cairo_rectangle(cr, 0, 0, w, h);
 	cairo_fill(cr);
 
@@ -324,17 +345,26 @@ on_popup_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 
 		PangoLayout *lay = pango_cairo_create_layout(cr);
 
-		/* Summary — bold white */
+		/* Summary — bold, use sel_fg if theme available */
 		if (tw > 0 && it->summary) {
+			const char *font_str = (notif_theme_set && notif_theme.font[0])
+			    ? notif_theme.font
+			    : "Sans Bold 10";
 			PangoFontDescription *fdesc =
-			    pango_font_description_from_string("Sans Bold 10");
+			    pango_font_description_from_string(font_str);
 			pango_layout_set_font_description(lay, fdesc);
 			pango_font_description_free(fdesc);
 			pango_layout_set_width(lay, tw * PANGO_SCALE);
 			pango_layout_set_ellipsize(lay, PANGO_ELLIPSIZE_END);
 			pango_layout_set_single_paragraph_mode(lay, TRUE);
 			layout_set_markup_safe(lay, it->summary);
-			cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0);
+			if (notif_theme_set) {
+				cairo_set_source_rgba(cr, notif_theme.sel_fg[0] / 65535.0,
+				    notif_theme.sel_fg[1] / 65535.0,
+				    notif_theme.sel_fg[2] / 65535.0, 1.0);
+			} else {
+				cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0);
+			}
 			cairo_move_to(cr, tx, ty);
 			pango_cairo_show_layout(cr, lay);
 
@@ -344,10 +374,13 @@ on_popup_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 			(void) pw;
 		}
 
-		/* Body — normal grey */
+		/* Body — use norm_fg if theme available */
 		if (tw > 0 && it->body && it->body[0]) {
+			const char *font_str = (notif_theme_set && notif_theme.font[0])
+			    ? notif_theme.font
+			    : "Sans 9";
 			PangoFontDescription *fdesc =
-			    pango_font_description_from_string("Sans 9");
+			    pango_font_description_from_string(font_str);
 			pango_layout_set_font_description(lay, fdesc);
 			pango_font_description_free(fdesc);
 			pango_layout_set_width(lay, tw * PANGO_SCALE);
@@ -355,7 +388,13 @@ on_popup_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 			pango_layout_set_single_paragraph_mode(lay, FALSE);
 			pango_layout_set_wrap(lay, PANGO_WRAP_WORD_CHAR);
 			layout_set_markup_safe(lay, it->body);
-			cairo_set_source_rgba(cr, 0.7, 0.7, 0.7, 1.0);
+			if (notif_theme_set) {
+				cairo_set_source_rgba(cr, notif_theme.norm_fg[0] / 65535.0,
+				    notif_theme.norm_fg[1] / 65535.0,
+				    notif_theme.norm_fg[2] / 65535.0, 1.0);
+			} else {
+				cairo_set_source_rgba(cr, 0.7, 0.7, 0.7, 1.0);
+			}
 			cairo_move_to(cr, tx, ty);
 			pango_cairo_show_layout(cr, lay);
 		}
@@ -363,8 +402,14 @@ on_popup_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 		g_object_unref(lay);
 	}
 
-	/* Border */
-	cairo_set_source_rgba(cr, 0.3, 0.3, 0.3, 0.8);
+	/* Border — use theme norm_bd if available */
+	if (notif_theme_set) {
+		cairo_set_source_rgba(cr, notif_theme.norm_bd[0] / 65535.0,
+		    notif_theme.norm_bd[1] / 65535.0, notif_theme.norm_bd[2] / 65535.0,
+		    0.8);
+	} else {
+		cairo_set_source_rgba(cr, 0.3, 0.3, 0.3, 0.8);
+	}
 	cairo_set_line_width(cr, 1.0);
 	cairo_rectangle(cr, 0.5, 0.5, w - 1, h - 1);
 	cairo_stroke(cr);
@@ -987,6 +1032,23 @@ notif_update_geom(int mon_wx, int mon_wy, int mon_ww, int mon_wh)
 	notif_mon_ww = mon_ww;
 	notif_mon_wh = mon_wh;
 	notif_restack();
+}
+
+void
+notif_update_theme(const UiThemePayload *t)
+{
+	NotifItem *it;
+
+	if (!t)
+		return;
+	notif_theme     = *t;
+	notif_theme_set = 1;
+
+	/* Force a redraw of every visible popup */
+	for (it = notif_list; it; it = it->next) {
+		if (it->da)
+			gtk_widget_queue_draw(it->da);
+	}
 }
 
 void

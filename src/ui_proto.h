@@ -32,6 +32,7 @@ typedef enum {
 	UI_MSG_PREVIEW_SHOW   = 4, /* payload_len = SHM size; fd via SCM    */
 	UI_MSG_PREVIEW_HIDE   = 5, /* payload: none                         */
 	UI_MSG_PREVIEW_UPDATE = 6, /* payload_len = SHM size; fd via SCM    */
+	UI_MSG_THEME          = 7, /* payload: UiThemePayload               */
 
 	/* awm-ui → awm */
 	UI_MSG_LAUNCHER_EXEC      = 10, /* payload: NUL-terminated cmd string */
@@ -107,6 +108,20 @@ typedef struct {
 	char     title[64];     /* UTF-8 window title, NUL-terminated         */
 	char     icon_name[64]; /* icon name or empty string                  */
 } UiPreviewEntry;
+
+/* UI_MSG_THEME — sent on startup and after every xrdb reload.
+ * Colors are 16-bit per channel (matching the Clr struct).
+ * font[] is a NUL-terminated Pango font description string (e.g.
+ * "BerkeleyMono Nerd Font 12"). */
+typedef struct {
+	uint16_t norm_fg[4]; /* SchemeNorm ColFg  — r,g,b,a */
+	uint16_t norm_bg[4]; /* SchemeNorm ColBg  — r,g,b,a */
+	uint16_t norm_bd[4]; /* SchemeNorm ColBorder */
+	uint16_t sel_fg[4];  /* SchemeSel  ColFg  */
+	uint16_t sel_bg[4];  /* SchemeSel  ColBg  */
+	uint16_t sel_bd[4];  /* SchemeSel  ColBorder */
+	char     font[256];  /* Pango font description string, NUL-terminated */
+} UiThemePayload;
 
 /* -------------------------------------------------------------------------
  * awm-ui → awm payloads

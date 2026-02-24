@@ -139,6 +139,19 @@ dispatch_monitor_geom(const uint8_t *payload, uint32_t len)
 }
 
 static void
+dispatch_theme(const uint8_t *payload, uint32_t len)
+{
+	UiThemePayload t;
+
+	if (len < sizeof(t)) {
+		awm_warn("awm-ui: THEME payload too short");
+		return;
+	}
+	memcpy(&t, payload, sizeof(t));
+	notif_update_theme(&t);
+}
+
+static void
 handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 {
 	switch (type) {
@@ -150,6 +163,9 @@ handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 		break;
 	case UI_MSG_MONITOR_GEOM:
 		dispatch_monitor_geom(payload, len);
+		break;
+	case UI_MSG_THEME:
+		dispatch_theme(payload, len);
 		break;
 	case UI_MSG_PREVIEW_HIDE:
 		preview_hide();
