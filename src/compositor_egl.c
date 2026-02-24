@@ -784,15 +784,15 @@ egl_repaint(void)
 		glDisable(GL_SCISSOR_TEST);
 
 	{
-		int had_dirty = comp.dirty_bbox_valid;
-		comp_dirty_clear();
-
 		/* Re-check paused immediately before the swap: if a fullscreen bypass
 		 * raced in between the repaint start and here, the overlay window may
-		 * already be lowered.  Skipping the swap is safe — dirty is cleared.
-		 */
-		if (!comp.paused && had_dirty)
+		 * already be lowered.  Only clear dirty and swap if we are not paused
+		 * — leaving dirty state intact ensures the repaint loop restarts
+		 * correctly once compositing resumes. */
+		if (!comp.paused && comp.dirty_bbox_valid) {
+			comp_dirty_clear();
 			eglSwapBuffers(egl.egl_dpy, egl.egl_win);
+		}
 	}
 }
 

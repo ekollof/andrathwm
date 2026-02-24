@@ -427,7 +427,11 @@ xrender_repaint(void)
 	xcb_render_composite(xc, XCB_RENDER_PICT_OP_SRC, xr.back, XCB_NONE,
 	    xr.target, 0, 0, 0, 0, 0, 0, (uint16_t) sw, (uint16_t) sh);
 
-	comp_dirty_clear();
+	/* Only clear dirty state if we are not paused.  If a fullscreen bypass
+	 * raced in during rendering, leave dirty intact so the repaint loop
+	 * restarts correctly when compositing resumes. */
+	if (!comp.paused)
+		comp_dirty_clear();
 	xcb_xfixes_set_picture_clip_region(xc, xr.back, XCB_NONE, 0, 0);
 	xflush();
 }
