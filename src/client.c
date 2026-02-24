@@ -11,6 +11,7 @@
 #include "monitor.h"
 #include "spawn.h"
 #include "systray.h"
+#include "wmstate.h"
 #include "xrdb.h"
 #include "config.h"
 
@@ -299,6 +300,7 @@ focus(Client *c)
 	 * changed. */
 	compositor_check_unredirect();
 #endif
+	wmstate_update();
 }
 
 void
@@ -646,6 +648,7 @@ hide(Client *c)
 	focus(NULL);
 	arrange(c->mon);
 	barsdirty = 1;
+	wmstate_update();
 }
 
 void
@@ -671,6 +674,7 @@ show(Client *c)
 	focus(c);
 	arrange(c->mon);
 	barsdirty = 1;
+	wmstate_update();
 }
 
 void
@@ -842,6 +846,7 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 		compositor_bypass_window(c, 1);
 #endif
 	focus(NULL);
+	wmstate_update();
 }
 
 void
@@ -1118,6 +1123,7 @@ sendmon(Client *c, Monitor *m)
 	attachstack(c);
 	focus(NULL);
 	arrange(NULL);
+	wmstate_update();
 }
 
 void
@@ -1168,6 +1174,7 @@ setfullscreen(Client *c, int fullscreen)
 #endif
 		arrange(c->mon);
 	}
+	wmstate_update();
 }
 
 void
@@ -1209,6 +1216,7 @@ setlayout(const Arg *arg)
 		arrange(selmon);
 	else
 		drawbar(selmon);
+	wmstate_update();
 }
 
 void
@@ -1321,6 +1329,7 @@ togglefloating(const Arg *arg)
 		resize(selmon->sel, selmon->sel->x, selmon->sel->y, selmon->sel->w,
 		    selmon->sel->h, 0);
 	arrange(selmon);
+	wmstate_update();
 }
 
 void
@@ -1373,6 +1382,7 @@ toggletag(const Arg *arg)
 		arrange(selmon);
 	}
 	updatecurrentdesktop();
+	wmstate_update();
 }
 
 void
@@ -1520,6 +1530,7 @@ toggleview(const Arg *arg)
 		focus(NULL);
 	}
 	updatecurrentdesktop();
+	wmstate_update();
 }
 
 void
@@ -1581,6 +1592,7 @@ unmanage(Client *c, int destroyed)
 	 * resumes immediately rather than waiting for the 5-second watchdog. */
 	compositor_check_unredirect();
 #endif
+	wmstate_update();
 }
 
 void
@@ -1818,6 +1830,7 @@ view(const Arg *arg)
 	arrange(selmon);
 	focus(NULL);
 	updatecurrentdesktop();
+	wmstate_update();
 }
 
 void
