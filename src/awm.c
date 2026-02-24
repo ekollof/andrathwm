@@ -141,18 +141,19 @@ cleanup(void)
 	size_t   i;
 
 	view(&a);
-	selmon->lt[selmon->sellt] = &foo;
-	for (m = mons; m; m = m->next)
+	g_awm.selmon->lt[g_awm.selmon->sellt] = &foo;
+	for (m = g_awm.mons; m; m = m->next)
 		while (m->cl->stack)
 			unmanage(m->cl->stack, 0);
 	{
 
 		xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
 	}
-	while (mons)
-		cleanupmon(mons);
-	free(cl);
-	cl = NULL;
+	while (g_awm.mons)
+		cleanupmon(g_awm.mons);
+	free(g_awm.cl);
+	g_awm.cl = NULL;
+	cl       = NULL;
 
 	if (showsystray) {
 		Client *ic = systray->icons;
@@ -263,10 +264,10 @@ ui_send_monitor_geom(void)
 
 	if (!selmon || ui_fd < 0)
 		return;
-	p.wx = (int32_t) selmon->wx;
-	p.wy = (int32_t) selmon->wy;
-	p.ww = (int32_t) selmon->ww;
-	p.wh = (int32_t) selmon->wh;
+	p.wx = (int32_t) g_awm.selmon->wx;
+	p.wy = (int32_t) g_awm.selmon->wy;
+	p.ww = (int32_t) g_awm.selmon->ww;
+	p.wh = (int32_t) g_awm.selmon->wh;
 	ui_send_inline(UI_MSG_MONITOR_GEOM, &p, sizeof(p));
 }
 
@@ -481,7 +482,7 @@ void
 preview_show_keybind(const Arg *arg)
 {
 	(void) arg;
-	bar_hover_enter(selmon);
+	bar_hover_enter(g_awm.selmon);
 }
 
 void
@@ -495,7 +496,7 @@ launchermenu(const Arg *arg)
 	if (ui_fd < 0)
 		return;
 
-	Monitor *m = selmon;
+	Monitor *m = g_awm.selmon;
 	p.x        = (int32_t) (m->wx + (m->ww - 420) / 2);
 	p.y        = (int32_t) (m->wy + (m->wh - 400) / 2);
 	if (p.x < (int32_t) m->wx)
@@ -553,7 +554,7 @@ x_dispatch_cb(gpointer user_data)
 			updategeom();
 			drw_resize(drw, sw, bh);
 			updatebars();
-			for (Monitor *m = mons; m; m = m->next) {
+			for (Monitor *m = g_awm.mons; m; m = m->next) {
 				for (Client *c = m->cl->clients; c; c = c->next)
 					if (c->isfullscreen)
 						resizeclient(c, m->mx, m->my, m->mw, m->mh);
@@ -561,7 +562,7 @@ x_dispatch_cb(gpointer user_data)
 			}
 			focus(NULL);
 			arrange(NULL);
-			for (Monitor *m = mons; m; m = m->next)
+			for (Monitor *m = g_awm.mons; m; m = m->next)
 				updateworkarea(m);
 #ifdef COMPOSITOR
 			compositor_notify_screen_resize();
@@ -777,9 +778,10 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 			memcpy(&fp, payload, sizeof(fp));
 			c = wintoclient((xcb_window_t) fp.xwin);
 			if (c) {
-				if (c->mon != selmon) {
-					unfocus(selmon->sel, 0);
-					selmon = c->mon;
+				if (c->mon != g_awm.selmon) {
+					unfocus(g_awm.selmon->sel, 0);
+					selmon       = c->mon;
+					g_awm.selmon = c->mon;
 				}
 				if (!ISVISIBLE(c, c->mon)) {
 					Arg a = { .ui = c->tags };
@@ -1186,6 +1188,7 @@ setup(void)
 	}
 	if (!(cl = (Clientlist *) calloc(1, sizeof(Clientlist))))
 		die("fatal: could not malloc() %u bytes\n", sizeof(Clientlist));
+	g_awm.cl = cl;
 	/* drw uses a dedicated bare xcb_connection_t (opened inside drw_create)
 	 * for all cairo rendering, keeping its XCB traffic off xc. */
 	drw = drw_create(xc, screen, root, sw, sh);
@@ -1271,7 +1274,7 @@ setup(void)
 	/* Update workarea for all monitors */
 	{
 		Monitor *m;
-		for (m = mons; m; m = m->next)
+		for (m = g_awm.mons; m; m = m->next)
 			updateworkarea(m);
 	}
 	/* select events */
