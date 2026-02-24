@@ -7,10 +7,13 @@
  * each showing a thumbnail and the window title, mirroring the style used
  * by switcher.c in the WM process.
  *
- * Thumbnail rendering uses XRender server-side scaling on the same XCB
- * connection as GDK (obtained via gdk_x11_get_default_xdisplay /
- * XGetXCBConnection).  This avoids the need for a separate XCB connection
- * in awm-ui.
+ * Thumbnail rendering uses XRender server-side scaling on a dedicated XCB
+ * connection opened independently of GDK.  Using GDK's own XCB connection
+ * (via XGetXCBConnection) is unsafe: GDK owns the event queue and mixing raw
+ * XCB requests on the same connection causes XCB to see unexpected
+ * replies/errors and call exit() internally, silently killing awm-ui.
+ * The dedicated connection shares the same X server as GDK (same DISPLAY)
+ * so all pixmap XIDs obtained from awm are valid on it.
  *
  * Flow:
  *   1. preview_show() is called with the UiPreviewEntry array from SHM.
@@ -34,7 +37,6 @@
 #include <cairo/cairo-xcb.h>
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
-#include <X11/Xlib-xcb.h>
 
 #include "log.h"
 #include "preview.h"
@@ -90,7 +92,8 @@ static unsigned int pv_ncard  = 0;
 static int          pv_sel    = -1; /* selected card index */
 static int          pv_ui_fd  = -1;
 
-/* XCB connection shared with GDK — obtained once on first use */
+/* XCB connection dedicated to XRender thumbnail work — opened independently
+ * of GDK so that raw XCB requests do not interfere with GDK's event queue. */
 static xcb_connection_t                      *pv_xc     = NULL;
 static xcb_screen_t                          *pv_screen = NULL;
 static xcb_render_query_pict_formats_reply_t *pv_rfmts  = NULL;
@@ -99,27 +102,32 @@ static xcb_render_query_pict_formats_reply_t *pv_rfmts  = NULL;
  * XCB / XRender helpers
  * ---------------------------------------------------------------------- */
 
-/* Obtain the XCB connection and screen from GDK (call after gtk_init). */
+/* Open a dedicated XCB connection for XRender work (call after gtk_init).
+ * We use the same DISPLAY as GDK but open a separate connection so that
+ * raw XCB calls do not race with GDK's event-queue ownership. */
 static void
 pv_ensure_xcb(void)
 {
+	const char           *dname;
+	int                   scr_num = 0;
+	xcb_screen_iterator_t it;
+	int                   i;
+
 	if (pv_xc)
 		return;
 
-	Display *dpy = gdk_x11_get_default_xdisplay();
-	if (!dpy) {
-		awm_error("preview: no default X display");
+	dname = gdk_display_get_name(gdk_display_get_default());
+	pv_xc = xcb_connect(dname, &scr_num);
+	if (!pv_xc || xcb_connection_has_error(pv_xc)) {
+		awm_error("preview: xcb_connect failed for display %s",
+		    dname ? dname : "(null)");
+		pv_xc = NULL;
 		return;
 	}
-	pv_xc = XGetXCBConnection(dpy);
-	if (!pv_xc) {
-		awm_error("preview: XGetXCBConnection failed");
-		return;
-	}
-	/* Identify the screen corresponding to GDK's default screen number */
-	int                   scr_num = DefaultScreen(dpy);
-	xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(pv_xc));
-	for (int i = 0; i < scr_num; i++)
+
+	/* Walk to the screen at scr_num */
+	it = xcb_setup_roots_iterator(xcb_get_setup(pv_xc));
+	for (i = 0; i < scr_num; i++)
 		xcb_screen_next(&it);
 	pv_screen = it.data;
 
@@ -270,7 +278,22 @@ pv_build_thumb(PreviewCard *c)
 	xcb_render_create_picture(pv_xc, c->thumb_pict,
 	    (xcb_drawable_t) c->thumb_pixmap, dst_fmt, pmask, &pval);
 
-	xcb_render_composite(pv_xc, XCB_RENDER_PICT_OP_SRC, src_pict,
+	/* Pre-fill dst with opaque dark background so ARGB windows blend
+	 * cleanly and do not show garbage from uninitialised pixmap memory. */
+	{
+		xcb_render_color_t bc;
+		xcb_rectangle_t    br = { 0, 0, (uint16_t) tw, (uint16_t) th };
+		bc.red                = 0x2000;
+		bc.green              = 0x2000;
+		bc.blue               = 0x2000;
+		bc.alpha              = 0xffff;
+		xcb_render_fill_rectangles(
+		    pv_xc, XCB_RENDER_PICT_OP_SRC, c->thumb_pict, bc, 1, &br);
+	}
+
+	/* OVER blends pre-multiplied ARGB sources against the background;
+	 * opaque depth-24 sources composite correctly with OVER as well. */
+	xcb_render_composite(pv_xc, XCB_RENDER_PICT_OP_OVER, src_pict,
 	    XCB_RENDER_PICTURE_NONE, c->thumb_pict, 0, 0, 0, 0, 0, 0,
 	    (uint16_t) tw, (uint16_t) th);
 	xcb_flush(pv_xc);
@@ -654,6 +677,9 @@ preview_cleanup(void)
 		free(pv_rfmts);
 		pv_rfmts = NULL;
 	}
-	pv_xc     = NULL;
+	if (pv_xc) {
+		xcb_disconnect(pv_xc);
+		pv_xc = NULL;
+	}
 	pv_screen = NULL;
 }
