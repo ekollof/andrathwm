@@ -260,6 +260,82 @@ direct XCB equivalent:
   `X_PolySegment`, `X_PolyFillRectangle`, `X_PolyText8` — core request opcodes used in
   `xcb_error_handler()` to classify and whitelist async errors.
 
+## WMState Refactor — Active Development Goal
+
+### Motivation
+
+The WM state is currently a sea of ~30 bare `extern` globals scattered across `awm.c`
+(`mons`, `selmon`, `cl`, `stext`, `restart`, `barsdirty`, `comp.*`, etc.).  Every module
+reaches into these globals directly, making it easy to accidentally break invariants, hard
+to reason about ownership, and impossible to atomically manipulate state.
+
+### Primary Goal (current)
+
+**Consolidate restartable/observable WM and compositor state into a single `WMState`
+struct.**  The immediate payoff is disambiguation and simplicity — not serialisation.
+
+- `WMState` is the single source of truth for monitor topology, per-tag layout state,
+  client state, compositor redirect/bypass state, and focused monitor/client.
+- Functions that mutate WM state take `WMState *` (or access it via a single global
+  `g_wm`) instead of reaching into a bag of unrelated globals.
+- State transitions become explicit: it is obvious which fields change and why.
+- Invariants are enforced at the struct boundary, not scattered across call sites.
+
+### What belongs in WMState
+
+| Field group | Contents |
+|---|---|
+| Monitor topology | `mons` linked list, `selmon`, per-monitor `tagset[2]`, `seltags`, `ltsymbol` |
+| Per-tag layout | All `Pertag` arrays: `nmasters`, `mfacts`, `sellts`, `ltidxs`, `showbars`, `drawwithgaps`, `gappx`, `curtag`, `prevtag` |
+| Client state | Per-client: `win`, `tags`, `mon`, `x/y/w/h`, `opacity`, `isfloating`, `isfullscreen`, `ishidden`, `scratchkey`, `issteam`, `bypass_compositor` |
+| Focus | `selmon->num`, `selmon->sel->win` per monitor |
+| Compositor | `comp.paused_mask`, per-window redirect/bypass state |
+
+### What does NOT belong in WMState (runtime-only)
+
+Rendering resources (`drw`, `scheme`, `cursor`), atom caches (`wmatom`, `netatom`,
+`xatom`), input state (`keysyms`, `numlockmask`), IPC fds (`ui_fd`, `ui_pid`), X
+connection (`xc`, `root`, `screen`).  These are setup once and never need to be
+snapshotted or restored.
+
+### Implementation plan (feature/state-refactor branch)
+
+**Step 1 (done on master, commit `838bae0`):** Three independent bug fixes.
+
+**Step 2 (done on master, commit `4eec58d` — was feature/state-refactor Step 1):**
+Replace `Monitor` cached fields with `MON_*` accessor macros.
+
+**Step 3 — WMState struct skeleton:**
+- Define `WMState` in `src/wmstate.h` covering the field groups above.
+- Add a single global `WMState g_wm` in `awm.c`; populate it in `setup()`.
+- Keep existing `extern` globals as aliases or migrate call sites incrementally —
+  do NOT break everything in one commit.
+
+**Step 4 — Migrate modules to use `g_wm`:**
+- Replace direct global access in `monitor.c`, `client.c`, `events.c`, `compositor.c`
+  with `g_wm.mons`, `g_wm.selmon`, `g_wm.cl`, etc.
+- Each module migrated in its own commit; build must stay green after every commit.
+
+**Step 5 — Compositor state into WMState:**
+- Move `comp.paused_mask` and per-`CompWin` bypass state into `WMState` or a
+  `WMState.comp` sub-struct.
+
+**Step 6 (future, not yet):** Serialisation — once `WMState` is the single source of
+truth, session save/restore and JSON dump become a single walk of `g_wm`.  Do not
+implement serialisation until Steps 3–5 are complete and stable.
+
+### Rules for this refactor
+
+- **Do not implement session save/restore or JSON dump yet.**  That is Step 6.
+- **Do not break the build between commits.**  Migrate incrementally.
+- **Do not introduce a `WMState *` parameter to every function immediately** — use the
+  single `g_wm` global during the transition; per-function threading can come later.
+- `src/session.c`, `src/session.h`, `src/state_dump.c`, `src/state_dump.h` introduced on
+  the old `feature/state-refactor` branch are **not carried forward** — they were
+  premature and will be rewritten against `WMState` in Step 6.
+
+---
+
 ## Constraints Checklist
 
 Before committing, verify:
@@ -273,3 +349,4 @@ Before committing, verify:
 - [ ] `AWM_CONFIG_IMPL` defined only in `src/awm.c`
 - [ ] New fields added to `CompShared` or other shared structs do not silently shift offsets
   used by existing code in companion `.c` files (check all `comp_backend_*` files compile)
+- [ ] WMState refactor: no session/dump code introduced before Step 6
