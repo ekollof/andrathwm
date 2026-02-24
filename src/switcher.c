@@ -739,7 +739,6 @@ switcher_confirm(void)
 		/* Super+Tab and window is on a hidden tag: make the tag visible.
 		 * Switch selmon to the monitor that owns the window first, then
 		 * call view() on the window's tag so it becomes visible. */
-		selmon       = chosen->mon;
 		g_awm.selmon = chosen->mon;
 		Arg a        = { .ui = chosen->tags };
 		view(&a);

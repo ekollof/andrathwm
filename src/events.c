@@ -28,7 +28,6 @@ buttonpress(xcb_generic_event_t *e)
 	/* focus monitor if necessary */
 	if ((m = wintomon(ev->event)) && m != g_awm.selmon) {
 		unfocus(g_awm.selmon->sel, 1);
-		selmon       = m;
 		g_awm.selmon = m;
 		focus(NULL);
 	}
@@ -249,7 +248,6 @@ clientmessage(xcb_generic_event_t *e)
 			;
 		if (i < LENGTH(tags)) {
 			const Arg a  = { .ui = 1 << i };
-			selmon       = c->mon;
 			g_awm.selmon = c->mon;
 			view(&a);
 			focus(c);
@@ -466,7 +464,6 @@ enternotify(xcb_generic_event_t *e)
 	m = c ? c->mon : wintomon(ev->event);
 	if (m != g_awm.selmon) {
 		unfocus(g_awm.selmon->sel, 1);
-		selmon       = m;
 		g_awm.selmon = m;
 	} else if (!c || c == g_awm.selmon->sel)
 		return;
@@ -767,7 +764,6 @@ motionnotify(xcb_generic_event_t *e)
 		return;
 	if ((m = recttomon(ev->root_x, ev->root_y, 1, 1)) != mon && mon) {
 		unfocus(g_awm.selmon->sel, 1);
-		selmon       = m;
 		g_awm.selmon = m;
 		focus(NULL);
 	}

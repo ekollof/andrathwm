@@ -281,8 +281,6 @@ extern double            ui_scale; /* ui_dpi / 96.0 */
 extern Drw              *drw;
 extern Clr             **scheme;
 extern Cur              *cursor[CurLast];
-extern Monitor          *mons, *selmon;
-extern Clientlist       *cl;
 extern Systray          *systray;
 extern xcb_atom_t        wmatom[WMLast], netatom[NetLast], xatom[XLast];
 extern xcb_atom_t        utf8string_atom;

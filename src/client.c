@@ -263,7 +263,6 @@ focus(Client *c)
 		unfocus(g_awm.selmon->sel, 0);
 	if (c) {
 		if (c->mon != g_awm.selmon) {
-			selmon       = c->mon;
 			g_awm.selmon = c->mon;
 		}
 		if (c->isurgent)
@@ -956,7 +955,6 @@ movemouse(const Arg *arg)
 	xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
 	if ((m = recttomon(c->x, c->y, c->w, c->h)) != g_awm.selmon) {
 		sendmon(c, m);
-		selmon       = m;
 		g_awm.selmon = m;
 		focus(NULL);
 	}
@@ -1124,7 +1122,6 @@ resizemouse(const Arg *arg)
 	}
 	if ((m = recttomon(c->x, c->y, c->w, c->h)) != g_awm.selmon) {
 		sendmon(c, m);
-		selmon       = m;
 		g_awm.selmon = m;
 		focus(NULL);
 	}
@@ -1339,7 +1336,7 @@ tag(const Arg *arg)
 void
 tagmon(const Arg *arg)
 {
-	if (!g_awm.selmon->sel || !mons->next)
+	if (!g_awm.selmon->sel || !g_awm.mons->next)
 		return;
 	sendmon(g_awm.selmon->sel, dirtomon(arg->i));
 }

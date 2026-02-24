@@ -95,8 +95,7 @@ cleanupmon(Monitor *mon)
 	Monitor *m;
 
 	if (mon == g_awm.mons) {
-		mons       = g_awm.mons->next;
-		g_awm.mons = mons;
+		g_awm.mons = g_awm.mons->next;
 	} else {
 		for (m = g_awm.mons; m && m->next != mon; m = m->next)
 			;
@@ -322,7 +321,6 @@ focusmon(const Arg *arg)
 	if ((m = dirtomon(arg->i)) == g_awm.selmon)
 		return;
 	unfocus(g_awm.selmon->sel, 0);
-	selmon       = m;
 	g_awm.selmon = m;
 	focus(NULL);
 	warp(g_awm.selmon->sel);
@@ -716,7 +714,6 @@ updategeom(void)
 				if (m)
 					m->next = nm;
 				else {
-					mons       = nm;
 					g_awm.mons = nm;
 				}
 			}
@@ -743,7 +740,6 @@ updategeom(void)
 				 * cleanupmon() frees it.  mons is always safe because we
 				 * only reach here when nn >= 1. */
 				if (m == g_awm.selmon) {
-					selmon       = g_awm.mons;
 					g_awm.selmon = g_awm.mons;
 				}
 				for (c = m->cl->clients; c; c = c->next) {
@@ -802,7 +798,6 @@ xinerama_fallback:
 			if (m)
 				m->next = nm;
 			else {
-				mons       = nm;
 				g_awm.mons = nm;
 			}
 		}
@@ -825,7 +820,6 @@ xinerama_fallback:
 			/* Redirect selmon away from the dying monitor before
 			 * cleanupmon() frees it.  mons is always safe here. */
 			if (m == g_awm.selmon) {
-				selmon       = g_awm.mons;
 				g_awm.selmon = g_awm.mons;
 			}
 			for (c = m->cl->clients; c; c = c->next) {
@@ -845,8 +839,7 @@ default_monitor:
 #endif /* XINERAMA */
 	/* default monitor setup */
 	if (!g_awm.mons) {
-		mons       = createmon();
-		g_awm.mons = mons;
+		g_awm.mons = createmon();
 	}
 	if (!g_awm.mons)
 		die("awm: createmon failed: monitor count exceeds tag count");
@@ -858,8 +851,7 @@ default_monitor:
 	}
 geom_done:
 	if (dirty) {
-		selmon       = wintomon(root);
-		g_awm.selmon = selmon;
+		g_awm.selmon = wintomon(root);
 	}
 	wmstate_update();
 	return dirty;

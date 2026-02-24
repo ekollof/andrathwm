@@ -107,9 +107,7 @@ Cur               *cursor[CurLast];
 Clr              **scheme;
 xcb_connection_t  *xc;
 Drw               *drw;
-Monitor           *mons, *selmon;
 xcb_window_t       root, wmcheckwin;
-Clientlist        *cl;
 xcb_key_symbols_t *keysyms;
 
 /* ---- compile-time invariants ---- */
@@ -153,7 +151,6 @@ cleanup(void)
 		cleanupmon(g_awm.mons);
 	free(g_awm.cl);
 	g_awm.cl = NULL;
-	cl       = NULL;
 
 	if (showsystray) {
 		Client *ic = systray->icons;
@@ -262,7 +259,7 @@ ui_send_monitor_geom(void)
 {
 	UiMonitorGeomPayload p;
 
-	if (!selmon || ui_fd < 0)
+	if (!g_awm.selmon || ui_fd < 0)
 		return;
 	p.wx = (int32_t) g_awm.selmon->wx;
 	p.wy = (int32_t) g_awm.selmon->wy;
@@ -780,7 +777,6 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 			if (c) {
 				if (c->mon != g_awm.selmon) {
 					unfocus(g_awm.selmon->sel, 0);
-					selmon       = c->mon;
 					g_awm.selmon = c->mon;
 				}
 				if (!ISVISIBLE(c, c->mon)) {
@@ -1186,9 +1182,8 @@ setup(void)
 		sh   = (int) sit.data->height_in_pixels;
 		root = sit.data->root;
 	}
-	if (!(cl = (Clientlist *) calloc(1, sizeof(Clientlist))))
+	if (!(g_awm.cl = (Clientlist *) calloc(1, sizeof(Clientlist))))
 		die("fatal: could not malloc() %u bytes\n", sizeof(Clientlist));
-	g_awm.cl = cl;
 	/* drw uses a dedicated bare xcb_connection_t (opened inside drw_create)
 	 * for all cairo rendering, keeping its XCB traffic off xc. */
 	drw = drw_create(xc, screen, root, sw, sh);

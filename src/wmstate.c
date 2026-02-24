@@ -3,10 +3,10 @@
 /* -------------------------------------------------------------------------
  * wmstate.c — consolidated WM + compositor state implementation.
  *
- * wmstate_update() snapshots the current live globals (mons, selmon, cl,
- * comp.*) into the single g_awm instance.  During the incremental migration
- * the live globals remain authoritative; once migration is complete g_awm
- * becomes the authority and direct writes replace this snapshot approach.
+ * wmstate_update() snapshots the live state from g_awm's authoritative
+ * live pointers (g_awm.mons, g_awm.selmon, g_awm.cl) into the snapshot
+ * arrays in the same g_awm struct.  The live pointers are preserved across
+ * the memset by saving and restoring them.
  * ---------------------------------------------------------------------- */
 
 #include <string.h>
@@ -52,16 +52,21 @@ wmstate_update(void)
 	Client      *c;
 	unsigned int mi, ci, ti;
 
+	/* Save live pointers before zeroing the struct. */
+	Monitor    *saved_mons   = g_awm.mons;
+	Monitor    *saved_selmon = g_awm.selmon;
+	Clientlist *saved_cl     = g_awm.cl;
+
 	memset(&g_awm, 0, sizeof g_awm);
 
-	/* ---- Live runtime pointers (authoritative) ---- */
-	g_awm.mons   = mons;
-	g_awm.selmon = selmon;
-	g_awm.cl     = cl;
+	/* Restore live pointers — these are the authoritative state. */
+	g_awm.mons   = saved_mons;
+	g_awm.selmon = saved_selmon;
+	g_awm.cl     = saved_cl;
 
 	/* ---- Monitors ---- */
 	mi = 0;
-	for (m = mons; m && mi < WMSTATE_MAX_MONITORS; m = m->next, mi++) {
+	for (m = g_awm.mons; m && mi < WMSTATE_MAX_MONITORS; m = m->next, mi++) {
 		AWMStateMonitor *wm = &g_awm.monitors[mi];
 
 		wm->num       = m->num;
@@ -103,11 +108,12 @@ wmstate_update(void)
 		}
 	}
 	g_awm.n_monitors = mi;
-	g_awm.selmon_num = selmon ? selmon->num : -1;
+	g_awm.selmon_num = g_awm.selmon ? g_awm.selmon->num : -1;
 
 	/* ---- Clients ---- */
 	ci = 0;
-	for (c = cl->clients; c && ci < WMSTATE_MAX_CLIENTS; c = c->next, ci++) {
+	for (c = g_awm.cl->clients; c && ci < WMSTATE_MAX_CLIENTS;
+	    c  = c->next, ci++) {
 		AWMStateClient *wc = &g_awm.clients[ci];
 
 		wc->win = c->win;
