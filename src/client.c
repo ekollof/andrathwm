@@ -1443,10 +1443,14 @@ toggleview(const Arg *arg)
 				if (m->showbar != m->pertag->showbars[m->pertag->curtag])
 					togglebar(NULL);
 
-				attachclients(m);
-				arrange(m);
-				compositor_check_unredirect();
-
+				/* Update selmon's tagset before calling attachclients on
+				 * either monitor.  If we called attachclients(m) first,
+				 * it would steal clients whose tag matches m's new tagset
+				 * (which is selmon's old tag) — including clients that were
+				 * sitting on selmon and should stay there once selmon picks
+				 * up m's old tag.  Setting both tagsets atomically first
+				 * lets attachclients see the final state and assign each
+				 * client to the correct monitor. */
 				selmon->tagset[selmon->seltags] = newtagset;
 				selmon->pertag->prevtag         = selmon->pertag->curtag;
 				selmon->pertag->curtag          = m_curtag;
@@ -1464,6 +1468,10 @@ toggleview(const Arg *arg)
 				if (selmon->showbar !=
 				    selmon->pertag->showbars[selmon->pertag->curtag])
 					togglebar(NULL);
+
+				attachclients(m);
+				arrange(m);
+				compositor_check_unredirect();
 
 				attachclients(selmon);
 				arrange(selmon);
@@ -1732,10 +1740,8 @@ view(const Arg *arg)
 			if (m->showbar != m->pertag->showbars[m->pertag->curtag])
 				togglebar(NULL);
 
-			attachclients(m);
-			arrange(m);
-			compositor_check_unredirect();
-
+			/* Set selmon's tagset before calling attachclients on
+			 * either monitor — same ordering fix as in toggleview(). */
 			selmon->seltags ^= 1;
 			selmon->tagset[selmon->seltags] = newtagset;
 			selmon->pertag->prevtag         = selmon->pertag->curtag;
@@ -1753,6 +1759,10 @@ view(const Arg *arg)
 			if (selmon->showbar !=
 			    selmon->pertag->showbars[selmon->pertag->curtag])
 				togglebar(NULL);
+
+			attachclients(m);
+			arrange(m);
+			compositor_check_unredirect();
 
 			attachclients(selmon);
 			arrange(selmon);
