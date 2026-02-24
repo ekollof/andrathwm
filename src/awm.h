@@ -158,6 +158,12 @@ typedef struct {
 typedef struct Clientlist Clientlist;
 typedef struct Monitor    Monitor;
 typedef struct Client     Client;
+
+/* Forward declaration — allows Client to hold a back-pointer to its CompWin
+ * without requiring compositor_backend.h (internal to the compositor) to be
+ * included here.  The full definition lives in compositor_backend.h. */
+struct CompWin;
+
 struct Client {
 	char             name[256];
 	cairo_surface_t *icon;
@@ -169,16 +175,17 @@ struct Client {
 	unsigned int tags;
 	int isfixed, iscentered, isfloating, isurgent, neverfocus, oldstate,
 	    isfullscreen;
-	int          ishidden;
-	int          issteam;
-	int          issni;
-	char         scratchkey;
-	double       opacity;           /* compositing opacity 0.0–1.0 */
-	int          bypass_compositor; /* _NET_WM_BYPASS_COMPOSITOR hint */
-	Client      *next;
-	Client      *snext;
-	Monitor     *mon;
-	xcb_window_t win;
+	int             ishidden;
+	int             issteam;
+	int             issni;
+	char            scratchkey;
+	double          opacity;           /* compositing opacity 0.0–1.0 */
+	int             bypass_compositor; /* _NET_WM_BYPASS_COMPOSITOR hint */
+	Client         *next;
+	Client         *snext;
+	Monitor        *mon;
+	xcb_window_t    win;
+	struct CompWin *cw; /* compositor back-pointer; NULL when untracked */
 };
 
 #ifdef COMPOSITOR

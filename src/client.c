@@ -1249,7 +1249,13 @@ showhide(Client *c)
 	if (!c)
 		return;
 	if (ISVISIBLE(c, c->mon) && !c->ishidden) {
-		compositor_set_hidden(c, 0);
+		/* For monocle layout, skip the compositor unhide here — monocle()
+		 * runs immediately after showhide() (inside arrangemon) and is the
+		 * sole authority on which windows are hidden on that monitor.
+		 * Unhiding every visible window here would only trigger a wasted
+		 * show→hide repaint cycle for the non-top windows. */
+		if (c->mon->lt[c->mon->sellt]->arrange != monocle)
+			compositor_set_hidden(c, 0);
 		{
 			uint32_t vals[2] = { (uint32_t) c->x, (uint32_t) c->y };
 			xcb_configure_window(

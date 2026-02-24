@@ -510,11 +510,7 @@ comp_find_by_xid(xcb_window_t w)
 static CompWin *
 comp_find_by_client(Client *c)
 {
-	CompWin *cw;
-	for (cw = comp.windows; cw; cw = cw->next)
-		if (cw->client == c)
-			return cw;
-	return NULL;
+	return c ? c->cw : NULL;
 }
 
 /* Subscribe cw to XPresent CompleteNotify events. */
@@ -791,8 +787,10 @@ comp_add_by_xid(xcb_window_t w)
 					cw->client = c;
 					break;
 				}
-		if (cw->client)
-			cw->opacity = cw->client->opacity;
+		if (cw->client) {
+			cw->opacity    = cw->client->opacity;
+			cw->client->cw = cw; /* install back-pointer */
+		}
 	}
 
 	comp_refresh_pixmap(cw);
@@ -842,6 +840,7 @@ compositor_add_window(Client *c)
 	if (cw) {
 		cw->client  = c;
 		cw->opacity = c->opacity;
+		c->cw       = cw;
 		return;
 	}
 
@@ -851,6 +850,7 @@ compositor_add_window(Client *c)
 	if (cw) {
 		cw->client  = c;
 		cw->opacity = c->opacity;
+		c->cw       = cw;
 	}
 
 	schedule_repaint();
@@ -869,6 +869,8 @@ compositor_remove_window(Client *c)
 		if (cw->client == c || cw->win == c->win) {
 			comp_dirty_add_rect(
 			    cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
+			if (cw->client)
+				cw->client->cw = NULL; /* clear back-pointer before free */
 			if (prev)
 				prev->next = cw->next;
 			else

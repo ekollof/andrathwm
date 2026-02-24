@@ -130,8 +130,8 @@ createmon(void)
 	/* find the first tag that isn't in use */
 	for (i = 0; i < LENGTH(tags); i++) {
 		for (tm = mons; tm && !(tm->tagset[tm->seltags] & (1 << i));
-		     tm = tm->next)
-			;
+		    tm  = tm->next)
+            ;
 		if (!tm)
 			break;
 	}
@@ -336,8 +336,8 @@ monocle(Monitor *m)
 	if (n > 0) /* override layout symbol */
 		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
 	for (c = m->cl->stack; c && (!ISVISIBLE(c, m) || c->isfloating);
-	     c = c->snext)
-		;
+	    c  = c->snext)
+        ;
 	if (c && !c->isfloating) {
 		/* Use resizeclient() directly, bypassing applysizehints().
 		 * resize() skips the XConfigureWindow call when the stored
@@ -450,8 +450,12 @@ tile(Monitor *m)
 	unsigned int i, n, h, mw, my, ty;
 	Client      *c;
 
+	/* Pass 1: count tiled windows.  The total is needed up-front so that the
+	 * per-slot height formula  h = (wh - my) / (MIN(n, nmaster) - i)  can
+	 * distribute remaining space evenly.  Both passes are O(n) — nexttiled
+	 * advances one window at a time, not from the head each iteration. */
 	for (n = 0, c = nexttiled(m->cl->clients, m); c;
-	     c = nexttiled(c->next, m), n++)
+	    c = nexttiled(c->next, m), n++)
 		;
 
 	if (n == 0)
@@ -463,8 +467,8 @@ tile(Monitor *m)
 		else
 			mw = m->ww - m->pertag->gappx[m->pertag->curtag];
 		for (i = 0, my = ty = m->pertag->gappx[m->pertag->curtag],
-		    c     = nexttiled(m->cl->clients, m);
-		     c; c = nexttiled(c->next, m), i++)
+		    c    = nexttiled(m->cl->clients, m);
+		    c; c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i) -
 				    m->pertag->gappx[m->pertag->curtag];
@@ -500,7 +504,7 @@ tile(Monitor *m)
 		else
 			mw = m->ww;
 		for (i = my = ty = 0, c = nexttiled(m->cl->clients, m); c;
-		     c = nexttiled(c->next, m), i++)
+		    c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i);
 				if (n == 1)
