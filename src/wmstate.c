@@ -23,6 +23,25 @@
 AWMState g_awm;
 
 /* -------------------------------------------------------------------------
+ * comp_win_visitor — callback for compositor_for_each_window()
+ * ud points to an unsigned int index counter.
+ * ---------------------------------------------------------------------- */
+#ifdef COMPOSITOR
+static void
+comp_win_visitor(xcb_window_t win, int redirected, int hidden, void *ud)
+{
+	unsigned int *idx = (unsigned int *) ud;
+
+	if (*idx >= WMSTATE_MAX_CLIENTS)
+		return;
+	g_awm.comp.comp_windows[*idx].win        = win;
+	g_awm.comp.comp_windows[*idx].redirected = redirected;
+	g_awm.comp.comp_windows[*idx].hidden     = hidden;
+	(*idx)++;
+}
+#endif
+
+/* -------------------------------------------------------------------------
  * wmstate_update
  * ---------------------------------------------------------------------- */
 
@@ -106,8 +125,14 @@ wmstate_update(void)
 
 	/* ---- Compositor ---- */
 #ifdef COMPOSITOR
-	g_awm.comp.active      = compositor_is_active();
-	g_awm.comp.paused      = compositor_is_paused();
-	g_awm.comp.paused_mask = compositor_paused_mask();
+	{
+		unsigned int cwi = 0;
+
+		g_awm.comp.active      = compositor_is_active();
+		g_awm.comp.paused      = compositor_is_paused();
+		g_awm.comp.paused_mask = compositor_paused_mask();
+		compositor_for_each_window(comp_win_visitor, &cwi);
+		g_awm.comp.n_comp_windows = cwi;
+	}
 #endif
 }

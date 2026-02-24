@@ -2055,6 +2055,17 @@ compositor_paused_mask(void)
 	return comp.paused_mask;
 }
 
+void
+compositor_for_each_window(CompWinVisitor cb, void *ud)
+{
+	CompWin *cw;
+
+	if (!comp.active)
+		return;
+	for (cw = comp.windows; cw; cw = cw->next)
+		cb(cw->win, cw->redirected, cw->hidden, ud);
+}
+
 #endif /* COMPOSITOR */
 
 /* Satisfy ISO C99: a translation unit must contain at least one declaration */
