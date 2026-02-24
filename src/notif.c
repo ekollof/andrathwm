@@ -170,21 +170,29 @@ static void notif_restack(void);
  * Popup geometry helpers
  * ---------------------------------------------------------------------- */
 
-/* Compute the desired popup height given its content. */
+/* Compute the desired popup height given its content.
+ *
+ * We measure text via a 1×1 Cairo image surface so that the Pango context
+ * picks up the same DPI/resolution as the real drawing context in
+ * on_popup_draw().  Using pango_font_map_create_context() directly produces
+ * a context with no surface attached and therefore a hard-coded 96 DPI,
+ * which causes height underestimates on HiDPI screens. */
 static int
 popup_height(NotifItem *it)
 {
-	/* title + body + padding + icon area */
+	cairo_surface_t      *probe_surf;
+	cairo_t              *probe_cr;
 	PangoLayout          *lay;
-	PangoContext         *ctx;
 	PangoFontDescription *fdesc;
 	int                   text_h = 0;
 	int                   bh     = 0;
 
-	ctx = pango_font_map_create_context(pango_cairo_font_map_get_default());
+	/* 1×1 surface is enough — we only need a context with correct DPI. */
+	probe_surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+	probe_cr   = cairo_create(probe_surf);
+	lay        = pango_cairo_create_layout(probe_cr);
 
 	/* Summary line */
-	lay = pango_layout_new(ctx);
 	if (notif_theme_set && notif_theme.font[0]) {
 		fdesc = pango_font_description_from_string(notif_theme.font);
 		pango_layout_set_font_description(lay, fdesc);
@@ -219,12 +227,15 @@ popup_height(NotifItem *it)
 	}
 
 	g_object_unref(lay);
-	g_object_unref(ctx);
+	cairo_destroy(probe_cr);
+	cairo_surface_destroy(probe_surf);
 
-	int h = 12 + text_h + bh + 12; /* top-pad + summary + body + bot-pad */
-	if (h < 56)
-		h = 56; /* minimum: icon height (32) + 2*pad(12) */
-	return h;
+	{
+		int h = 12 + text_h + bh + 12; /* top-pad + summary + body + bot-pad */
+		if (h < 56)
+			h = 56; /* minimum: icon height (32) + 2*pad(12) */
+		return h;
+	}
 }
 
 /* Compute the top-left screen position for popup slot idx (0 = closest to

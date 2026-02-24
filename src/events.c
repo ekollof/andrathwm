@@ -475,7 +475,13 @@ leavenotify(xcb_generic_event_t *e)
 	if (ev->mode != XCB_NOTIFY_MODE_NORMAL)
 		return;
 
-	/* Bar un-hover — hide window preview popup */
+	/* Bar un-hover — hide window preview popup.
+	 * Mirror the enternotify() guards: do not dismiss the preview
+	 * while the launcher or switcher owns focus, otherwise hovering
+	 * onto those overlapping windows would prematurely hide it. */
+	if (launcher_visible || switcher_active())
+		return;
+
 	for (m = mons; m; m = m->next) {
 		if (ev->event == m->barwin) {
 			bar_hover_leave();

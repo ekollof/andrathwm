@@ -28,6 +28,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <linux/memfd.h>
 
 #include <glib-unix.h>
 #include <gtk/gtk.h>
@@ -312,23 +313,37 @@ ui_send_theme(void)
 /* Send a bulk SHM message to awm-ui.  Creates an anonymous SHM fd, writes
  * shm_size bytes from base into it, and transmits the fd via SCM_RIGHTS.
  * The message header has type=type and payload_len=shm_size.
- * Returns 0 on success, -1 on failure. */
+ * Returns 0 on success, -1 on failure.
+ *
+ * We prefer memfd_create(2) for the anonymous fd: it is truly nameless,
+ * never appears in /dev/shm, and avoids the PID-based shm_open name that
+ * could collide if the process is restarted under the same PID.  If
+ * memfd_create is not available at runtime we fall back to a shm_open name
+ * that includes both the PID and a call-site sequence counter. */
 static int
 ui_send_shm(UiMsgType type, const void *base, size_t shm_size)
 {
-	int   shm_fd = -1;
-	void *mapped = MAP_FAILED;
-	char  name[32];
-	int   ret = -1;
+	int                 shm_fd = -1;
+	void               *mapped = MAP_FAILED;
+	int                 ret    = -1;
+	static unsigned int seq    = 0;
 
-	/* Create anonymous SHM object */
-	snprintf(name, sizeof(name), "/awm-preview-%d", (int) getpid());
-	shm_fd = shm_open(name, O_CREAT | O_RDWR | O_TRUNC, 0600);
+	/* Prefer memfd_create — anonymous, no name-collision risk */
+#ifdef __NR_memfd_create
+	shm_fd = memfd_create("awm-preview", MFD_CLOEXEC);
+#endif
 	if (shm_fd < 0) {
-		awm_error("ui_send_shm: shm_open: %s", strerror(errno));
-		goto out;
+		/* Fallback: shm_open with a name that includes pid + seq counter */
+		char name[48];
+		snprintf(
+		    name, sizeof(name), "/awm-preview-%d-%u", (int) getpid(), seq++);
+		shm_fd = shm_open(name, O_CREAT | O_RDWR | O_TRUNC, 0600);
+		if (shm_fd < 0) {
+			awm_error("ui_send_shm: shm_open: %s", strerror(errno));
+			goto out;
+		}
+		shm_unlink(name); /* unlink immediately; fd keeps it alive */
 	}
-	shm_unlink(name); /* unlink immediately; fd keeps it alive */
 
 	if (ftruncate(shm_fd, (off_t) shm_size) < 0) {
 		awm_error("ui_send_shm: ftruncate: %s", strerror(errno));
