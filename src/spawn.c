@@ -3,6 +3,7 @@
 
 #include "spawn.h"
 #include "awm.h"
+#include "wmstate.h"
 #include "client.h"
 #include "monitor.h"
 #include "xrdb.h"
@@ -108,7 +109,7 @@ spawn(const Arg *arg)
 	struct sigaction sa;
 
 	if (arg->v == dmenucmd)
-		dmenumon[0] = '0' + selmon->num;
+		dmenumon[0] = '0' + g_awm.selmon->num;
 	if (fork() == 0) {
 		if (xc)
 			close(xcb_get_file_descriptor(xc));
