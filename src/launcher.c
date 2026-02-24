@@ -1137,6 +1137,7 @@ launcher_hide(Launcher *launcher)
 void
 launcher_update_theme(Launcher *launcher, const UiThemePayload *t)
 {
+	GdkScreen    *gscreen;
 	LauncherItem *item;
 	int           icon_px;
 	GtkWidget    *sw;
@@ -1148,7 +1149,17 @@ launcher_update_theme(Launcher *launcher, const UiThemePayload *t)
 		return;
 
 	launcher_dpi = t->dpi;
-	icon_px      = LAUNCHER_SCALE(LAUNCHER_ICON_SIZE);
+
+	/* Tell GDK the real screen DPI so that all GTK Pango-backed widgets
+	 * (GtkLabel, GtkSearchEntry) render text at the correct physical size.
+	 * gdk_screen_set_resolution() fires "resolution" notify on the GdkScreen
+	 * which causes every widget to invalidate its Pango metrics and
+	 * re-measure text at the new DPI on the next draw pass. */
+	gscreen = gtk_widget_get_screen(launcher->window);
+	if (gscreen)
+		gdk_screen_set_resolution(gscreen, t->dpi);
+
+	icon_px = LAUNCHER_SCALE(LAUNCHER_ICON_SIZE);
 
 	/* Resize the window and scrolled-window to match new DPI */
 	gtk_window_resize(GTK_WINDOW(launcher->window), LAUNCHER_SCALE(420),
