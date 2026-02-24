@@ -14,6 +14,7 @@ void configurenotify(xcb_generic_event_t *e);
 void configurerequest(xcb_generic_event_t *e);
 void destroynotify(xcb_generic_event_t *e);
 void enternotify(xcb_generic_event_t *e);
+void leavenotify(xcb_generic_event_t *e);
 void expose(xcb_generic_event_t *e);
 void focusin(xcb_generic_event_t *e);
 void keypress(xcb_generic_event_t *e);

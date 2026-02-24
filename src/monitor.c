@@ -548,8 +548,9 @@ updatebars(void)
 			uint32_t vals[3] = {
 				(uint32_t) scheme[SchemeNorm][ColBg].pixel, /* back_pixel */
 				1, /* override_redirect */
-				XCB_EVENT_MASK_BUTTON_PRESS |
-				    XCB_EVENT_MASK_EXPOSURE, /* event_mask */
+				XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE |
+				    XCB_EVENT_MASK_ENTER_WINDOW |
+				    XCB_EVENT_MASK_LEAVE_WINDOW, /* event_mask */
 			};
 			m->barwin = xcb_generate_id(xc);
 			xcb_create_window(xc, (uint8_t) depth, m->barwin, root,
@@ -565,8 +566,9 @@ updatebars(void)
 				XCB_BACK_PIXMAP_PARENT_RELATIVE, /* back_pixmap =
 				                                    ParentRelative */
 				1,                               /* override_redirect */
-				XCB_EVENT_MASK_BUTTON_PRESS |
-				    XCB_EVENT_MASK_EXPOSURE, /* event_mask */
+				XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE |
+				    XCB_EVENT_MASK_ENTER_WINDOW |
+				    XCB_EVENT_MASK_LEAVE_WINDOW, /* event_mask */
 			};
 			m->barwin = xcb_generate_id(xc);
 			xcb_create_window(xc, (uint8_t) depth, m->barwin, root,

@@ -24,7 +24,7 @@ SRCS = $(addprefix $(SRCDIR)/,$(SRC))
 OBJ = $(addprefix $(BUILDDIR)/,$(SRC:.c=.o))
 
 # awm-ui: separate GTK helper process (launcher + SNI menus)
-UI_SRC  = $(DRW_SRC) awm_ui.c launcher.c icon.c log.c util.c
+UI_SRC  = $(DRW_SRC) awm_ui.c launcher.c icon.c log.c util.c notif.c preview.c
 UI_SRCS = $(addprefix $(SRCDIR)/,$(UI_SRC))
 UI_OBJ  = $(addprefix $(BUILDDIR)/ui_,$(UI_SRC:.c=.o))
 
@@ -50,7 +50,7 @@ $(BUILDDIR)/ui_%.o: $(SRCDIR)/%.c config.h status_config.h config.mk | $(BUILDDI
 
 # Link awm-ui
 awm-ui: $(UI_OBJ)
-	${CC} -o $@ ${UI_OBJ} ${LDFLAGS}
+	${CC} -o $@ ${UI_OBJ} ${LDFLAGS} -lX11-xcb
 
 # Build xidle (XCB screensaver — no Xlib dependency)
 xidle: $(SRCDIR)/xidle.c
