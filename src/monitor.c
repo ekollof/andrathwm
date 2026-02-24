@@ -11,6 +11,7 @@
 #ifdef COMPOSITOR
 #include "compositor.h"
 #endif
+#include "wmstate.h"
 #include "config.h"
 
 #ifdef XINERAMA
@@ -322,6 +323,7 @@ focusmon(const Arg *arg)
 	selmon = m;
 	focus(NULL);
 	warp(selmon->sel);
+	wmstate_update();
 }
 
 void
@@ -544,6 +546,7 @@ togglebar(const Arg *arg)
 	}
 	updateworkarea(selmon);
 	arrange(selmon);
+	wmstate_update();
 }
 
 void
@@ -842,6 +845,7 @@ default_monitor:
 geom_done:
 	if (dirty)
 		selmon = wintomon(root);
+	wmstate_update();
 	return dirty;
 }
 
@@ -852,6 +856,7 @@ updatestatus(void)
 		snprintf(stext, sizeof(stext), "awm-" VERSION);
 	drawbar(selmon);
 	updatesystray();
+	wmstate_update();
 }
 
 Monitor *
