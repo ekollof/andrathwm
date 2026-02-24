@@ -1377,14 +1377,39 @@ compositor_check_unredirect(void)
 		CompWin *cw;
 		for (cw = comp.windows; cw; cw = cw->next) {
 			Monitor *cm;
+			int      on_removed;
 			if (!cw->client || cw->redirected)
 				continue;
 			if (cw->client->bypass_compositor == 1)
 				continue;
-			cm = cw->client->mon;
-			if (!cm || cm->num >= 32)
-				continue;
-			if (!(removed & (1u << (unsigned) cm->num)))
+			/*
+			 * Do NOT rely on cw->client->mon here: attachclients()
+			 * reassigns c->mon before arrange()/focus() calls us, so
+			 * ->mon may already point to the destination monitor while
+			 * the window is still physically on the resumed one.
+			 * Instead, determine which monitor the window sits on by
+			 * comparing its position against every monitor's rectangle.
+			 * Re-redirect whenever any of those monitors appear in the
+			 * removed set.
+			 */
+			on_removed = 0;
+			for (cm = mons; cm; cm = cm->next) {
+				if (cm->num >= 32)
+					continue;
+				if (!(removed & (1u << (unsigned) cm->num)))
+					continue;
+				/* centre-point test: window centre inside monitor rect */
+				{
+					int cx = cw->x + cw->w / 2;
+					int cy = cw->y + cw->h / 2;
+					if (cx >= cm->mx && cx < cm->mx + cm->mw && cy >= cm->my &&
+					    cy < cm->my + cm->mh) {
+						on_removed = 1;
+						break;
+					}
+				}
+			}
+			if (!on_removed)
 				continue;
 			{
 				xcb_void_cookie_t    ck;
@@ -1403,8 +1428,8 @@ compositor_check_unredirect(void)
 				}
 				comp_subscribe_present(cw);
 				awm_debug("compositor: re-redirected window 0x%lx "
-				          "on resume (mon %d)",
-				    cw->win, cm->num);
+				          "on resume",
+				    cw->win);
 			}
 		}
 	}
