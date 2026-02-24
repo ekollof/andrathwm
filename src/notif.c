@@ -7,7 +7,7 @@
  * Supported:
  *   - Notify (creates/replaces popup, schedules auto-expire)
  *   - CloseNotification
- *   - GetCapabilities: body, icon-static, actions, urgency
+ *   - GetCapabilities: body, body-markup, icon-static, actions, urgency
  *   - GetServerInformation
  *   - Signals: NotificationClosed, ActionInvoked
  *
@@ -48,6 +48,35 @@
 #include "icon.h"
 #include "log.h"
 #include "notif.h"
+
+/* -------------------------------------------------------------------------
+ * Markup helpers
+ * ---------------------------------------------------------------------- */
+
+/*
+ * Set layout text from a string that may contain Pango markup (as sent by
+ * notification senders that advertise body-markup support).  If the string
+ * is not valid Pango markup (e.g. unescaped '&' or bare '<'), fall back to
+ * treating it as plain text so the raw string is shown rather than nothing.
+ */
+static void
+layout_set_markup_safe(PangoLayout *lay, const char *text)
+{
+	GError *err = NULL;
+
+	if (!text || !text[0]) {
+		pango_layout_set_text(lay, "", -1);
+		return;
+	}
+
+	if (pango_parse_markup(text, -1, 0, NULL, NULL, NULL, &err)) {
+		pango_layout_set_markup(lay, text, -1);
+	} else {
+		/* Not valid markup — render as plain text */
+		g_error_free(err);
+		pango_layout_set_text(lay, text, -1);
+	}
+}
 
 /* -------------------------------------------------------------------------
  * Config defaults — overridden by constants from config.h when available.
@@ -152,7 +181,7 @@ popup_height(NotifItem *it)
 	lay = pango_layout_new(ctx);
 	pango_layout_set_width(
 	    lay, (NOTIF_WIDTH - 56) * PANGO_SCALE); /* 56 = icon(32)+pad(12)*2 */
-	pango_layout_set_text(lay, it->summary ? it->summary : "", -1);
+	layout_set_markup_safe(lay, it->summary ? it->summary : "");
 	{
 		int pw = 0, ph = 0;
 		pango_layout_get_pixel_size(lay, &pw, &ph);
@@ -163,7 +192,7 @@ popup_height(NotifItem *it)
 	/* Body */
 	if (it->body && it->body[0]) {
 		pango_layout_set_width(lay, (NOTIF_WIDTH - 56) * PANGO_SCALE);
-		pango_layout_set_text(lay, it->body, -1);
+		layout_set_markup_safe(lay, it->body);
 		pango_layout_set_wrap(lay, PANGO_WRAP_WORD_CHAR);
 		{
 			int pw = 0, ph = 0;
@@ -304,7 +333,7 @@ on_popup_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 			pango_layout_set_width(lay, tw * PANGO_SCALE);
 			pango_layout_set_ellipsize(lay, PANGO_ELLIPSIZE_END);
 			pango_layout_set_single_paragraph_mode(lay, TRUE);
-			pango_layout_set_text(lay, it->summary, -1);
+			layout_set_markup_safe(lay, it->summary);
 			cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0);
 			cairo_move_to(cr, tx, ty);
 			pango_cairo_show_layout(cr, lay);
@@ -325,7 +354,7 @@ on_popup_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 			pango_layout_set_ellipsize(lay, PANGO_ELLIPSIZE_NONE);
 			pango_layout_set_single_paragraph_mode(lay, FALSE);
 			pango_layout_set_wrap(lay, PANGO_WRAP_WORD_CHAR);
-			pango_layout_set_text(lay, it->body, -1);
+			layout_set_markup_safe(lay, it->body);
 			cairo_set_source_rgba(cr, 0.7, 0.7, 0.7, 1.0);
 			cairo_move_to(cr, tx, ty);
 			pango_cairo_show_layout(cr, lay);
@@ -811,6 +840,7 @@ handle_get_capabilities(DBusConnection *conn, DBusMessage *msg)
 	DBusMessageIter iter, arr;
 	const char     *caps[] = {
         "body",
+        "body-markup",
         "icon-static",
         "actions",
         "urgency",
