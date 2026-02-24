@@ -67,6 +67,7 @@ typedef struct {
 	int      win_w;
 	int      win_h;
 	int      selected;
+	int      depth; /* pixmap colour depth (24 or 32) */
 	char     title[64];
 
 	/* Thumbnail resources */
@@ -217,14 +218,28 @@ pv_build_thumb(PreviewCard *c)
 	if (th < 1)
 		th = 1;
 
-	/* Source picture from snapshot pixmap */
-	src_fmt = pv_find_format_for_depth(24); /* snapshots are depth 24/32 */
-	if (!src_fmt)
+	/* Source picture from snapshot pixmap — use actual pixmap depth */
+	src_fmt = pv_find_format_for_depth(c->depth ? c->depth : 24);
+	if (!src_fmt) {
+		awm_warn("preview: no XRender format for depth %d", c->depth);
 		return;
+	}
 
 	src_pict = xcb_generate_id(pv_xc);
-	xcb_render_create_picture(pv_xc, src_pict, (xcb_drawable_t) c->pixmap_xid,
-	    src_fmt, pmask, &pval);
+	{
+		xcb_void_cookie_t    ck;
+		xcb_generic_error_t *err;
+		ck  = xcb_render_create_picture_checked(pv_xc, src_pict,
+		     (xcb_drawable_t) c->pixmap_xid, src_fmt, pmask, &pval);
+		err = xcb_request_check(pv_xc, ck);
+		if (err) {
+			awm_warn("preview: create src picture failed (err %d, depth %d)",
+			    (int) err->error_code, c->depth);
+			free(err);
+			src_pict = 0;
+			return;
+		}
+	}
 
 	/* Scale transform */
 	{
@@ -546,6 +561,7 @@ preview_show(const UiPreviewEntry *entries, unsigned int count, int anchor_x,
 		c->win_w       = (int) entries[i].w;
 		c->win_h       = (int) entries[i].h;
 		c->selected    = (int) entries[i].selected;
+		c->depth       = (int) entries[i].depth;
 		memcpy(c->title, entries[i].title, sizeof(c->title));
 		c->title[sizeof(c->title) - 1] = '\0';
 		pv_build_thumb(c);
