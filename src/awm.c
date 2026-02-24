@@ -279,6 +279,9 @@ x_dispatch_cb(gpointer user_data)
 			}
 			focus(NULL);
 			arrange(NULL);
+#ifdef COMPOSITOR
+			compositor_notify_screen_resize();
+#endif
 		} else
 #endif
 		{

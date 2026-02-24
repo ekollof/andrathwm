@@ -41,6 +41,7 @@ static struct {
 	                          * avoids Mesa's DRI3 XCB calls corrupting the
 	                          * main xc sequence counter                    */
 	EGLDisplay egl_dpy;
+	EGLConfig  egl_cfg; /* saved at init for surface recreation on resize */
 	EGLContext egl_ctx;
 	EGLSurface egl_win;
 	GLuint     prog;
@@ -313,6 +314,7 @@ egl_init(void)
 		return -1;
 	}
 
+	egl.egl_cfg = cfg; /* save for surface recreation on resize */
 	egl.egl_win = eglCreateWindowSurface(
 	    egl.egl_dpy, cfg, (EGLNativeWindowType) comp.overlay, NULL);
 	if (egl.egl_win == EGL_NO_SURFACE) {
@@ -589,6 +591,31 @@ egl_update_wallpaper(void)
 static void
 egl_notify_resize(void)
 {
+	/* The overlay window has been resized to sw×sh by the caller.
+	 * Destroy and recreate the EGL window surface — EGL surfaces are
+	 * bound to the window at creation time and do not auto-resize. */
+	eglMakeCurrent(
+	    egl.egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+	if (egl.egl_win != EGL_NO_SURFACE) {
+		eglDestroySurface(egl.egl_dpy, egl.egl_win);
+		egl.egl_win = EGL_NO_SURFACE;
+	}
+	egl.egl_win = eglCreateWindowSurface(
+	    egl.egl_dpy, egl.egl_cfg, (EGLNativeWindowType) comp.overlay, NULL);
+	if (egl.egl_win == EGL_NO_SURFACE) {
+		awm_warn("compositor/egl: eglCreateWindowSurface failed on "
+		         "resize (0x%x) — compositor disabled",
+		    (unsigned int) eglGetError());
+		return;
+	}
+	if (!eglMakeCurrent(egl.egl_dpy, egl.egl_win, egl.egl_win, egl.egl_ctx)) {
+		awm_warn("compositor/egl: eglMakeCurrent failed on resize "
+		         "(0x%x) — compositor disabled",
+		    (unsigned int) eglGetError());
+		eglDestroySurface(egl.egl_dpy, egl.egl_win);
+		egl.egl_win = EGL_NO_SURFACE;
+		return;
+	}
 	glViewport(0, 0, sw, sh);
 	/* Old damage ring entries are in the old coordinate space — invalidate
 	 * them so the next frame does a full repaint. */

@@ -69,6 +69,7 @@ static CompWin *comp_find_by_client(Client *c);
 static void     comp_free_win(CompWin *cw);
 static void     comp_refresh_pixmap(CompWin *cw);
 static void     comp_update_wallpaper(void);
+static void     comp_update_overlay_shape(void);
 static void     schedule_repaint(void);
 static void     comp_do_repaint(void);
 static void     comp_arm_vblank(void);
@@ -1145,7 +1146,18 @@ compositor_notify_screen_resize(void)
 	if (!comp.active)
 		return;
 
+	/* Resize the overlay window to cover the new virtual screen dimensions.
+	 * This must happen before notify_resize() so the EGL surface and XRender
+	 * back-buffer are recreated against the correct drawable size. */
+	{
+		uint32_t vals[2] = { (uint32_t) sw, (uint32_t) sh };
+		xcb_configure_window(xc, (xcb_window_t) comp.overlay,
+		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, vals);
+		xcb_flush(xc);
+	}
+
 	comp.backend->notify_resize();
+	comp_update_overlay_shape();
 	compositor_damage_all();
 }
 
