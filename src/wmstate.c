@@ -54,6 +54,11 @@ wmstate_update(void)
 
 	memset(&g_awm, 0, sizeof g_awm);
 
+	/* ---- Live runtime pointers (authoritative) ---- */
+	g_awm.mons   = mons;
+	g_awm.selmon = selmon;
+	g_awm.cl     = cl;
+
 	/* ---- Monitors ---- */
 	mi = 0;
 	for (m = mons; m && mi < WMSTATE_MAX_MONITORS; m = m->next, mi++) {

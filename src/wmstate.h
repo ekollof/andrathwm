@@ -37,6 +37,13 @@
 #include <stdint.h>
 #include <xcb/xcb.h>
 
+/* Forward declarations — full definitions live in awm.h.
+ * Guarded to avoid duplicate typedef when awm.h is already included. */
+#ifndef AWM_H
+typedef struct Monitor    Monitor;
+typedef struct Clientlist Clientlist;
+#endif
+
 /* Maximum number of monitors supported in AWMState arrays. */
 #define WMSTATE_MAX_MONITORS 8
 
@@ -135,12 +142,19 @@ typedef struct {
  * AWMState — the top-level consolidated state struct.
  * ---------------------------------------------------------------------- */
 typedef struct {
-	/* Monitor topology */
+	/* Live runtime pointers — the authoritative WM state.
+	 * These replace the bare mons / selmon / cl globals.
+	 * Set in setup() and kept current by wmstate_update(). */
+	Monitor    *mons;   /* head of the monitor linked list          */
+	Monitor    *selmon; /* currently focused monitor                */
+	Clientlist *cl;     /* global client list (all clients + stack) */
+
+	/* Monitor topology snapshot (for future serialisation) */
 	unsigned int    n_monitors;
 	AWMStateMonitor monitors[WMSTATE_MAX_MONITORS];
 	int             selmon_num; /* number of focused monitor (-1 = none) */
 
-	/* Client list */
+	/* Client list snapshot (for future serialisation) */
 	unsigned int   n_clients;
 	AWMStateClient clients[WMSTATE_MAX_CLIENTS];
 
