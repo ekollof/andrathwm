@@ -185,10 +185,80 @@ Fullscreen bypass is per-monitor via `comp.paused_mask` (bitmask, bit N = monito
 bypassed). `comp.paused` is only `1` when **all** monitors are bypassed. XShape holes are
 punched in the overlay per bypassed monitor by `comp_update_overlay_shape()`.
 
+`compositor_backend.h` defines `CompWin`, `CompBackend` vtable, and `CompShared`. It is
+**internal** — never include it outside `compositor.c`, `compositor_egl.c`,
+`compositor_xrender.c`.
+
+Key vtable entries in `CompBackend`:
+- `bind_pixmap(cw)` — build EGLImageKHR+GL texture (EGL) or XRender Picture (XRender)
+- `release_pixmap(cw)` — free the above; safe to call with no binding held
+- `repaint()` — execute one full composite pass
+- `capture_thumb(cw, max_w, max_h)` → `cairo_surface_t *` — render a scaled thumbnail:
+  EGL path uses GL FBO + `glReadPixels`; XRender path composites to a temp pixmap + `xcb_get_image`
+- `notify_resize()` — handle screen geometry change
+- `apply_shape(cw)` — apply ShapeBounding clip (may be NULL)
+
+Public thumbnail API (called from the switcher):
+```c
+cairo_surface_t *comp_capture_thumb(Client *c, int max_w, int max_h);
+```
+Dispatches through the backend vtable. Caller owns the returned surface and must
+`cairo_surface_destroy()` it.
+
+**Tag-swap + bypass invariant:** `compositor_check_unredirect()` must be called after
+`arrange(m)` for *each* monitor involved in a tag swap — not only via `focus()` at the end.
+`attachclients()` reassigns `c->mon` before `check_unredirect()` runs, so the `removed` path
+uses window screen coordinates (centre-point in monitor rect) to determine which monitor a
+window lives on, **not** `cw->client->mon`.
+
+### Window Switcher
+`src/switcher.c` / `src/switcher.h`. Alt+Tab / Super+Tab overlay implemented inside the
+`awm` process with direct access to `Client` lists and compositor textures.
+
+Public API:
+```c
+void switcher_init(void);          /* call once from setup() */
+void switcher_show(const Arg *);   /* arg->i=0 current monitor, 1=all */
+void switcher_show_prev(const Arg *);
+void switcher_next(const Arg *);
+void switcher_prev(const Arg *);
+void switcher_confirm_xkb(const Arg *);  /* called on Alt/Super release */
+void switcher_cancel_xkb(const Arg *);  /* called on Escape */
+void switcher_cleanup(void);
+int  switcher_active(void);        /* guard in enternotify/focusin */
+```
+
+Key design points:
+- GTK `override_redirect` window; horizontal `GtkBox` of `GtkDrawingArea` cards.
+- **All key routing via awm's XCB handlers** (`keypress`/`keyrelease`), not GTK events.
+- Keyboard grabbed via `xcb_grab_keyboard` on root while overlay is visible; released and
+  confirmed on Alt/Super key-release.
+- `switcher_active()` must be checked in `enternotify()` and `focusin()` to prevent awm
+  from stealing focus while the user is cycling.
+- Thumbnails refreshed on a 100 ms `g_timeout_add` timer via `comp_capture_thumb()`.
+
+Config bindings (in `config.h`):
+```c
+{ XCB_MOD_MASK_1,              XKB_KEY_Tab, switcher_show,      {.i=0} },
+{ XCB_MOD_MASK_1|XCB_MOD_MASK_SHIFT, XKB_KEY_Tab, switcher_show_prev, {.i=0} },
+{ MODKEY,                      XKB_KEY_Tab, switcher_show,      {.i=1} },
+{ MODKEY|XCB_MOD_MASK_SHIFT,   XKB_KEY_Tab, switcher_show_prev, {.i=1} },
+```
+
 ### IPC (awm ↔ awm-ui)
 `awm-ui` is a separate process hosting GTK popups (launcher, SNI menus). Communication is
 via `SOCK_SEQPACKET` socketpair. Protocol: fixed `UiMsgHeader` (type + payload_len) followed
 by typed payload structs defined in `src/ui_proto.h`.
+
+### x11_constants.h
+`src/x11_constants.h` contains the handful of X11 protocol constants awm needs that have no
+direct XCB equivalent:
+- `KeySym` typedef (`uint32_t`) — guarded with `#ifndef X_H` to avoid conflict when
+  `<gdk/gdkx.h>` pulls in `<X11/X.h>` transitively.
+- `LASTEvent 36` — size of the `handler[]` dispatch table.
+- `X_ConfigureWindow`, `X_GrabButton`, `X_GrabKey`, `X_SetInputFocus`, `X_CopyArea`,
+  `X_PolySegment`, `X_PolyFillRectangle`, `X_PolyText8` — core request opcodes used in
+  `xcb_error_handler()` to classify and whitelist async errors.
 
 ## Constraints Checklist
 
