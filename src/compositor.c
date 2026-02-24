@@ -76,8 +76,6 @@ static void     schedule_repaint(void);
 static void     comp_do_repaint(void);
 static void     comp_arm_vblank(void);
 static gboolean comp_repaint_idle(gpointer data);
-static void     comp_sync_win_state(CompWin *cw);
-static void     comp_remove_win_from_awm(xcb_window_t w);
 
 /* -------------------------------------------------------------------------
  * CPU-side dirty bbox helpers
@@ -136,60 +134,6 @@ comp_dirty_full(void)
 	comp.dirty_x2         = sw;
 	comp.dirty_y2         = sh;
 	comp.dirty_bbox_valid = 1;
-}
-
-/* -------------------------------------------------------------------------
- * g_awm.comp per-window sync helpers
- *
- * comp_sync_win_state(cw)  — update or insert cw's entry in
- *                             g_awm.comp.comp_windows.
- * comp_remove_win_from_awm(w) — zero the slot for window XID w.
- * ---------------------------------------------------------------------- */
-
-static void
-comp_sync_win_state(CompWin *cw)
-{
-	unsigned int i;
-
-	if (!cw)
-		return;
-
-	/* Search for an existing slot for this window. */
-	for (i = 0; i < g_awm.comp.n_comp_windows; i++) {
-		if (g_awm.comp.comp_windows[i].win == cw->win) {
-			g_awm.comp.comp_windows[i].redirected = cw->redirected;
-			g_awm.comp.comp_windows[i].hidden     = cw->hidden;
-			return;
-		}
-	}
-
-	/* Not found — append a new slot if space is available. */
-	if (g_awm.comp.n_comp_windows < WMSTATE_MAX_CLIENTS) {
-		i                                     = g_awm.comp.n_comp_windows++;
-		g_awm.comp.comp_windows[i].win        = cw->win;
-		g_awm.comp.comp_windows[i].redirected = cw->redirected;
-		g_awm.comp.comp_windows[i].hidden     = cw->hidden;
-	}
-}
-
-static void
-comp_remove_win_from_awm(xcb_window_t w)
-{
-	unsigned int i, last;
-
-	for (i = 0; i < g_awm.comp.n_comp_windows; i++) {
-		if (g_awm.comp.comp_windows[i].win == w) {
-			/* Swap with the last entry and shrink. */
-			last = g_awm.comp.n_comp_windows - 1;
-			if (i != last)
-				g_awm.comp.comp_windows[i] = g_awm.comp.comp_windows[last];
-			g_awm.comp.comp_windows[last].win        = 0;
-			g_awm.comp.comp_windows[last].redirected = 0;
-			g_awm.comp.comp_windows[last].hidden     = 0;
-			g_awm.comp.n_comp_windows--;
-			return;
-		}
-	}
 }
 
 /* -------------------------------------------------------------------------
@@ -469,8 +413,7 @@ compositor_init(GMainContext *ctx)
 	}
 	comp_update_wallpaper();
 
-	comp.active       = 1;
-	g_awm.comp.active = 1;
+	comp.active = 1;
 
 	/* Raise overlay so it sits above all windows */
 	{
@@ -517,7 +460,6 @@ compositor_cleanup(void)
 	for (cw = comp.windows; cw; cw = next) {
 		next = cw->next;
 		comp.backend->release_pixmap(cw);
-		comp_remove_win_from_awm(cw->win);
 		comp_free_win(cw);
 		free(cw);
 	}
@@ -549,11 +491,7 @@ compositor_cleanup(void)
 
 	xflush();
 
-	comp.active               = 0;
-	g_awm.comp.active         = 0;
-	g_awm.comp.paused         = 0;
-	g_awm.comp.paused_mask    = 0;
-	g_awm.comp.n_comp_windows = 0;
+	comp.active = 0;
 }
 
 /* -------------------------------------------------------------------------
@@ -885,9 +823,6 @@ comp_add_by_xid(xcb_window_t w)
 		tail->next = cw;
 		cw->next   = NULL;
 	}
-
-	/* Keep g_awm.comp.comp_windows in sync. */
-	comp_sync_win_state(cw);
 }
 
 /* -------------------------------------------------------------------------
@@ -942,7 +877,6 @@ compositor_remove_window(Client *c)
 			else
 				comp.windows = cw->next;
 			comp.backend->release_pixmap(cw);
-			comp_remove_win_from_awm(cw->win);
 			comp_free_win(cw);
 			free(cw);
 			schedule_repaint();
@@ -1009,7 +943,6 @@ compositor_bypass_window(Client *c, int bypass)
 		err = xcb_request_check(xc, ck);
 		free(err);
 		cw->redirected = 0;
-		comp_sync_win_state(cw);
 		comp.backend->release_pixmap(cw);
 		comp_free_win(cw);
 	} else {
@@ -1021,7 +954,6 @@ compositor_bypass_window(Client *c, int bypass)
 		err = xcb_request_check(xc, ck);
 		free(err);
 		cw->redirected = 1;
-		comp_sync_win_state(cw);
 		comp_refresh_pixmap(cw);
 		if (cw->pixmap && !cw->damage) {
 			cw->damage = xcb_generate_id(xc);
@@ -1198,7 +1130,6 @@ compositor_set_hidden(Client *c, int hidden)
 		return;
 
 	cw->hidden = hidden;
-	comp_sync_win_state(cw);
 	comp_dirty_add_rect(cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
 	schedule_repaint();
 }
@@ -1374,8 +1305,7 @@ compositor_check_unredirect(void)
 	if (new_mask == old_mask)
 		return;
 
-	comp.paused_mask       = new_mask;
-	g_awm.comp.paused_mask = new_mask;
+	comp.paused_mask = new_mask;
 
 	/* comp.paused = 1 only when every monitor is bypassed — this keeps
 	 * schedule_repaint/comp_arm_vblank fast-paths correct for the
@@ -1385,8 +1315,7 @@ compositor_check_unredirect(void)
 		for (m = g_awm.mons; m; m = m->next)
 			if (m->num < 32)
 				full_mask |= (1u << (unsigned) m->num);
-		comp.paused       = (new_mask == full_mask && full_mask != 0);
-		g_awm.comp.paused = comp.paused;
+		comp.paused = (new_mask == full_mask && full_mask != 0);
 	}
 
 	/* --- Handle monitors that just became bypassed (bit 0→1) ----------- */
@@ -1424,7 +1353,6 @@ compositor_check_unredirect(void)
 					err = xcb_request_check(xc, ck);
 					free(err);
 					cw->redirected = 0;
-					comp_sync_win_state(cw);
 					comp.backend->release_pixmap(cw);
 					comp_free_win(cw);
 					awm_debug("compositor: unredirect fullscreen "
@@ -1495,7 +1423,6 @@ compositor_check_unredirect(void)
 				err = xcb_request_check(xc, ck);
 				free(err);
 				cw->redirected = 1;
-				comp_sync_win_state(cw);
 				comp_refresh_pixmap(cw);
 				if (cw->pixmap && !cw->damage) {
 					cw->damage = xcb_generate_id(xc);
@@ -1702,7 +1629,6 @@ compositor_handle_event(xcb_generic_event_t *ev)
 						else
 							comp.windows = cw->next;
 						comp.backend->release_pixmap(cw);
-						comp_remove_win_from_awm(cw->win);
 						comp_free_win(cw);
 						free(cw);
 						break;

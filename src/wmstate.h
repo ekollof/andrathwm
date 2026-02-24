@@ -34,7 +34,6 @@
  * That is a later step, once the consolidation is complete and stable.
  * ---------------------------------------------------------------------- */
 
-#include <stdint.h>
 #include <xcb/xcb.h>
 
 /* Forward declarations — full definitions live in awm.h.
@@ -116,29 +115,6 @@ typedef struct {
 } AWMStateClient;
 
 /* -------------------------------------------------------------------------
- * AWMStateCompWin — per-compositor-window bypass/redirect state.
- * Mirrors the fields of CompWin that are relevant to WM policy.
- * ---------------------------------------------------------------------- */
-typedef struct {
-	xcb_window_t win;        /* X window XID (0 = slot unused) */
-	int          redirected; /* 0 = bypassed (fullscreen/bypass-hint) */
-	int          hidden;     /* 1 = moved off-screen by showhide() */
-} AWMStateCompWin;
-
-/* -------------------------------------------------------------------------
- * AWMStateComp — compositor bypass/redirect state.
- * ---------------------------------------------------------------------- */
-typedef struct {
-	int      active;      /* compositor is running */
-	int      paused;      /* 1 = all monitors bypassed, repaints off */
-	uint32_t paused_mask; /* bitmask: bit N set = monitor N bypassed */
-
-	/* Per-window redirect/bypass state */
-	unsigned int    n_comp_windows;
-	AWMStateCompWin comp_windows[WMSTATE_MAX_CLIENTS];
-} AWMStateComp;
-
-/* -------------------------------------------------------------------------
  * AWMState — the top-level consolidated state struct.
  * ---------------------------------------------------------------------- */
 typedef struct {
@@ -157,9 +133,6 @@ typedef struct {
 	/* Client list snapshot (for future serialisation) */
 	unsigned int   n_clients;
 	AWMStateClient clients[WMSTATE_MAX_CLIENTS];
-
-	/* Compositor state */
-	AWMStateComp comp;
 } AWMState;
 
 /* The single global instance — defined in awm.c. */
