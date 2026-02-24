@@ -32,12 +32,21 @@
 #include "util.h"
 
 /* -------------------------------------------------------------------------
+ * DPI scaling
+ * ---------------------------------------------------------------------- */
+
+/* Resolved screen DPI — updated by launcher_update_theme().
+ * All pixel geometry constants are base-96 values multiplied by this. */
+static double launcher_dpi = 96.0;
+
+#define LAUNCHER_SCALE(px) ((int) ((px) * launcher_dpi / 96.0 + 0.5))
+
+/* -------------------------------------------------------------------------
  * Desktop file scanning (unchanged from original)
  * ---------------------------------------------------------------------- */
 
 static const char *desktop_paths[] = {
-	"/usr/share/applications",
-	"/usr/local/share/applications",
+	"/usr/share/applications", "/usr/local/share/applications",
 	NULL, /* replaced at runtime with ~/.local/share/applications */
 	NULL, /* replaced at runtime with flatpak path */
 };
@@ -369,7 +378,9 @@ launcher_parse_desktop_file(const char *path)
 	item->name      = name;
 	item->exec      = exec_cmd;
 	item->icon_name = icon;
-	item->icon = icon ? launcher_load_icon(icon, LAUNCHER_ICON_SIZE) : NULL;
+	item->icon      = icon
+	         ? launcher_load_icon(icon, LAUNCHER_SCALE(LAUNCHER_ICON_SIZE))
+	         : NULL;
 	if (icon && !item->icon)
 		awm_debug("Launcher: failed to load icon '%s'", icon);
 	item->is_desktop = 1;
@@ -635,16 +646,19 @@ launcher_populate_listbox(Launcher *launcher)
 	for (int i = 0; i < count; i++) {
 		LauncherItem *item = arr[i];
 
-		GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+		GtkWidget *row_box =
+		    gtk_box_new(GTK_ORIENTATION_HORIZONTAL, LAUNCHER_SCALE(4));
 
 		/* Icon */
 		if (item->icon) {
-			GdkPixbuf *pb = gdk_pixbuf_get_from_surface(
-			    item->icon, 0, 0, LAUNCHER_ICON_SIZE, LAUNCHER_ICON_SIZE);
+			int        icon_px = LAUNCHER_SCALE(LAUNCHER_ICON_SIZE);
+			GdkPixbuf *pb      = gdk_pixbuf_get_from_surface(
+                item->icon, 0, 0, icon_px, icon_px);
 			if (pb) {
 				GtkWidget *img = gtk_image_new_from_pixbuf(pb);
 				g_object_unref(pb);
-				gtk_box_pack_start(GTK_BOX(row_box), img, FALSE, FALSE, 2);
+				gtk_box_pack_start(
+				    GTK_BOX(row_box), img, FALSE, FALSE, LAUNCHER_SCALE(2));
 			}
 		}
 
@@ -947,7 +961,7 @@ launcher_create(int ui_fd, const char *term)
 		home = "/root";
 
 	for (i = 0; i < (int) (sizeof(desktop_paths) / sizeof(desktop_paths[0]));
-	    i++) {
+	     i++) {
 		if (desktop_paths[i] == NULL) {
 			if (i == 2)
 				snprintf(
@@ -982,19 +996,21 @@ launcher_create(int ui_fd, const char *term)
 	 * so the WM never sees it regardless of hint. */
 	gtk_window_set_type_hint(
 	    GTK_WINDOW(launcher->window), GDK_WINDOW_TYPE_HINT_UTILITY);
-	gtk_window_set_default_size(GTK_WINDOW(launcher->window), 420, 400);
+	gtk_window_set_default_size(GTK_WINDOW(launcher->window),
+	    LAUNCHER_SCALE(420), LAUNCHER_SCALE(400));
 	gtk_window_set_resizable(GTK_WINDOW(launcher->window), FALSE);
 
 	GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 	gtk_container_add(GTK_CONTAINER(launcher->window), vbox);
 
 	launcher->search = gtk_search_entry_new();
-	gtk_box_pack_start(GTK_BOX(vbox), launcher->search, FALSE, FALSE, 4);
+	gtk_box_pack_start(
+	    GTK_BOX(vbox), launcher->search, FALSE, FALSE, LAUNCHER_SCALE(4));
 
 	GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
 	gtk_scrolled_window_set_policy(
 	    GTK_SCROLLED_WINDOW(sw), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-	gtk_widget_set_size_request(sw, -1, 360);
+	gtk_widget_set_size_request(sw, -1, LAUNCHER_SCALE(360));
 	gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
 
 	launcher->listbox = gtk_list_box_new();
@@ -1116,6 +1132,62 @@ launcher_hide(Launcher *launcher)
 		hdr.payload_len = 0;
 		send(launcher->ui_fd, &hdr, sizeof(hdr), MSG_NOSIGNAL);
 	}
+}
+
+void
+launcher_update_theme(Launcher *launcher, const UiThemePayload *t)
+{
+	LauncherItem *item;
+	int           icon_px;
+	GtkWidget    *sw;
+
+	if (!launcher || !t)
+		return;
+
+	if (t->dpi <= 0.0)
+		return;
+
+	launcher_dpi = t->dpi;
+	icon_px      = LAUNCHER_SCALE(LAUNCHER_ICON_SIZE);
+
+	/* Resize the window and scrolled-window to match new DPI */
+	gtk_window_resize(GTK_WINDOW(launcher->window), LAUNCHER_SCALE(420),
+	    LAUNCHER_SCALE(400));
+	gtk_window_set_default_size(GTK_WINDOW(launcher->window),
+	    LAUNCHER_SCALE(420), LAUNCHER_SCALE(400));
+
+	/* scrolled-window is vbox child 1 — walk the children list */
+	sw = NULL;
+	{
+		GList *children = gtk_container_get_children(
+		    GTK_CONTAINER(gtk_bin_get_child(GTK_BIN(launcher->window))));
+		GList *l;
+		int    idx = 0;
+		for (l = children; l; l = l->next, idx++) {
+			if (idx == 1) {
+				sw = GTK_WIDGET(l->data);
+				break;
+			}
+		}
+		g_list_free(children);
+	}
+	if (sw)
+		gtk_widget_set_size_request(sw, -1, LAUNCHER_SCALE(360));
+
+	/* Reload icons for every item at the new size */
+	for (item = launcher->items; item; item = item->next) {
+		if (item->icon) {
+			cairo_surface_destroy(item->icon);
+			item->icon = NULL;
+		}
+		if (item->icon_name && *item->icon_name)
+			item->icon = launcher_load_icon(item->icon_name, icon_px);
+	}
+
+	/* Rebuild listbox rows with new icon size */
+	gtk_container_foreach(GTK_CONTAINER(launcher->listbox),
+	    (GtkCallback) gtk_widget_destroy, NULL);
+	launcher_populate_listbox(launcher);
 }
 
 /* end of launcher.c */

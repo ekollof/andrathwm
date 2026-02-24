@@ -16,6 +16,8 @@
 #include <cairo/cairo.h>
 #include <stddef.h>
 
+#include "ui_proto.h"
+
 #define LAUNCHER_ICON_SIZE 20
 
 typedef struct LauncherItem {
@@ -51,6 +53,7 @@ Launcher *launcher_create(int ui_fd, const char *term);
 void      launcher_free(Launcher *launcher);
 void      launcher_show(Launcher *launcher, int x, int y);
 void      launcher_hide(Launcher *launcher);
+void      launcher_update_theme(Launcher *launcher, const UiThemePayload *t);
 
 /* Returns the underlying GdkWindow* (realized), or NULL if not yet realized.
  * Used by awm_ui.c to obtain a timing window for gdk_x11_get_server_time. */
