@@ -77,7 +77,7 @@ applyrules(Client *c)
 			c->scratchkey = r->scratchkey;
 			if (r->opacity > 0.0)
 				c->opacity = r->opacity;
-			for (m = mons; m && (m->tagset[m->seltags] & c->tags) == 0;
+			for (m = g_awm.mons; m && (m->tagset[m->seltags] & c->tags) == 0;
 			    m  = m->next)
                 ;
 			if (m)
@@ -177,7 +177,7 @@ attachclients(Monitor *m)
 	if (!m)
 		return;
 
-	for (tm = mons; tm; tm = tm->next)
+	for (tm = g_awm.mons; tm; tm = tm->next)
 		if (tm != m)
 			utags |= tm->tagset[tm->seltags];
 
@@ -192,7 +192,7 @@ attachclients(Monitor *m)
 		}
 
 	if (rmons)
-		for (tm = mons; tm; tm = tm->next)
+		for (tm = g_awm.mons; tm; tm = tm->next)
 			if (tm != m)
 				arrange(tm);
 }
@@ -255,14 +255,17 @@ detachstack(Client *c)
 void
 focus(Client *c)
 {
-	if (!c || !ISVISIBLE(c, selmon))
-		for (c = selmon->cl->stack; c && !ISVISIBLE(c, selmon); c = c->snext)
-			;
-	if (selmon->sel && selmon->sel != c)
-		unfocus(selmon->sel, 0);
+	if (!c || !ISVISIBLE(c, g_awm.selmon))
+		for (c = g_awm.selmon->cl->stack; c && !ISVISIBLE(c, g_awm.selmon);
+		    c  = c->snext)
+            ;
+	if (g_awm.selmon->sel && g_awm.selmon->sel != c)
+		unfocus(g_awm.selmon->sel, 0);
 	if (c) {
-		if (c->mon != selmon)
-			selmon = c->mon;
+		if (c->mon != g_awm.selmon) {
+			selmon       = c->mon;
+			g_awm.selmon = c->mon;
+		}
 		if (c->isurgent)
 			seturgent(c, 0);
 		detachstack(c);
@@ -272,10 +275,11 @@ focus(Client *c)
 			uint32_t pix = scheme[SchemeSel][ColBorder].pixel;
 			xcb_change_window_attributes(
 			    xc, c->win, XCB_CW_BORDER_PIXEL, &pix);
-			if (!selmon->pertag->drawwithgaps[selmon->pertag->curtag] &&
+			if (!g_awm.selmon->pertag
+			        ->drawwithgaps[g_awm.selmon->pertag->curtag] &&
 			    !c->isfloating) {
 				uint32_t vals[2];
-				vals[0] = (uint32_t) selmon->barwin;
+				vals[0] = (uint32_t) g_awm.selmon->barwin;
 				vals[1] = XCB_STACK_MODE_BELOW;
 				xcb_configure_window(xc, c->win,
 				    XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE,
@@ -284,13 +288,13 @@ focus(Client *c)
 		}
 		setfocus(c);
 	} else {
-		xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT, selmon->barwin,
-		    XCB_CURRENT_TIME);
+		xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT,
+		    g_awm.selmon->barwin, XCB_CURRENT_TIME);
 		xcb_delete_property(xc, root, netatom[NetActiveWindow]);
 	}
-	selmon->sel = c;
-	if (selmon->lt[selmon->sellt]->arrange == monocle)
-		arrangemon(selmon);
+	g_awm.selmon->sel = c;
+	if (g_awm.selmon->lt[g_awm.selmon->sellt]->arrange == monocle)
+		arrangemon(g_awm.selmon);
 	barsdirty = 1;
 #ifdef COMPOSITOR
 	/* Dirty the border region of both the newly focused and previously
@@ -308,27 +312,31 @@ focusstack(const Arg *arg)
 {
 	Client *c = NULL, *i;
 
-	if (!selmon->sel || (selmon->sel->isfullscreen && lockfullscreen))
+	if (!g_awm.selmon->sel ||
+	    (g_awm.selmon->sel->isfullscreen && lockfullscreen))
 		return;
 	if (arg->i > 0) {
-		for (c = selmon->sel->next; c && !ISVISIBLE(c, selmon); c = c->next)
-			;
+		for (c = g_awm.selmon->sel->next; c && !ISVISIBLE(c, g_awm.selmon);
+		    c  = c->next)
+            ;
 		if (!c)
-			for (c = selmon->cl->clients; c && !ISVISIBLE(c, selmon);
-			    c  = c->next)
-                ;
+			for (c = g_awm.selmon->cl->clients;
+			    c && !ISVISIBLE(c, g_awm.selmon); c = c->next)
+				;
 	} else {
-		for (i = selmon->cl->clients; i != selmon->sel; i = i->next)
-			if (ISVISIBLE(i, selmon))
+		for (i = g_awm.selmon->cl->clients; i != g_awm.selmon->sel;
+		    i  = i->next) {
+			if (ISVISIBLE(i, g_awm.selmon))
 				c = i;
+		}
 		if (!c)
 			for (; i; i = i->next)
-				if (ISVISIBLE(i, selmon))
+				if (ISVISIBLE(i, g_awm.selmon))
 					c = i;
 	}
 	if (c) {
 		focus(c);
-		restack(selmon);
+		restack(g_awm.selmon);
 	}
 }
 
@@ -337,24 +345,29 @@ focusstackhidden(const Arg *arg)
 {
 	Client *c = NULL, *i;
 
-	if (!selmon->sel || (selmon->sel->isfullscreen && lockfullscreen))
+	if (!g_awm.selmon->sel ||
+	    (g_awm.selmon->sel->isfullscreen && lockfullscreen))
 		return;
 
 	if (arg->i > 0) {
-		for (c = selmon->sel->next;
-		    c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
+		for (c = g_awm.selmon->sel->next;
+		    c && !(c->tags & g_awm.selmon->tagset[g_awm.selmon->seltags]);
+		    c = c->next)
 			;
 		if (!c)
-			for (c = selmon->cl->clients;
-			    c && !(c->tags & selmon->tagset[selmon->seltags]); c = c->next)
+			for (c = g_awm.selmon->cl->clients;
+			    c && !(c->tags & g_awm.selmon->tagset[g_awm.selmon->seltags]);
+			    c = c->next)
 				;
 	} else {
-		for (i = selmon->cl->clients; i != selmon->sel; i = i->next)
-			if (i->tags & selmon->tagset[selmon->seltags])
+		for (i = g_awm.selmon->cl->clients; i != g_awm.selmon->sel;
+		    i  = i->next) {
+			if (i->tags & g_awm.selmon->tagset[g_awm.selmon->seltags])
 				c = i;
+		}
 		if (!c)
 			for (; i; i = i->next)
-				if (i->tags & selmon->tagset[selmon->seltags])
+				if (i->tags & g_awm.selmon->tagset[g_awm.selmon->seltags])
 					c = i;
 	}
 
@@ -363,7 +376,7 @@ focusstackhidden(const Arg *arg)
 			show(c);
 		else {
 			focus(c);
-			restack(selmon);
+			restack(g_awm.selmon);
 		}
 	}
 }
@@ -381,17 +394,17 @@ focuswin(const Arg *arg)
 		return;
 	}
 
-	if (c == selmon->sel) {
+	if (c == g_awm.selmon->sel) {
 		hide(c);
 		return;
 	}
 
-	if (ISVISIBLE(c, selmon)) {
-		if (selmon->lt[selmon->sellt]->arrange && !c->isfloating) {
+	if (ISVISIBLE(c, g_awm.selmon)) {
+		if (g_awm.selmon->lt[g_awm.selmon->sellt]->arrange && !c->isfloating) {
 			pop(c);
 		} else {
 			focus(c);
-			restack(selmon);
+			restack(g_awm.selmon);
 		}
 	}
 }
@@ -656,7 +669,7 @@ hidewin(const Arg *arg)
 {
 	Client *c = (Client *) arg->v;
 	if (!c)
-		c = selmon->sel;
+		c = g_awm.selmon->sel;
 	if (!c)
 		return;
 	hide(c);
@@ -682,7 +695,7 @@ restorewin(const Arg *arg)
 {
 	Client *c = (Client *) arg->v;
 	if (!c)
-		for (c = selmon->cl->stack; c && !c->ishidden; c = c->snext)
+		for (c = g_awm.selmon->cl->stack; c && !c->ishidden; c = c->snext)
 			;
 	if (!c)
 		return;
@@ -694,31 +707,33 @@ showall(const Arg *arg)
 {
 	Client *c;
 
-	for (c = selmon->cl->clients; c; c = c->next)
-		if (c->ishidden && (c->tags & selmon->tagset[selmon->seltags]))
+	for (c = g_awm.selmon->cl->clients; c; c = c->next)
+		if (c->ishidden &&
+		    (c->tags & g_awm.selmon->tagset[g_awm.selmon->seltags]))
 			show(c);
 }
 
 void
 incnmaster(const Arg *arg)
 {
-	selmon->nmaster = selmon->pertag->nmasters[selmon->pertag->curtag] =
-	    MAX(selmon->nmaster + arg->i, 0);
-	arrange(selmon);
+	g_awm.selmon->nmaster =
+	    g_awm.selmon->pertag->nmasters[g_awm.selmon->pertag->curtag] =
+	        MAX(g_awm.selmon->nmaster + arg->i, 0);
+	arrange(g_awm.selmon);
 }
 
 void
 killclient(const Arg *arg)
 {
-	if (!selmon->sel)
+	if (!g_awm.selmon->sel)
 		return;
 
-	if (!sendevent(selmon->sel->win, wmatom[WMDelete], 0, wmatom[WMDelete],
-	        XCB_CURRENT_TIME, 0, 0, 0)) {
+	if (!sendevent(g_awm.selmon->sel->win, wmatom[WMDelete], 0,
+	        wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
 
 		xcb_grab_server(xc);
 		xcb_set_close_down_mode(xc, XCB_CLOSE_DOWN_DESTROY_ALL);
-		xcb_kill_client(xc, selmon->sel->win);
+		xcb_kill_client(xc, g_awm.selmon->sel->win);
 		xcb_ungrab_server(xc);
 		xflush();
 	}
@@ -748,7 +763,7 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 		c->mon  = t->mon;
 		c->tags = t->tags;
 	} else {
-		c->mon = selmon;
+		c->mon = g_awm.selmon;
 		applyrules(c);
 	}
 #ifdef COMPOSITOR
@@ -825,8 +840,8 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 		    vals);
 	}
 	setclientstate(c, XCB_ICCCM_WM_STATE_NORMAL);
-	if (c->mon == selmon)
-		unfocus(selmon->sel, 0);
+	if (c->mon == g_awm.selmon)
+		unfocus(g_awm.selmon->sel, 0);
 	/* Don't make a hidden scratchpad the selected client */
 	if (!c->scratchkey)
 		c->mon->sel = c;
@@ -858,11 +873,11 @@ movemouse(const Arg *arg)
 	xcb_generic_event_t *xe;
 	xcb_timestamp_t      lasttime = 0;
 
-	if (!(c = selmon->sel))
+	if (!(c = g_awm.selmon->sel))
 		return;
 	if (c->isfullscreen)
 		return;
-	restack(selmon);
+	restack(g_awm.selmon);
 	ocx = c->x;
 	ocy = c->y;
 	{
@@ -909,21 +924,23 @@ movemouse(const Arg *arg)
 
 				nx = ocx + (me->root_x - x);
 				ny = ocy + (me->root_y - y);
-				if (abs(selmon->wx - nx) < (int) ui_snap)
-					nx = selmon->wx;
-				else if (abs((selmon->wx + selmon->ww) - (nx + WIDTH(c))) <
-				    (int) ui_snap)
-					nx = selmon->wx + selmon->ww - WIDTH(c);
-				if (abs(selmon->wy - ny) < (int) ui_snap)
-					ny = selmon->wy;
-				else if (abs((selmon->wy + selmon->wh) - (ny + HEIGHT(c))) <
-				    (int) ui_snap)
-					ny = selmon->wy + selmon->wh - HEIGHT(c);
-				if (!c->isfloating && selmon->lt[selmon->sellt]->arrange &&
+				if (abs(g_awm.selmon->wx - nx) < (int) ui_snap)
+					nx = g_awm.selmon->wx;
+				else if (abs((g_awm.selmon->wx + g_awm.selmon->ww) -
+				             (nx + WIDTH(c))) < (int) ui_snap)
+					nx = g_awm.selmon->wx + g_awm.selmon->ww - WIDTH(c);
+				if (abs(g_awm.selmon->wy - ny) < (int) ui_snap)
+					ny = g_awm.selmon->wy;
+				else if (abs((g_awm.selmon->wy + g_awm.selmon->wh) -
+				             (ny + HEIGHT(c))) < (int) ui_snap)
+					ny = g_awm.selmon->wy + g_awm.selmon->wh - HEIGHT(c);
+				if (!c->isfloating &&
+				    g_awm.selmon->lt[g_awm.selmon->sellt]->arrange &&
 				    (abs(nx - c->x) > (int) ui_snap ||
 				        abs(ny - c->y) > (int) ui_snap))
 					togglefloating(NULL);
-				if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
+				if (!g_awm.selmon->lt[g_awm.selmon->sellt]->arrange ||
+				    c->isfloating)
 					resize(c, nx, ny, c->w, c->h, 1);
 #ifdef COMPOSITOR
 				compositor_repaint_now();
@@ -937,9 +954,10 @@ movemouse(const Arg *arg)
 		free(xe);
 	}
 	xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
-	if ((m = recttomon(c->x, c->y, c->w, c->h)) != selmon) {
+	if ((m = recttomon(c->x, c->y, c->w, c->h)) != g_awm.selmon) {
 		sendmon(c, m);
-		selmon = m;
+		selmon       = m;
+		g_awm.selmon = m;
 		focus(NULL);
 	}
 }
@@ -1018,11 +1036,11 @@ resizemouse(const Arg *arg)
 	xcb_generic_event_t *xe;
 	xcb_timestamp_t      lasttime = 0;
 
-	if (!(c = selmon->sel))
+	if (!(c = g_awm.selmon->sel))
 		return;
 	if (c->isfullscreen)
 		return;
-	restack(selmon);
+	restack(g_awm.selmon);
 	ocx = c->x;
 	ocy = c->y;
 	{
@@ -1067,16 +1085,18 @@ resizemouse(const Arg *arg)
 
 				nw = MAX(me->event_x - ocx - 2 * c->bw + 1, 1);
 				nh = MAX(me->event_y - ocy - 2 * c->bw + 1, 1);
-				if (c->mon->wx + nw >= selmon->wx &&
-				    c->mon->wx + nw <= selmon->wx + selmon->ww &&
-				    c->mon->wy + nh >= selmon->wy &&
-				    c->mon->wy + nh <= selmon->wy + selmon->wh) {
-					if (!c->isfloating && selmon->lt[selmon->sellt]->arrange &&
+				if (c->mon->wx + nw >= g_awm.selmon->wx &&
+				    c->mon->wx + nw <= g_awm.selmon->wx + g_awm.selmon->ww &&
+				    c->mon->wy + nh >= g_awm.selmon->wy &&
+				    c->mon->wy + nh <= g_awm.selmon->wy + g_awm.selmon->wh) {
+					if (!c->isfloating &&
+					    g_awm.selmon->lt[g_awm.selmon->sellt]->arrange &&
 					    (abs(nw - c->w) > (int) ui_snap ||
 					        abs(nh - c->h) > (int) ui_snap))
 						togglefloating(NULL);
 				}
-				if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
+				if (!g_awm.selmon->lt[g_awm.selmon->sellt]->arrange ||
+				    c->isfloating)
 					resize(c, c->x, c->y, nw, nh, 1);
 #ifdef COMPOSITOR
 				compositor_repaint_now();
@@ -1102,9 +1122,10 @@ resizemouse(const Arg *arg)
 			handler[type](xe);
 		free(xe);
 	}
-	if ((m = recttomon(c->x, c->y, c->w, c->h)) != selmon) {
+	if ((m = recttomon(c->x, c->y, c->w, c->h)) != g_awm.selmon) {
 		sendmon(c, m);
-		selmon = m;
+		selmon       = m;
+		g_awm.selmon = m;
 		focus(NULL);
 	}
 }
@@ -1182,40 +1203,45 @@ setgaps(const Arg *arg)
 {
 	switch (arg->i) {
 	case GAP_TOGGLE:
-		selmon->pertag->drawwithgaps[selmon->pertag->curtag] =
-		    !selmon->pertag->drawwithgaps[selmon->pertag->curtag];
+		g_awm.selmon->pertag->drawwithgaps[g_awm.selmon->pertag->curtag] =
+		    !g_awm.selmon->pertag->drawwithgaps[g_awm.selmon->pertag->curtag];
 		break;
 	case GAP_RESET:
-		if (selmon->pertag->curtag > 0)
-			selmon->pertag->gappx[selmon->pertag->curtag] = ui_gappx;
+		if (g_awm.selmon->pertag->curtag > 0)
+			g_awm.selmon->pertag->gappx[g_awm.selmon->pertag->curtag] =
+			    ui_gappx;
 		else
-			selmon->pertag->gappx[0] = ui_gappx;
+			g_awm.selmon->pertag->gappx[0] = ui_gappx;
 		break;
 	default:
-		if (selmon->pertag->gappx[selmon->pertag->curtag] + arg->i < 0)
-			selmon->pertag->gappx[selmon->pertag->curtag] = 0;
+		if (g_awm.selmon->pertag->gappx[g_awm.selmon->pertag->curtag] +
+		        arg->i <
+		    0)
+			g_awm.selmon->pertag->gappx[g_awm.selmon->pertag->curtag] = 0;
 		else
-			selmon->pertag->gappx[selmon->pertag->curtag] += arg->i;
+			g_awm.selmon->pertag->gappx[g_awm.selmon->pertag->curtag] +=
+			    arg->i;
 	}
-	arrange(selmon);
+	arrange(g_awm.selmon);
 }
 
 void
 setlayout(const Arg *arg)
 {
-	if (!arg || !arg->v || arg->v != selmon->lt[selmon->sellt])
-		selmon->sellt = selmon->pertag->sellts[selmon->pertag->curtag] ^= 1;
+	if (!arg || !arg->v || arg->v != g_awm.selmon->lt[g_awm.selmon->sellt])
+		g_awm.selmon->sellt =
+		    g_awm.selmon->pertag->sellts[g_awm.selmon->pertag->curtag] ^= 1;
 	if (arg && arg->v)
-		selmon->lt[selmon->sellt] =
-		    selmon->pertag
-		        ->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt)] =
-		        (Layout *) arg->v;
-	strncpy(selmon->ltsymbol, selmon->lt[selmon->sellt]->symbol,
-	    sizeof selmon->ltsymbol);
-	if (selmon->sel)
-		arrange(selmon);
+		g_awm.selmon->lt[g_awm.selmon->sellt] =
+		    g_awm.selmon->pertag->ltidxs[(g_awm.selmon->pertag->curtag) * 2 +
+		        (g_awm.selmon->sellt)] = (Layout *) arg->v;
+	strncpy(g_awm.selmon->ltsymbol,
+	    g_awm.selmon->lt[g_awm.selmon->sellt]->symbol,
+	    sizeof g_awm.selmon->ltsymbol);
+	if (g_awm.selmon->sel)
+		arrange(g_awm.selmon);
 	else
-		drawbar(selmon);
+		drawbar(g_awm.selmon);
 	wmstate_update();
 }
 
@@ -1224,13 +1250,14 @@ setmfact(const Arg *arg)
 {
 	float f;
 
-	if (!arg || !selmon->lt[selmon->sellt]->arrange)
+	if (!arg || !g_awm.selmon->lt[g_awm.selmon->sellt]->arrange)
 		return;
-	f = arg->f < 1.0 ? arg->f + selmon->mfact : arg->f - 1.0;
+	f = arg->f < 1.0 ? arg->f + g_awm.selmon->mfact : arg->f - 1.0;
 	if (f < 0.05 || f > 0.95)
 		return;
-	selmon->mfact = selmon->pertag->mfacts[selmon->pertag->curtag] = f;
-	arrange(selmon);
+	g_awm.selmon->mfact =
+	    g_awm.selmon->pertag->mfacts[g_awm.selmon->pertag->curtag] = f;
+	arrange(g_awm.selmon);
 }
 
 void
@@ -1290,45 +1317,46 @@ tag(const Arg *arg)
 {
 	Monitor     *m;
 	unsigned int newtags;
-	if (selmon->sel && arg->ui & TAGMASK) {
+	if (g_awm.selmon->sel && arg->ui & TAGMASK) {
 		newtags = arg->ui & TAGMASK;
-		for (m = mons; m; m = m->next)
-			if (m != selmon && m->tagset[m->seltags] & newtags) {
-				if (newtags & selmon->tagset[selmon->seltags])
+		for (m = g_awm.mons; m; m = m->next)
+			if (m != g_awm.selmon && m->tagset[m->seltags] & newtags) {
+				if (newtags & g_awm.selmon->tagset[g_awm.selmon->seltags])
 					return;
-				selmon->sel->tags = newtags;
-				selmon->sel->mon  = m;
-				setewmhdesktop(selmon->sel);
+				g_awm.selmon->sel->tags = newtags;
+				g_awm.selmon->sel->mon  = m;
+				setewmhdesktop(g_awm.selmon->sel);
 				arrange(m);
 				break;
 			}
-		selmon->sel->tags = arg->ui & TAGMASK;
-		setewmhdesktop(selmon->sel);
+		g_awm.selmon->sel->tags = arg->ui & TAGMASK;
+		setewmhdesktop(g_awm.selmon->sel);
 		focus(NULL);
-		arrange(selmon);
+		arrange(g_awm.selmon);
 	}
 }
 
 void
 tagmon(const Arg *arg)
 {
-	if (!selmon->sel || !mons->next)
+	if (!g_awm.selmon->sel || !mons->next)
 		return;
-	sendmon(selmon->sel, dirtomon(arg->i));
+	sendmon(g_awm.selmon->sel, dirtomon(arg->i));
 }
 
 void
 togglefloating(const Arg *arg)
 {
-	if (!selmon->sel)
+	if (!g_awm.selmon->sel)
 		return;
-	if (selmon->sel->isfullscreen)
+	if (g_awm.selmon->sel->isfullscreen)
 		return;
-	selmon->sel->isfloating = !selmon->sel->isfloating || selmon->sel->isfixed;
-	if (selmon->sel->isfloating)
-		resize(selmon->sel, selmon->sel->x, selmon->sel->y, selmon->sel->w,
-		    selmon->sel->h, 0);
-	arrange(selmon);
+	g_awm.selmon->sel->isfloating =
+	    !g_awm.selmon->sel->isfloating || g_awm.selmon->sel->isfixed;
+	if (g_awm.selmon->sel->isfloating)
+		resize(g_awm.selmon->sel, g_awm.selmon->sel->x, g_awm.selmon->sel->y,
+		    g_awm.selmon->sel->w, g_awm.selmon->sel->h, 0);
+	arrange(g_awm.selmon);
 	wmstate_update();
 }
 
@@ -1338,29 +1366,29 @@ togglescratch(const Arg *arg)
 	Client      *c;
 	unsigned int found = 0;
 
-	for (c = selmon->cl->clients;
+	for (c = g_awm.selmon->cl->clients;
 	    c && !(found = c->scratchkey == ((char **) arg->v)[0][0]); c = c->next)
 		;
 	if (found) {
-		if (ISVISIBLE(c, selmon)) {
+		if (ISVISIBLE(c, g_awm.selmon)) {
 			/* Hide: remove from all tags */
 			c->tags = 0;
 			focus(NULL);
-			arrange(selmon);
+			arrange(g_awm.selmon);
 		} else {
-			/* Show: move to selmon, re-centre if changing monitor */
-			if (c->mon != selmon) {
+			/* Show: move to g_awm.selmon, re-centre if changing monitor */
+			if (c->mon != g_awm.selmon) {
 				detachstack(c);
-				c->mon = selmon;
+				c->mon = g_awm.selmon;
 				attachstack(c);
 				/* Re-centre on the new monitor */
-				c->x = selmon->mx + (selmon->mw - WIDTH(c)) / 2;
-				c->y = selmon->my + (selmon->mh - HEIGHT(c)) / 2;
+				c->x = g_awm.selmon->mx + (g_awm.selmon->mw - WIDTH(c)) / 2;
+				c->y = g_awm.selmon->my + (g_awm.selmon->mh - HEIGHT(c)) / 2;
 			}
-			c->tags = selmon->tagset[selmon->seltags];
-			arrange(selmon);
+			c->tags = g_awm.selmon->tagset[g_awm.selmon->seltags];
+			arrange(g_awm.selmon);
 			focus(c);
-			restack(selmon);
+			restack(g_awm.selmon);
 		}
 	} else {
 		spawnscratch(arg);
@@ -1372,14 +1400,14 @@ toggletag(const Arg *arg)
 {
 	unsigned int newtags;
 
-	if (!selmon->sel)
+	if (!g_awm.selmon->sel)
 		return;
-	newtags = selmon->sel->tags ^ (arg->ui & TAGMASK);
+	newtags = g_awm.selmon->sel->tags ^ (arg->ui & TAGMASK);
 	if (newtags) {
-		selmon->sel->tags = newtags;
-		setewmhdesktop(selmon->sel);
+		g_awm.selmon->sel->tags = newtags;
+		setewmhdesktop(g_awm.selmon->sel);
 		focus(NULL);
-		arrange(selmon);
+		arrange(g_awm.selmon);
 	}
 	updatecurrentdesktop();
 	wmstate_update();
@@ -1390,18 +1418,19 @@ toggleview(const Arg *arg)
 {
 	Monitor     *m;
 	unsigned int newtagset =
-	    selmon->tagset[selmon->seltags] ^ (arg->ui & TAGMASK);
+	    g_awm.selmon->tagset[g_awm.selmon->seltags] ^ (arg->ui & TAGMASK);
 	int i;
 
 	if (newtagset) {
-		for (m = mons; m; m = m->next)
-			if (m != selmon && newtagset & m->tagset[m->seltags]) {
+		for (m = g_awm.mons; m; m = m->next)
+			if (m != g_awm.selmon && newtagset & m->tagset[m->seltags]) {
 				int selmon_curtag, m_curtag, j;
 
-				if (selmon->tagset[selmon->seltags] == ~0)
+				if (g_awm.selmon->tagset[g_awm.selmon->seltags] == ~0)
 					selmon_curtag = 0;
 				else {
-					for (i = 0; !(selmon->tagset[selmon->seltags] & 1 << i);
+					for (i = 0; !(g_awm.selmon->tagset[g_awm.selmon->seltags] &
+					         1 << i);
 					    i++)
 						;
 					selmon_curtag = i + 1;
@@ -1415,39 +1444,44 @@ toggleview(const Arg *arg)
 					m_curtag = i + 1;
 				}
 
-				selmon->pertag->nmasters[m_curtag] =
+				g_awm.selmon->pertag->nmasters[m_curtag] =
 				    m->pertag->nmasters[m_curtag];
-				selmon->pertag->mfacts[m_curtag] = m->pertag->mfacts[m_curtag];
-				selmon->pertag->sellts[m_curtag] = m->pertag->sellts[m_curtag];
-				selmon->pertag->showbars[m_curtag] =
+				g_awm.selmon->pertag->mfacts[m_curtag] =
+				    m->pertag->mfacts[m_curtag];
+				g_awm.selmon->pertag->sellts[m_curtag] =
+				    m->pertag->sellts[m_curtag];
+				g_awm.selmon->pertag->showbars[m_curtag] =
 				    m->pertag->showbars[m_curtag];
-				selmon->pertag->drawwithgaps[m_curtag] =
+				g_awm.selmon->pertag->drawwithgaps[m_curtag] =
 				    m->pertag->drawwithgaps[m_curtag];
-				selmon->pertag->gappx[m_curtag] = m->pertag->gappx[m_curtag];
+				g_awm.selmon->pertag->gappx[m_curtag] =
+				    m->pertag->gappx[m_curtag];
 				for (j = 0; j < 2; j++)
-					selmon->pertag->ltidxs[(m_curtag) * 2 + (j)] =
+					g_awm.selmon->pertag->ltidxs[(m_curtag) * 2 + (j)] =
 					    m->pertag->ltidxs[(m_curtag) * 2 + (j)];
 
 				m->pertag->nmasters[selmon_curtag] =
-				    selmon->pertag->nmasters[selmon_curtag];
+				    g_awm.selmon->pertag->nmasters[selmon_curtag];
 				m->pertag->mfacts[selmon_curtag] =
-				    selmon->pertag->mfacts[selmon_curtag];
+				    g_awm.selmon->pertag->mfacts[selmon_curtag];
 				m->pertag->sellts[selmon_curtag] =
-				    selmon->pertag->sellts[selmon_curtag];
+				    g_awm.selmon->pertag->sellts[selmon_curtag];
 				m->pertag->showbars[selmon_curtag] =
-				    selmon->pertag->showbars[selmon_curtag];
+				    g_awm.selmon->pertag->showbars[selmon_curtag];
 				m->pertag->drawwithgaps[selmon_curtag] =
-				    selmon->pertag->drawwithgaps[selmon_curtag];
+				    g_awm.selmon->pertag->drawwithgaps[selmon_curtag];
 				m->pertag->gappx[selmon_curtag] =
-				    selmon->pertag->gappx[selmon_curtag];
+				    g_awm.selmon->pertag->gappx[selmon_curtag];
 				for (j = 0; j < 2; j++)
 					m->pertag->ltidxs[(selmon_curtag) * 2 + (j)] =
-					    selmon->pertag->ltidxs[(selmon_curtag) * 2 + (j)];
+					    g_awm.selmon->pertag
+					        ->ltidxs[(selmon_curtag) * 2 + (j)];
 
-				m->sel = selmon->sel;
+				m->sel = g_awm.selmon->sel;
 				m->seltags ^= 1;
-				m->tagset[m->seltags] = selmon->tagset[selmon->seltags];
-				m->pertag->curtag     = selmon_curtag;
+				m->tagset[m->seltags] =
+				    g_awm.selmon->tagset[g_awm.selmon->seltags];
+				m->pertag->curtag = selmon_curtag;
 
 				m->nmaster = m->pertag->nmasters[m->pertag->curtag];
 				m->mfact   = m->pertag->mfacts[m->pertag->curtag];
@@ -1460,73 +1494,82 @@ toggleview(const Arg *arg)
 				if (m->showbar != m->pertag->showbars[m->pertag->curtag])
 					togglebar(NULL);
 
-				/* Update selmon's tagset before calling attachclients on
+				/* Update g_awm.selmon's tagset before calling attachclients on
 				 * either monitor.  If we called attachclients(m) first,
 				 * it would steal clients whose tag matches m's new tagset
-				 * (which is selmon's old tag) — including clients that were
-				 * sitting on selmon and should stay there once selmon picks
-				 * up m's old tag.  Setting both tagsets atomically first
-				 * lets attachclients see the final state and assign each
-				 * client to the correct monitor. */
-				selmon->tagset[selmon->seltags] = newtagset;
-				selmon->pertag->prevtag         = selmon->pertag->curtag;
-				selmon->pertag->curtag          = m_curtag;
+				 * (which is g_awm.selmon's old tag) — including clients that
+				 * were sitting on g_awm.selmon and should stay there once
+				 * g_awm.selmon picks up m's old tag.  Setting both tagsets
+				 * atomically first lets attachclients see the final state and
+				 * assign each client to the correct monitor. */
+				g_awm.selmon->tagset[g_awm.selmon->seltags] = newtagset;
+				g_awm.selmon->pertag->prevtag = g_awm.selmon->pertag->curtag;
+				g_awm.selmon->pertag->curtag  = m_curtag;
 
-				selmon->nmaster =
-				    selmon->pertag->nmasters[selmon->pertag->curtag];
-				selmon->mfact = selmon->pertag->mfacts[selmon->pertag->curtag];
-				selmon->sellt = selmon->pertag->sellts[selmon->pertag->curtag];
-				selmon->lt[selmon->sellt] =
-				    selmon->pertag->ltidxs[(selmon->pertag->curtag) * 2 +
-				        (selmon->sellt)];
-				selmon->lt[selmon->sellt ^ 1] =
-				    selmon->pertag->ltidxs[(selmon->pertag->curtag) * 2 +
-				        (selmon->sellt ^ 1)];
-				if (selmon->showbar !=
-				    selmon->pertag->showbars[selmon->pertag->curtag])
+				g_awm.selmon->nmaster =
+				    g_awm.selmon->pertag
+				        ->nmasters[g_awm.selmon->pertag->curtag];
+				g_awm.selmon->mfact =
+				    g_awm.selmon->pertag->mfacts[g_awm.selmon->pertag->curtag];
+				g_awm.selmon->sellt =
+				    g_awm.selmon->pertag->sellts[g_awm.selmon->pertag->curtag];
+				g_awm.selmon->lt[g_awm.selmon->sellt] =
+				    g_awm.selmon->pertag
+				        ->ltidxs[(g_awm.selmon->pertag->curtag) * 2 +
+				            (g_awm.selmon->sellt)];
+				g_awm.selmon->lt[g_awm.selmon->sellt ^ 1] =
+				    g_awm.selmon->pertag
+				        ->ltidxs[(g_awm.selmon->pertag->curtag) * 2 +
+				            (g_awm.selmon->sellt ^ 1)];
+				if (g_awm.selmon->showbar !=
+				    g_awm.selmon->pertag
+				        ->showbars[g_awm.selmon->pertag->curtag])
 					togglebar(NULL);
 
 				attachclients(m);
 				arrange(m);
 				compositor_check_unredirect();
 
-				attachclients(selmon);
-				arrange(selmon);
+				attachclients(g_awm.selmon);
+				arrange(g_awm.selmon);
 				focus(NULL);
 				updatecurrentdesktop();
 				return;
 			}
 
-		selmon->tagset[selmon->seltags] = newtagset;
+		g_awm.selmon->tagset[g_awm.selmon->seltags] = newtagset;
 
 		if (newtagset == ~0) {
-			selmon->pertag->prevtag = selmon->pertag->curtag;
-			selmon->pertag->curtag  = 0;
+			g_awm.selmon->pertag->prevtag = g_awm.selmon->pertag->curtag;
+			g_awm.selmon->pertag->curtag  = 0;
 		}
 
-		if (!(newtagset & 1 << (selmon->pertag->curtag - 1))) {
-			selmon->pertag->prevtag = selmon->pertag->curtag;
+		if (!(newtagset & 1 << (g_awm.selmon->pertag->curtag - 1))) {
+			g_awm.selmon->pertag->prevtag = g_awm.selmon->pertag->curtag;
 			for (i = 0; !(newtagset & 1 << i); i++)
 				;
-			selmon->pertag->curtag = i + 1;
+			g_awm.selmon->pertag->curtag = i + 1;
 		}
 
-		selmon->nmaster = selmon->pertag->nmasters[selmon->pertag->curtag];
-		selmon->mfact   = selmon->pertag->mfacts[selmon->pertag->curtag];
-		selmon->sellt   = selmon->pertag->sellts[selmon->pertag->curtag];
-		selmon->lt[selmon->sellt] =
-		    selmon->pertag
-		        ->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt)];
-		selmon->lt[selmon->sellt ^ 1] =
-		    selmon->pertag
-		        ->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt ^ 1)];
+		g_awm.selmon->nmaster =
+		    g_awm.selmon->pertag->nmasters[g_awm.selmon->pertag->curtag];
+		g_awm.selmon->mfact =
+		    g_awm.selmon->pertag->mfacts[g_awm.selmon->pertag->curtag];
+		g_awm.selmon->sellt =
+		    g_awm.selmon->pertag->sellts[g_awm.selmon->pertag->curtag];
+		g_awm.selmon->lt[g_awm.selmon->sellt] =
+		    g_awm.selmon->pertag->ltidxs[(g_awm.selmon->pertag->curtag) * 2 +
+		        (g_awm.selmon->sellt)];
+		g_awm.selmon->lt[g_awm.selmon->sellt ^ 1] =
+		    g_awm.selmon->pertag->ltidxs[(g_awm.selmon->pertag->curtag) * 2 +
+		        (g_awm.selmon->sellt ^ 1)];
 
-		if (selmon->showbar !=
-		    selmon->pertag->showbars[selmon->pertag->curtag])
+		if (g_awm.selmon->showbar !=
+		    g_awm.selmon->pertag->showbars[g_awm.selmon->pertag->curtag])
 			togglebar(NULL);
 
-		attachclients(selmon);
-		arrange(selmon);
+		attachclients(g_awm.selmon);
+		arrange(g_awm.selmon);
 		focus(NULL);
 	}
 	updatecurrentdesktop();
@@ -1678,7 +1721,8 @@ updatewmhints(Client *c)
 	xcb_icccm_wm_hints_t      wmh;
 
 	if (xcb_icccm_get_wm_hints_reply(xc, ck, &wmh, NULL)) {
-		if (c == selmon->sel && (wmh.flags & XCB_ICCCM_WM_HINT_X_URGENCY)) {
+		if (c == g_awm.selmon->sel &&
+		    (wmh.flags & XCB_ICCCM_WM_HINT_X_URGENCY)) {
 			wmh.flags &= ~XCB_ICCCM_WM_HINT_X_URGENCY;
 			xcb_icccm_set_wm_hints(xc, c->win, &wmh);
 		} else
@@ -1696,22 +1740,24 @@ view(const Arg *arg)
 	Monitor     *m;
 	int          i;
 	unsigned int tmptag;
-	unsigned int newtagset = selmon->tagset[selmon->seltags ^ 1];
+	unsigned int newtagset = g_awm.selmon->tagset[g_awm.selmon->seltags ^ 1];
 
-	if ((arg->ui & TAGMASK) == selmon->tagset[selmon->seltags])
+	if ((arg->ui & TAGMASK) == g_awm.selmon->tagset[g_awm.selmon->seltags])
 		return;
 	if (arg->ui & TAGMASK)
 		newtagset = arg->ui & TAGMASK;
-	for (m = mons; m; m = m->next)
-		if (m != selmon && newtagset & m->tagset[m->seltags]) {
-			if (newtagset & selmon->tagset[selmon->seltags])
+	for (m = g_awm.mons; m; m = m->next)
+		if (m != g_awm.selmon && newtagset & m->tagset[m->seltags]) {
+			if (newtagset & g_awm.selmon->tagset[g_awm.selmon->seltags])
 				return;
 			int selmon_curtag, m_curtag, j;
 
-			if (selmon->tagset[selmon->seltags] == ~0)
+			if (g_awm.selmon->tagset[g_awm.selmon->seltags] == ~0)
 				selmon_curtag = 0;
 			else {
-				for (i = 0; !(selmon->tagset[selmon->seltags] & 1 << i); i++)
+				for (i = 0;
+				    !(g_awm.selmon->tagset[g_awm.selmon->seltags] & 1 << i);
+				    i++)
 					;
 				selmon_curtag = i + 1;
 			}
@@ -1724,37 +1770,42 @@ view(const Arg *arg)
 				m_curtag = i + 1;
 			}
 
-			selmon->pertag->nmasters[m_curtag] = m->pertag->nmasters[m_curtag];
-			selmon->pertag->mfacts[m_curtag]   = m->pertag->mfacts[m_curtag];
-			selmon->pertag->sellts[m_curtag]   = m->pertag->sellts[m_curtag];
-			selmon->pertag->showbars[m_curtag] = m->pertag->showbars[m_curtag];
-			selmon->pertag->drawwithgaps[m_curtag] =
+			g_awm.selmon->pertag->nmasters[m_curtag] =
+			    m->pertag->nmasters[m_curtag];
+			g_awm.selmon->pertag->mfacts[m_curtag] =
+			    m->pertag->mfacts[m_curtag];
+			g_awm.selmon->pertag->sellts[m_curtag] =
+			    m->pertag->sellts[m_curtag];
+			g_awm.selmon->pertag->showbars[m_curtag] =
+			    m->pertag->showbars[m_curtag];
+			g_awm.selmon->pertag->drawwithgaps[m_curtag] =
 			    m->pertag->drawwithgaps[m_curtag];
-			selmon->pertag->gappx[m_curtag] = m->pertag->gappx[m_curtag];
+			g_awm.selmon->pertag->gappx[m_curtag] = m->pertag->gappx[m_curtag];
 			for (j = 0; j < 2; j++)
-				selmon->pertag->ltidxs[(m_curtag) * 2 + (j)] =
+				g_awm.selmon->pertag->ltidxs[(m_curtag) * 2 + (j)] =
 				    m->pertag->ltidxs[(m_curtag) * 2 + (j)];
 
 			m->pertag->nmasters[selmon_curtag] =
-			    selmon->pertag->nmasters[selmon_curtag];
+			    g_awm.selmon->pertag->nmasters[selmon_curtag];
 			m->pertag->mfacts[selmon_curtag] =
-			    selmon->pertag->mfacts[selmon_curtag];
+			    g_awm.selmon->pertag->mfacts[selmon_curtag];
 			m->pertag->sellts[selmon_curtag] =
-			    selmon->pertag->sellts[selmon_curtag];
+			    g_awm.selmon->pertag->sellts[selmon_curtag];
 			m->pertag->showbars[selmon_curtag] =
-			    selmon->pertag->showbars[selmon_curtag];
+			    g_awm.selmon->pertag->showbars[selmon_curtag];
 			m->pertag->drawwithgaps[selmon_curtag] =
-			    selmon->pertag->drawwithgaps[selmon_curtag];
+			    g_awm.selmon->pertag->drawwithgaps[selmon_curtag];
 			m->pertag->gappx[selmon_curtag] =
-			    selmon->pertag->gappx[selmon_curtag];
+			    g_awm.selmon->pertag->gappx[selmon_curtag];
 			for (j = 0; j < 2; j++)
 				m->pertag->ltidxs[(selmon_curtag) * 2 + (j)] =
-				    selmon->pertag->ltidxs[(selmon_curtag) * 2 + (j)];
+				    g_awm.selmon->pertag->ltidxs[(selmon_curtag) * 2 + (j)];
 
-			m->sel = selmon->sel;
+			m->sel = g_awm.selmon->sel;
 			m->seltags ^= 1;
-			m->tagset[m->seltags] = selmon->tagset[selmon->seltags];
-			m->pertag->curtag     = selmon_curtag;
+			m->tagset[m->seltags] =
+			    g_awm.selmon->tagset[g_awm.selmon->seltags];
+			m->pertag->curtag = selmon_curtag;
 
 			m->nmaster = m->pertag->nmasters[m->pertag->curtag];
 			m->mfact   = m->pertag->mfacts[m->pertag->curtag];
@@ -1766,68 +1817,78 @@ view(const Arg *arg)
 			if (m->showbar != m->pertag->showbars[m->pertag->curtag])
 				togglebar(NULL);
 
-			/* Set selmon's tagset before calling attachclients on
+			/* Set g_awm.selmon's tagset before calling attachclients on
 			 * either monitor — same ordering fix as in toggleview(). */
-			selmon->seltags ^= 1;
-			selmon->tagset[selmon->seltags] = newtagset;
-			selmon->pertag->prevtag         = selmon->pertag->curtag;
-			selmon->pertag->curtag          = m_curtag;
+			g_awm.selmon->seltags ^= 1;
+			g_awm.selmon->tagset[g_awm.selmon->seltags] = newtagset;
+			g_awm.selmon->pertag->prevtag = g_awm.selmon->pertag->curtag;
+			g_awm.selmon->pertag->curtag  = m_curtag;
 
-			selmon->nmaster = selmon->pertag->nmasters[selmon->pertag->curtag];
-			selmon->mfact   = selmon->pertag->mfacts[selmon->pertag->curtag];
-			selmon->sellt   = selmon->pertag->sellts[selmon->pertag->curtag];
-			selmon->lt[selmon->sellt] =
-			    selmon->pertag
-			        ->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt)];
-			selmon->lt[selmon->sellt ^ 1] =
-			    selmon->pertag->ltidxs[(selmon->pertag->curtag) * 2 +
-			        (selmon->sellt ^ 1)];
-			if (selmon->showbar !=
-			    selmon->pertag->showbars[selmon->pertag->curtag])
+			g_awm.selmon->nmaster =
+			    g_awm.selmon->pertag->nmasters[g_awm.selmon->pertag->curtag];
+			g_awm.selmon->mfact =
+			    g_awm.selmon->pertag->mfacts[g_awm.selmon->pertag->curtag];
+			g_awm.selmon->sellt =
+			    g_awm.selmon->pertag->sellts[g_awm.selmon->pertag->curtag];
+			g_awm.selmon->lt[g_awm.selmon->sellt] =
+			    g_awm.selmon->pertag
+			        ->ltidxs[(g_awm.selmon->pertag->curtag) * 2 +
+			            (g_awm.selmon->sellt)];
+			g_awm.selmon->lt[g_awm.selmon->sellt ^ 1] =
+			    g_awm.selmon->pertag
+			        ->ltidxs[(g_awm.selmon->pertag->curtag) * 2 +
+			            (g_awm.selmon->sellt ^ 1)];
+			if (g_awm.selmon->showbar !=
+			    g_awm.selmon->pertag->showbars[g_awm.selmon->pertag->curtag])
 				togglebar(NULL);
 
 			attachclients(m);
 			arrange(m);
 			compositor_check_unredirect();
 
-			attachclients(selmon);
-			arrange(selmon);
+			attachclients(g_awm.selmon);
+			arrange(g_awm.selmon);
 			focus(NULL);
 			updatecurrentdesktop();
 			return;
 		}
-	selmon->seltags ^= 1;
+	g_awm.selmon->seltags ^= 1;
 	if (arg->ui & TAGMASK) {
-		selmon->tagset[selmon->seltags] = arg->ui & TAGMASK;
-		selmon->pertag->prevtag         = selmon->pertag->curtag;
+		g_awm.selmon->tagset[g_awm.selmon->seltags] = arg->ui & TAGMASK;
+		g_awm.selmon->pertag->prevtag = g_awm.selmon->pertag->curtag;
 
 		if (arg->ui == ~0)
-			selmon->pertag->curtag = 0;
+			g_awm.selmon->pertag->curtag = 0;
 		else {
 			for (i = 0; !(arg->ui & 1 << i); i++)
 				;
-			selmon->pertag->curtag = i + 1;
+			g_awm.selmon->pertag->curtag = i + 1;
 		}
 	} else {
-		tmptag                  = selmon->pertag->prevtag;
-		selmon->pertag->prevtag = selmon->pertag->curtag;
-		selmon->pertag->curtag  = tmptag;
+		tmptag                        = g_awm.selmon->pertag->prevtag;
+		g_awm.selmon->pertag->prevtag = g_awm.selmon->pertag->curtag;
+		g_awm.selmon->pertag->curtag  = tmptag;
 	}
 
-	selmon->nmaster = selmon->pertag->nmasters[selmon->pertag->curtag];
-	selmon->mfact   = selmon->pertag->mfacts[selmon->pertag->curtag];
-	selmon->sellt   = selmon->pertag->sellts[selmon->pertag->curtag];
-	selmon->lt[selmon->sellt] =
-	    selmon->pertag->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt)];
-	selmon->lt[selmon->sellt ^ 1] =
-	    selmon->pertag
-	        ->ltidxs[(selmon->pertag->curtag) * 2 + (selmon->sellt ^ 1)];
+	g_awm.selmon->nmaster =
+	    g_awm.selmon->pertag->nmasters[g_awm.selmon->pertag->curtag];
+	g_awm.selmon->mfact =
+	    g_awm.selmon->pertag->mfacts[g_awm.selmon->pertag->curtag];
+	g_awm.selmon->sellt =
+	    g_awm.selmon->pertag->sellts[g_awm.selmon->pertag->curtag];
+	g_awm.selmon->lt[g_awm.selmon->sellt] =
+	    g_awm.selmon->pertag->ltidxs[(g_awm.selmon->pertag->curtag) * 2 +
+	        (g_awm.selmon->sellt)];
+	g_awm.selmon->lt[g_awm.selmon->sellt ^ 1] =
+	    g_awm.selmon->pertag->ltidxs[(g_awm.selmon->pertag->curtag) * 2 +
+	        (g_awm.selmon->sellt ^ 1)];
 
-	if (selmon->showbar != selmon->pertag->showbars[selmon->pertag->curtag])
+	if (g_awm.selmon->showbar !=
+	    g_awm.selmon->pertag->showbars[g_awm.selmon->pertag->curtag])
 		togglebar(NULL);
 
-	attachclients(selmon);
-	arrange(selmon);
+	attachclients(g_awm.selmon);
+	arrange(g_awm.selmon);
 	focus(NULL);
 	updatecurrentdesktop();
 	wmstate_update();
@@ -1840,8 +1901,8 @@ warp(const Client *c)
 
 	if (!c) {
 		xcb_warp_pointer(xc, XCB_WINDOW_NONE, root, 0, 0, 0, 0,
-		    (int16_t) (selmon->wx + selmon->ww / 2),
-		    (int16_t) (selmon->wy + selmon->wh / 2));
+		    (int16_t) (g_awm.selmon->wx + g_awm.selmon->ww / 2),
+		    (int16_t) (g_awm.selmon->wy + g_awm.selmon->wh / 2));
 		return;
 	}
 
@@ -1860,7 +1921,7 @@ wintoclient(xcb_window_t w)
 {
 	Client *c;
 
-	for (c = cl->clients; c; c = c->next)
+	for (c = g_awm.cl->clients; c; c = c->next)
 		if (c->win == w)
 			return c;
 	return NULL;
@@ -1869,12 +1930,12 @@ wintoclient(xcb_window_t w)
 void
 zoom(const Arg *arg)
 {
-	Client *c = selmon->sel;
+	Client *c = g_awm.selmon->sel;
 
-	if (!selmon->lt[selmon->sellt]->arrange || !c || c->isfloating)
+	if (!g_awm.selmon->lt[g_awm.selmon->sellt]->arrange || !c || c->isfloating)
 		return;
-	if (c == nexttiled(selmon->cl->clients, selmon) &&
-	    !(c = nexttiled(c->next, selmon)))
+	if (c == nexttiled(g_awm.selmon->cl->clients, g_awm.selmon) &&
+	    !(c = nexttiled(c->next, g_awm.selmon)))
 		return;
 	pop(c);
 }
@@ -1885,50 +1946,53 @@ movestack(const Arg *arg)
 	Client *c = NULL, *p = NULL, *pc = NULL, *i;
 
 	if (arg->i > 0) {
-		/* find the client after selmon->sel */
-		for (c = selmon->sel->next;
-		    c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
+		/* find the client after g_awm.selmon->sel */
+		for (c = g_awm.selmon->sel->next;
+		    c && (!ISVISIBLE(c, g_awm.selmon) || c->isfloating); c = c->next)
 			;
 		if (!c)
-			for (c = selmon->cl->clients;
-			    c && (!ISVISIBLE(c, selmon) || c->isfloating); c = c->next)
+			for (c = g_awm.selmon->cl->clients;
+			    c && (!ISVISIBLE(c, g_awm.selmon) || c->isfloating);
+			    c = c->next)
 				;
 
 	} else {
-		/* find the client before selmon->sel */
-		for (i = selmon->cl->clients; i != selmon->sel; i = i->next)
-			if (ISVISIBLE(i, selmon) && !i->isfloating)
+		/* find the client before g_awm.selmon->sel */
+		for (i = g_awm.selmon->cl->clients; i != g_awm.selmon->sel;
+		    i  = i->next) {
+			if (ISVISIBLE(i, g_awm.selmon) && !i->isfloating)
 				c = i;
+		}
 		if (!c)
 			for (; i; i = i->next)
-				if (ISVISIBLE(i, selmon) && !i->isfloating)
+				if (ISVISIBLE(i, g_awm.selmon) && !i->isfloating)
 					c = i;
 	}
-	/* find the client before selmon->sel and c */
-	for (i = selmon->cl->clients; i && (!p || !pc); i = i->next) {
-		if (i->next == selmon->sel)
+	/* find the client before g_awm.selmon->sel and c */
+	for (i = g_awm.selmon->cl->clients; i && (!p || !pc); i = i->next) {
+		if (i->next == g_awm.selmon->sel)
 			p = i;
 		if (i->next == c)
 			pc = i;
 	}
 
-	/* swap c and selmon->sel in the clients list */
-	if (c && c != selmon->sel) {
-		Client *temp =
-		    selmon->sel->next == c ? selmon->sel : selmon->sel->next;
-		selmon->sel->next = c->next == selmon->sel ? c : c->next;
-		c->next           = temp;
+	/* swap c and g_awm.selmon->sel in the clients list */
+	if (c && c != g_awm.selmon->sel) {
+		Client *temp = g_awm.selmon->sel->next == c ? g_awm.selmon->sel
+		                                            : g_awm.selmon->sel->next;
+		g_awm.selmon->sel->next = c->next == g_awm.selmon->sel ? c : c->next;
+		c->next                 = temp;
 
 		if (p && p != c)
 			p->next = c;
-		if (pc && pc != selmon->sel)
-			pc->next = selmon->sel;
+		if (pc && pc != g_awm.selmon->sel)
+			pc->next = g_awm.selmon->sel;
 
-		if (selmon->sel == selmon->cl->clients)
-			selmon->cl->clients = c;
-		else if (c == selmon->cl->clients)
-			selmon->cl->clients = selmon->sel;
+		if (g_awm.selmon->sel == g_awm.selmon->cl->clients)
+			g_awm.selmon->cl->clients = c;
+		else if (c == g_awm.selmon->cl->clients)
+			g_awm.selmon->cl->clients = g_awm.selmon->sel;
 
-		arrange(selmon);
+		arrange(g_awm.selmon);
 	}
 }
