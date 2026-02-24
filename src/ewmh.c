@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "awm.h"
+#include "wmstate.h"
 #include "client.h"
 #include "ewmh.h"
 #include "monitor.h"
@@ -120,7 +121,7 @@ updateclientlist(void)
 	Monitor *m;
 
 	xcb_delete_property(xc, root, netatom[NetClientList]);
-	for (m = mons; m; m = m->next)
+	for (m = g_awm.mons; m; m = m->next)
 		if (m->cl) /* Safety check */
 			for (c = m->cl->clients; c; c = c->next) {
 				uint32_t win32 = (uint32_t) c->win;
@@ -130,7 +131,7 @@ updateclientlist(void)
 
 	/* Update _NET_CLIENT_LIST_STACKING in bottom-to-top order */
 	xcb_delete_property(xc, root, netatom[NetClientListStacking]);
-	for (m = mons; m; m = m->next)
+	for (m = g_awm.mons; m; m = m->next)
 		if (m->cl) /* Safety check */
 			for (c = m->cl->stack; c; c = c->snext) {
 				uint32_t win32 = (uint32_t) c->win;
@@ -143,7 +144,7 @@ updateclientlist(void)
 void
 updatecurrentdesktop(void)
 {
-	unsigned int rawdata = selmon->tagset[selmon->seltags];
+	unsigned int rawdata = g_awm.selmon->tagset[g_awm.selmon->seltags];
 	uint32_t     i       = 0;
 	while (rawdata >> (i + 1))
 		i++;
