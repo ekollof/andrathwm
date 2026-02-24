@@ -36,6 +36,22 @@ arrange(Monitor *m)
 			showhide(m->cl->stack);
 	if (m) {
 		arrangemon(m);
+		/* showhide() walks the shared client stack and calls
+		 * compositor_set_hidden(c, 0) for every client that is
+		 * ISVISIBLE on its own monitor — including clients that are
+		 * monocle-hidden on OTHER monitors.  Re-run arrangemon on
+		 * every other monitor that uses a layout so those monitors
+		 * can re-apply their hidden state (e.g. monocle re-hides
+		 * the non-top windows that showhide just un-hid). */
+		{
+			Monitor *om;
+			for (om = mons; om; om = om->next) {
+				if (om == m)
+					continue;
+				if (om->lt[om->sellt]->arrange)
+					om->lt[om->sellt]->arrange(om);
+			}
+		}
 		restack(m);
 	} else {
 		for (m = mons; m; m = m->next)
