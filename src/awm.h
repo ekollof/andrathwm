@@ -237,7 +237,6 @@ struct Monitor {
 	int           topbar;
 	Clientlist   *cl;
 	Client       *sel;
-	Client       *stack;
 	Monitor      *next;
 	xcb_window_t  barwin;
 	const Layout *lt[2];

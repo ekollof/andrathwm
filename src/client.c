@@ -1411,6 +1411,9 @@ toggleview(const Arg *arg)
 				selmon->pertag->sellts[m_curtag] = m->pertag->sellts[m_curtag];
 				selmon->pertag->showbars[m_curtag] =
 				    m->pertag->showbars[m_curtag];
+				selmon->pertag->drawwithgaps[m_curtag] =
+				    m->pertag->drawwithgaps[m_curtag];
+				selmon->pertag->gappx[m_curtag] = m->pertag->gappx[m_curtag];
 				for (j = 0; j < 2; j++)
 					selmon->pertag->ltidxs[(m_curtag) * 2 + (j)] =
 					    m->pertag->ltidxs[(m_curtag) * 2 + (j)];
@@ -1423,6 +1426,10 @@ toggleview(const Arg *arg)
 				    selmon->pertag->sellts[selmon_curtag];
 				m->pertag->showbars[selmon_curtag] =
 				    selmon->pertag->showbars[selmon_curtag];
+				m->pertag->drawwithgaps[selmon_curtag] =
+				    selmon->pertag->drawwithgaps[selmon_curtag];
+				m->pertag->gappx[selmon_curtag] =
+				    selmon->pertag->gappx[selmon_curtag];
 				for (j = 0; j < 2; j++)
 					m->pertag->ltidxs[(selmon_curtag) * 2 + (j)] =
 					    selmon->pertag->ltidxs[(selmon_curtag) * 2 + (j)];
@@ -1709,6 +1716,9 @@ view(const Arg *arg)
 			selmon->pertag->mfacts[m_curtag]   = m->pertag->mfacts[m_curtag];
 			selmon->pertag->sellts[m_curtag]   = m->pertag->sellts[m_curtag];
 			selmon->pertag->showbars[m_curtag] = m->pertag->showbars[m_curtag];
+			selmon->pertag->drawwithgaps[m_curtag] =
+			    m->pertag->drawwithgaps[m_curtag];
+			selmon->pertag->gappx[m_curtag] = m->pertag->gappx[m_curtag];
 			for (j = 0; j < 2; j++)
 				selmon->pertag->ltidxs[(m_curtag) * 2 + (j)] =
 				    m->pertag->ltidxs[(m_curtag) * 2 + (j)];
@@ -1721,6 +1731,10 @@ view(const Arg *arg)
 			    selmon->pertag->sellts[selmon_curtag];
 			m->pertag->showbars[selmon_curtag] =
 			    selmon->pertag->showbars[selmon_curtag];
+			m->pertag->drawwithgaps[selmon_curtag] =
+			    selmon->pertag->drawwithgaps[selmon_curtag];
+			m->pertag->gappx[selmon_curtag] =
+			    selmon->pertag->gappx[selmon_curtag];
 			for (j = 0; j < 2; j++)
 				m->pertag->ltidxs[(selmon_curtag) * 2 + (j)] =
 				    selmon->pertag->ltidxs[(selmon_curtag) * 2 + (j)];
@@ -1831,13 +1845,11 @@ warp(const Client *c)
 Client *
 wintoclient(xcb_window_t w)
 {
-	Client  *c;
-	Monitor *m;
+	Client *c;
 
-	for (m = mons; m; m = m->next)
-		for (c = m->cl->clients; c; c = c->next)
-			if (c->win == w)
-				return c;
+	for (c = cl->clients; c; c = c->next)
+		if (c->win == w)
+			return c;
 	return NULL;
 }
 
