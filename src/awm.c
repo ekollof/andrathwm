@@ -906,6 +906,19 @@ ui_spawn(GMainContext *ctx)
 		unsetenv("WAYLAND_DISPLAY");
 		setenv("GDK_BACKEND", "x11", 1);
 
+		/* Tell GTK the real screen DPI so that GtkLabel, GtkSearchEntry
+		 * and all other Pango-backed widgets render text at the correct
+		 * physical size.  GDK_DPI_SCALE is a float multiplier applied on
+		 * top of the DPI GDK detects at gtk_init() time; setting it to
+		 * ui_dpi/96.0 normalises whatever GDK would have picked to the
+		 * DPI we resolved ourselves via Xft.dpi / RandR. */
+		{
+			char dpi_scale_str[32];
+			snprintf(
+			    dpi_scale_str, sizeof(dpi_scale_str), "%.6g", ui_dpi / 96.0);
+			setenv("GDK_DPI_SCALE", dpi_scale_str, 1);
+		}
+
 		/* Build argv: awm-ui <child_fd> */
 		char fd_str[32];
 		snprintf(fd_str, sizeof(fd_str), "%d", fds[1]);
