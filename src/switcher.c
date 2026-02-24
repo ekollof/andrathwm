@@ -329,11 +329,27 @@ build_thumbnail(SwitcherEntry *e)
 	xcb_render_create_picture(xc, e->thumb_pict,
 	    (xcb_drawable_t) e->thumb_pixmap, dst_fmt, pict_mask, &pict_val);
 
-	/* Composite: scale from source into destination */
-	xcb_render_composite(xc, XCB_RENDER_PICT_OP_SRC, src_pict,
-	    XCB_RENDER_PICTURE_NONE, e->thumb_pict, 0, 0, /* src x,y */
+	/* Pre-fill dst with opaque background so ARGB windows blend cleanly */
+	{
+		Clr               *bg = &scheme[SchemeNorm][ColBg];
+		xcb_render_color_t bc;
+		xcb_rectangle_t    br = { 0, 0, (uint16_t) tw, (uint16_t) th };
+		bc.red                = bg->r;
+		bc.green              = bg->g;
+		bc.blue               = bg->b;
+		bc.alpha              = 0xffff;
+		xcb_render_fill_rectangles(
+		    xc, XCB_RENDER_PICT_OP_SRC, e->thumb_pict, bc, 1, &br);
+	}
+
+	/* Composite: scale from source into destination.
+	 * ARGB sources need OVER so pre-multiplied alpha blends against
+	 * the background we just filled; opaque sources use SRC directly. */
+	xcb_render_composite(xc,
+	    cw->argb ? XCB_RENDER_PICT_OP_OVER : XCB_RENDER_PICT_OP_SRC, src_pict,
+	    XCB_RENDER_PICTURE_NONE, e->thumb_pict, 0, 0, /* src x,y  */
 	    0, 0,                                         /* mask x,y */
-	    0, 0,                                         /* dst x,y */
+	    0, 0,                                         /* dst x,y  */
 	    (uint16_t) tw, (uint16_t) th);
 	xcb_flush(xc);
 
