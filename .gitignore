@@ -1,6 +1,8 @@
 # Build artifacts
 build/
 awm
+awm-ui
+a.out
 xidle
 
 # Generated configuration - NOTE: config.h IS tracked (has customizations)
