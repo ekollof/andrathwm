@@ -40,6 +40,7 @@
 #include <cairo/cairo.h>
 
 #include "awm.h"
+#include "wmstate.h"
 #include "log.h"
 #include "compositor.h"
 #include "compositor_backend.h"
@@ -781,8 +782,8 @@ comp_add_by_xid(xcb_window_t w)
 		Client  *c;
 		Monitor *m;
 		cw->client = NULL;
-		for (m = mons; m; m = m->next)
-			for (c = cl->clients; c; c = c->next)
+		for (m = g_awm.mons; m; m = m->next)
+			for (c = g_awm.cl->clients; c; c = c->next)
 				if (c->win == w) {
 					cw->client = c;
 					break;
@@ -991,7 +992,7 @@ comp_pause_watchdog_cb(gpointer data)
 
 	/* Recompute what the mask should be right now */
 	expected_mask = 0;
-	for (m = mons; m; m = m->next) {
+	for (m = g_awm.mons; m; m = m->next) {
 		Client *c;
 		if (m->num >= 32)
 			continue;
@@ -1033,7 +1034,7 @@ comp_fullscreen_bypass_cb(gpointer data)
 	if (!comp.active)
 		return G_SOURCE_REMOVE;
 
-	for (m = mons; m; m = m->next) {
+	for (m = g_awm.mons; m; m = m->next) {
 		Client *tc;
 		for (tc = m->cl->clients; tc; tc = tc->next) {
 			if (tc->win == win) {
@@ -1235,7 +1236,7 @@ comp_update_overlay_shape(void)
 		xcb_xfixes_create_region(xc, hole_rgn, 0, NULL);
 		xcb_xfixes_create_region(xc, result_rgn, 0, NULL);
 
-		for (m = mons; m; m = m->next) {
+		for (m = g_awm.mons; m; m = m->next) {
 			if (m->num >= 32)
 				continue;
 			if (!(comp.paused_mask & (1u << (unsigned) m->num)))
@@ -1281,7 +1282,7 @@ compositor_check_unredirect(void)
 	 * We scan all visible clients, not just m->sel, so that focus
 	 * changes (notifications, launcher) don't falsely resume bypass. */
 	new_mask = 0;
-	for (m = mons; m; m = m->next) {
+	for (m = g_awm.mons; m; m = m->next) {
 		Client *c;
 		if (m->num >= 32)
 			continue;
@@ -1311,7 +1312,7 @@ compositor_check_unredirect(void)
 	 * single-monitor and all-monitors-bypassed cases. */
 	{
 		uint32_t full_mask = 0;
-		for (m = mons; m; m = m->next)
+		for (m = g_awm.mons; m; m = m->next)
 			if (m->num < 32)
 				full_mask |= (1u << (unsigned) m->num);
 		comp.paused = (new_mask == full_mask && full_mask != 0);
@@ -1395,7 +1396,7 @@ compositor_check_unredirect(void)
 			 * removed set.
 			 */
 			on_removed = 0;
-			for (cm = mons; cm; cm = cm->next) {
+			for (cm = g_awm.mons; cm; cm = cm->next) {
 				if (cm->num >= 32)
 					continue;
 				if (!(removed & (1u << (unsigned) cm->num)))
@@ -1936,11 +1937,11 @@ comp_snapshot_pixmaps(unsigned int *count_out)
 
 	*count_out = 0;
 
-	if (!comp.active || !selmon)
+	if (!comp.active || !g_awm.selmon)
 		return NULL;
 
 	/* Count visible managed clients on selmon */
-	m = selmon;
+	m = g_awm.selmon;
 	n = 0;
 	for (c = m->cl->clients; c; c = c->next)
 		if (ISVISIBLE(c, m) && !c->ishidden)
