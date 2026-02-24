@@ -54,6 +54,8 @@ static pid_t ui_pid           = -1; /* awm-ui child process */
 static int   ui_fd            = -1; /* socket fd to awm-ui */
 int          launcher_visible = 0;  /* 1 while the launcher window is open */
 xcb_window_t launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
+static GMainContext *ui_ctx = NULL; /* GMainContext used by run() — kept for
+                                     * the respawn timer callback */
 char         stext[STATUS_TEXT_LEN];
 int          screen;
 int          sw, sh; /* X display screen geometry width, height */
@@ -612,6 +614,23 @@ dbus_dispatch_cb(gint fd, GIOCondition condition, gpointer user_data)
  * awm-ui helper process — fork/socket infrastructure
  * ---------------------------------------------------------------------- */
 
+static int ui_spawn(GMainContext *ctx); /* forward declaration */
+
+/* Timer callback: respawn awm-ui after a brief delay */
+static gboolean
+ui_respawn_cb(gpointer data)
+{
+	(void) data;
+	if (ui_fd >= 0 || ui_pid > 0) {
+		/* Already respawned by another path */
+		return G_SOURCE_REMOVE;
+	}
+	awm_info("awm: respawning awm-ui");
+	if (ui_spawn(ui_ctx) < 0)
+		awm_warn("awm: failed to respawn awm-ui");
+	return G_SOURCE_REMOVE;
+}
+
 /* GSource for reading messages from awm-ui over ui_fd */
 typedef struct {
 	GSource source;
@@ -731,7 +750,13 @@ ui_source_dispatch(GSource *src, GSourceFunc cb, gpointer data)
 	UiSource *s = (UiSource *) src;
 
 	if (s->pfd.revents & (G_IO_HUP | G_IO_ERR)) {
-		awm_warn("awm: awm-ui socket closed — will not respawn");
+		awm_warn("awm: awm-ui socket closed — scheduling respawn");
+		close(ui_fd);
+		ui_fd            = -1;
+		ui_pid           = -1;
+		launcher_xwin    = 0;
+		launcher_visible = 0;
+		g_timeout_add(2000, ui_respawn_cb, NULL);
 		return G_SOURCE_REMOVE;
 	}
 
@@ -739,6 +764,12 @@ ui_source_dispatch(GSource *src, GSourceFunc cb, gpointer data)
 	ssize_t n = recv(ui_fd, buf, sizeof(buf), 0);
 	if (n <= 0) {
 		awm_warn("awm: awm-ui recv: %s", n == 0 ? "EOF" : strerror(errno));
+		close(ui_fd);
+		ui_fd            = -1;
+		ui_pid           = -1;
+		launcher_xwin    = 0;
+		launcher_visible = 0;
+		g_timeout_add(2000, ui_respawn_cb, NULL);
 		return G_SOURCE_REMOVE;
 	}
 	if ((size_t) n < sizeof(UiMsgHeader))
@@ -854,7 +885,8 @@ run(void)
 
 	xflush();
 
-	ctx = g_main_context_default();
+	ctx    = g_main_context_default();
+	ui_ctx = ctx; /* store for respawn timer callback */
 
 	/* X11 source — wakes the loop whenever X events are pending */
 	xsource_id = xsource_attach(xc, ctx, x_dispatch_cb, NULL);
