@@ -152,10 +152,11 @@ static NotifItem      *notif_list  = NULL; /* head of visible list */
 static int             notif_count = 0;
 
 /* Monitor workarea — updated by notif_update_geom() */
-static int notif_mon_wx = 0;
-static int notif_mon_wy = 0;
-static int notif_mon_ww = 1920;
-static int notif_mon_wh = 1080;
+static int notif_mon_wx   = 0;
+static int notif_mon_wy   = 0;
+static int notif_mon_ww   = 0;
+static int notif_mon_wh   = 0;
+static int notif_geom_set = 0; /* 0 until first UI_MSG_MONITOR_GEOM */
 
 /* Visual theme — updated by notif_update_theme() */
 static UiThemePayload notif_theme;
@@ -446,6 +447,10 @@ notif_expire_cb(gpointer data)
 static void
 notif_item_show(NotifItem *it)
 {
+	/* Defer until we have real monitor geometry from awm */
+	if (!notif_geom_set)
+		return;
+
 	it->h = popup_height(it);
 
 	it->win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
@@ -1027,10 +1032,20 @@ notif_init(int mon_wx, int mon_wy, int mon_ww, int mon_wh)
 void
 notif_update_geom(int mon_wx, int mon_wy, int mon_ww, int mon_wh)
 {
-	notif_mon_wx = mon_wx;
-	notif_mon_wy = mon_wy;
-	notif_mon_ww = mon_ww;
-	notif_mon_wh = mon_wh;
+	NotifItem *it;
+
+	notif_mon_wx   = mon_wx;
+	notif_mon_wy   = mon_wy;
+	notif_mon_ww   = mon_ww;
+	notif_mon_wh   = mon_wh;
+	notif_geom_set = 1;
+
+	/* Show any popups that arrived before geometry was known */
+	for (it = notif_list; it; it = it->next) {
+		if (!it->win)
+			notif_item_show(it);
+	}
+
 	notif_restack();
 }
 

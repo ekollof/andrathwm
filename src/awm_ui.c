@@ -53,7 +53,7 @@ static GMainLoop *main_loop = NULL;
 static Launcher  *launcher  = NULL;
 
 /* Monitor workarea — updated by UI_MSG_MONITOR_GEOM */
-static int mon_wx = 0, mon_wy = 0, mon_ww = 1920, mon_wh = 1080;
+static int mon_wx = 0, mon_wy = 0, mon_ww = 0, mon_wh = 0;
 
 /* -------------------------------------------------------------------------
  * Send helpers
