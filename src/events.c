@@ -11,6 +11,7 @@
 #include "spawn.h"
 #include "switcher.h"
 #include "systray.h"
+#include "wmstate.h"
 #include "xrdb.h"
 #include "config.h"
 
@@ -323,6 +324,7 @@ configurenotify(xcb_generic_event_t *e)
 		compositor_notify_screen_resize();
 #endif
 	}
+	wmstate_update();
 }
 
 void
@@ -464,6 +466,7 @@ enternotify(xcb_generic_event_t *e)
 	} else if (!c || c == selmon->sel)
 		return;
 	focus(c);
+	wmstate_update();
 }
 
 void
@@ -763,6 +766,7 @@ motionnotify(xcb_generic_event_t *e)
 		focus(NULL);
 	}
 	mon = m;
+	wmstate_update();
 }
 
 void
@@ -822,6 +826,7 @@ propertynotify(xcb_generic_event_t *e)
 		}
 #endif
 	}
+	wmstate_update();
 }
 
 void
