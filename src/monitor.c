@@ -114,8 +114,8 @@ createmon(void)
 	/* find the first tag that isn't in use */
 	for (i = 0; i < LENGTH(tags); i++) {
 		for (tm = mons; tm && !(tm->tagset[tm->seltags] & (1 << i));
-		    tm  = tm->next)
-            ;
+		     tm = tm->next)
+			;
 		if (!tm)
 			break;
 	}
@@ -320,8 +320,8 @@ monocle(Monitor *m)
 	if (n > 0) /* override layout symbol */
 		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
 	for (c = m->cl->stack; c && (!ISVISIBLE(c, m) || c->isfloating);
-	    c  = c->snext)
-        ;
+	     c = c->snext)
+		;
 	if (c && !c->isfloating) {
 		/* Use resizeclient() directly, bypassing applysizehints().
 		 * resize() skips the XConfigureWindow call when the stored
@@ -435,7 +435,7 @@ tile(Monitor *m)
 	Client      *c;
 
 	for (n = 0, c = nexttiled(m->cl->clients, m); c;
-	    c = nexttiled(c->next, m), n++)
+	     c = nexttiled(c->next, m), n++)
 		;
 
 	if (n == 0)
@@ -447,8 +447,8 @@ tile(Monitor *m)
 		else
 			mw = m->ww - m->pertag->gappx[m->pertag->curtag];
 		for (i = 0, my = ty = m->pertag->gappx[m->pertag->curtag],
-		    c    = nexttiled(m->cl->clients, m);
-		    c; c = nexttiled(c->next, m), i++)
+		    c     = nexttiled(m->cl->clients, m);
+		     c; c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i) -
 				    m->pertag->gappx[m->pertag->curtag];
@@ -484,7 +484,7 @@ tile(Monitor *m)
 		else
 			mw = m->ww;
 		for (i = my = ty = 0, c = nexttiled(m->cl->clients, m); c;
-		    c = nexttiled(c->next, m), i++)
+		     c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i);
 				if (n == 1)
@@ -622,23 +622,23 @@ updategeom(void)
 		const xcb_query_extension_reply_t *ext =
 		    xcb_get_extension_data(xc, &xcb_randr_id);
 		if (ext && ext->present) {
-			int                                     i, j, n, nn;
-			Client                                 *c;
-			Monitor                                *m;
-			xcb_randr_get_screen_resources_cookie_t src;
-			xcb_randr_get_screen_resources_reply_t *sr;
-			xcb_randr_crtc_t                       *crtcs;
+			int                                             i, j, n, nn;
+			Client                                         *c;
+			Monitor                                        *m;
+			xcb_randr_get_screen_resources_current_cookie_t src;
+			xcb_randr_get_screen_resources_current_reply_t *sr;
+			xcb_randr_crtc_t                               *crtcs;
 			typedef struct {
 				int x, y, w, h;
 			} ScreenGeom;
 			ScreenGeom *unique = NULL;
 
-			src = xcb_randr_get_screen_resources(xc, root);
-			sr  = xcb_randr_get_screen_resources_reply(xc, src, NULL);
+			src = xcb_randr_get_screen_resources_current(xc, root);
+			sr  = xcb_randr_get_screen_resources_current_reply(xc, src, NULL);
 			if (!sr)
 				goto xinerama_fallback;
 
-			crtcs  = xcb_randr_get_screen_resources_crtcs(sr);
+			crtcs  = xcb_randr_get_screen_resources_current_crtcs(sr);
 			nn     = 0;
 			unique = ecalloc(sr->num_crtcs, sizeof(ScreenGeom));
 			/* Get active CRTC geometries */
@@ -708,6 +708,9 @@ updategeom(void)
 			for (i = nn; i < n; i++) {
 				for (m = mons; m && m->next; m = m->next)
 					;
+				/* Redirect selmon away from the dying monitor before
+				 * cleanupmon() frees it.  mons is always safe because we
+				 * only reach here when nn >= 1. */
 				if (m == selmon)
 					selmon = mons;
 				for (c = m->cl->clients; c; c = c->next) {
@@ -784,6 +787,8 @@ xinerama_fallback:
 		for (i = nn; i < n; i++) {
 			for (m = mons; m && m->next; m = m->next)
 				;
+			/* Redirect selmon away from the dying monitor before
+			 * cleanupmon() frees it.  mons is always safe here. */
 			if (m == selmon)
 				selmon = mons;
 			for (c = m->cl->clients; c; c = c->next) {

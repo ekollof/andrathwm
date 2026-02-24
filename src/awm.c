@@ -266,8 +266,15 @@ x_dispatch_cb(gpointer user_data)
 
 #ifdef XRANDR
 		if (type == (uint8_t) (randrbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY)) {
-			/* XCB randr handles screen change — no XRRUpdateConfiguration
-			 * needed since we don't use libXrandr data structures. */
+			/* Update virtual screen dimensions from the event payload before
+			 * calling updategeom(), mirroring what configurenotify() does
+			 * for the root ConfigureNotify path. */
+			{
+				xcb_randr_screen_change_notify_event_t *rrev =
+				    (xcb_randr_screen_change_notify_event_t *) ev;
+				sw = (int) rrev->width;
+				sh = (int) rrev->height;
+			}
 			updategeom();
 			drw_resize(drw, sw, bh);
 			updatebars();
