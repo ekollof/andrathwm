@@ -172,7 +172,7 @@ createmon(void)
 
 		m->pertag->showbars[i]     = m->showbar;
 		m->pertag->drawwithgaps[i] = startwithgaps[0];
-		m->pertag->gappx[i]        = gappx[0];
+		m->pertag->gappx[i]        = ui_gappx;
 	}
 
 	return m;
@@ -272,14 +272,14 @@ drawbar(Monitor *m)
 				/* Draw background rectangle for icon area first to avoid
 				 * garbage. Use invert=1 to use the background color (ColBg).
 				 */
-				drw_rect(drw, x, 0, iconsize + lrpad / 2, bh, 1, 1);
+				drw_rect(drw, x, 0, (int) ui_iconsize + lrpad / 2, bh, 1, 1);
 
 				/* Render icon using drw */
-				drw_pic(drw, x + lrpad / 4, (bh - iconsize) / 2, iconsize,
-				    iconsize, c->icon);
-				textx = x + iconsize + lrpad / 2;
-				drw_text(drw, textx, 0, tabw - (iconsize + lrpad / 2), bh, 0,
-				    c->name, 0);
+				drw_pic(drw, x + lrpad / 4, (bh - (int) ui_iconsize) / 2,
+				    (int) ui_iconsize, (int) ui_iconsize, c->icon);
+				textx = x + (int) ui_iconsize + lrpad / 2;
+				drw_text(drw, textx, 0, tabw - ((int) ui_iconsize + lrpad / 2),
+				    bh, 0, c->name, 0);
 			} else {
 				drw_text(drw, x, 0, tabw, bh, lrpad / 2, c->name, 0);
 			}

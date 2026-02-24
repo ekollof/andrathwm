@@ -59,9 +59,15 @@ static GMainContext *ui_ctx = NULL; /* GMainContext used by run() — kept for
                                      * the respawn timer callback */
 char         stext[STATUS_TEXT_LEN];
 int          screen;
-int          sw, sh; /* X display screen geometry width, height */
-int          bh;     /* bar height */
-int          lrpad;  /* sum of left and right padding for text */
+int          sw, sh;             /* X display screen geometry width, height */
+int          bh;                 /* bar height */
+int          lrpad;              /* sum of left and right padding for text */
+double       ui_dpi      = 96.0; /* resolved screen DPI */
+double       ui_scale    = 1.0;  /* ui_dpi / 96.0 */
+unsigned int ui_borderpx = 1;    /* borderpx * ui_scale — set in setup() */
+unsigned int ui_snap     = 32;   /* snap     * ui_scale — set in setup() */
+unsigned int ui_iconsize = 16;   /* iconsize * ui_scale — set in setup() */
+unsigned int ui_gappx    = 5;    /* gappx[0] * ui_scale — set in setup() */
 unsigned int numlockmask = 0;
 static guint xsource_id  = 0; /* GLib source ID for the X11 event source */
 #ifdef STATUSNOTIFIER
@@ -306,6 +312,8 @@ ui_send_theme(void)
 	p.font[0] = '\0';
 	if (fonts[0])
 		snprintf(p.font, sizeof(p.font), "%s", fonts[0]);
+
+	p.dpi = ui_dpi;
 
 	ui_send_inline(UI_MSG_THEME, &p, sizeof(p));
 }
@@ -1183,6 +1191,15 @@ setup(void)
 		die("no fonts could be loaded.");
 	lrpad = drw->fonts->h;
 	bh    = drw->fonts->h + 2;
+	/* Scale pixel geometry constants by the resolved DPI factor */
+	ui_borderpx = (unsigned int) (borderpx * ui_scale + 0.5);
+	ui_snap     = (unsigned int) (snap * ui_scale + 0.5);
+	ui_iconsize = (unsigned int) (iconsize * ui_scale + 0.5);
+	ui_gappx    = (unsigned int) (gappx[0] * ui_scale + 0.5);
+	if (ui_borderpx < 1 && borderpx > 0)
+		ui_borderpx = 1;
+	if (ui_gappx < 1 && gappx[0] > 0)
+		ui_gappx = 1;
 	updategeom();
 	/* Enable RandR screen change notifications */
 #ifdef XRANDR
@@ -1273,7 +1290,8 @@ setup(void)
 	icon_init();
 #ifdef STATUSNOTIFIER
 	/* Initialize StatusNotifier support */
-	if (!sni_init(xc, xc, drw->xcb_visual, root, drw, scheme, sniconsize))
+	if (!sni_init(xc, xc, drw->xcb_visual, root, drw, scheme,
+	        (unsigned int) (sniconsize * ui_scale + 0.5)))
 		awm_warn("Failed to initialize StatusNotifier support");
 #endif
 #ifdef COMPOSITOR
@@ -1281,6 +1299,110 @@ setup(void)
 		awm_warn("compositor: init failed, running without compositing");
 #endif
 	switcher_init();
+}
+
+/* -------------------------------------------------------------------------
+ * DPI resolution
+ * Three-level chain (evaluated in order):
+ *   1. Xft.dpi from RESOURCE_MANAGER  (user-authoritative)
+ *   2. RandR output physical size      (EDID fallback)
+ *   3. 96.0                            (safe default)
+ * ---------------------------------------------------------------------- */
+
+#ifdef XRANDR
+/*
+ * Query the physical size of the first active RandR output and derive DPI.
+ * Returns the calculated DPI, or 0.0 if unavailable.
+ */
+static double
+randr_probe_dpi(xcb_connection_t *conn, int scr_num)
+{
+	xcb_screen_iterator_t                           sit;
+	xcb_window_t                                    root_win;
+	xcb_randr_get_screen_resources_current_cookie_t src;
+	xcb_randr_get_screen_resources_current_reply_t *sr;
+	xcb_randr_crtc_t                               *crtcs;
+	int                                             i;
+	double                                          dpi = 0.0;
+
+	sit = xcb_setup_roots_iterator(xcb_get_setup(conn));
+	for (i = 0; i < scr_num; i++)
+		xcb_screen_next(&sit);
+	root_win = sit.data->root;
+
+	src = xcb_randr_get_screen_resources_current(conn, root_win);
+	sr  = xcb_randr_get_screen_resources_current_reply(conn, src, NULL);
+	if (!sr)
+		return 0.0;
+
+	crtcs = xcb_randr_get_screen_resources_current_crtcs(sr);
+
+	for (i = 0; i < (int) sr->num_crtcs && dpi == 0.0; i++) {
+		xcb_randr_get_crtc_info_cookie_t cic;
+		xcb_randr_get_crtc_info_reply_t *ci;
+		xcb_randr_output_t              *outputs;
+
+		cic = xcb_randr_get_crtc_info(conn, crtcs[i], XCB_CURRENT_TIME);
+		ci  = xcb_randr_get_crtc_info_reply(conn, cic, NULL);
+		if (!ci || ci->num_outputs == 0 || ci->width == 0) {
+			free(ci);
+			continue;
+		}
+
+		outputs = xcb_randr_get_crtc_info_outputs(ci);
+		{
+			xcb_randr_get_output_info_cookie_t oic;
+			xcb_randr_get_output_info_reply_t *oi;
+
+			oic =
+			    xcb_randr_get_output_info(conn, outputs[0], XCB_CURRENT_TIME);
+			oi = xcb_randr_get_output_info_reply(conn, oic, NULL);
+			if (oi && oi->mm_width > 0) {
+				/* pixels-per-inch from horizontal axis */
+				dpi = (double) ci->width / ((double) oi->mm_width / 25.4);
+			}
+			free(oi);
+		}
+		free(ci);
+	}
+
+	free(sr);
+	return dpi;
+}
+#endif /* XRANDR */
+
+/*
+ * Resolve ui_dpi and ui_scale using the three-level chain.
+ * Must be called after loadxrdb() and after xc/screen are valid.
+ */
+static void
+resolve_dpi(void)
+{
+	double d = 0.0;
+
+	/* Level 1: Xft.dpi from RESOURCE_MANAGER */
+	if (xrdb_dpi > 0.0) {
+		d = xrdb_dpi;
+		awm_info("DPI: using Xft.dpi = %.0f from RESOURCE_MANAGER", d);
+	}
+
+#ifdef XRANDR
+	/* Level 2: RandR physical size */
+	if (d <= 0.0) {
+		d = randr_probe_dpi(xc, screen);
+		if (d > 0.0)
+			awm_info("DPI: using RandR physical size = %.1f", d);
+	}
+#endif /* XRANDR */
+
+	/* Level 3: safe default */
+	if (d <= 0.0) {
+		d = 96.0;
+		awm_info("DPI: falling back to 96");
+	}
+
+	ui_dpi   = d;
+	ui_scale = d / 96.0;
 }
 
 int
@@ -1311,6 +1433,7 @@ main(int argc, char *argv[])
 	gtk_init(&argc, &argv);
 	checkotherwm();
 	loadxrdb();
+	resolve_dpi();
 	setup();
 #ifdef __OpenBSD__
 	if (pledge("stdio rpath proc exec unix inet", NULL) == -1)

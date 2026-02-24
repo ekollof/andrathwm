@@ -269,6 +269,8 @@ extern int               screen;
 extern int               sw, sh;
 extern int               bh;
 extern int               lrpad;
+extern double            ui_dpi;   /* resolved screen DPI (96.0 default) */
+extern double            ui_scale; /* ui_dpi / 96.0 */
 extern Drw              *drw;
 extern Clr             **scheme;
 extern Cur              *cursor[CurLast];
@@ -292,6 +294,11 @@ extern const unsigned int sniconsize;
 extern const unsigned int iconcachesize;
 extern const unsigned int iconcachemaxentries;
 extern const unsigned int dbustimeout;
+/* DPI-scaled runtime pixel constants — set in setup() after resolve_dpi() */
+extern unsigned int ui_borderpx; /* borderpx * ui_scale */
+extern unsigned int ui_snap;     /* snap     * ui_scale */
+extern unsigned int ui_iconsize; /* iconsize * ui_scale */
+extern unsigned int ui_gappx;    /* gappx[0] * ui_scale */
 #ifdef XRANDR
 extern int randrbase, rrerrbase;
 #endif

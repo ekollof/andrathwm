@@ -161,6 +161,10 @@ static int notif_geom_set = 0; /* 0 until first UI_MSG_MONITOR_GEOM */
 /* Visual theme — updated by notif_update_theme() */
 static UiThemePayload notif_theme;
 static int            notif_theme_set = 0;
+static double         notif_dpi       = 96.0; /* from theme payload */
+
+/* Scale a 96-DPI pixel constant to the actual screen DPI. */
+#define NOTIF_SCALE(px) ((int) ((px) * notif_dpi / 96.0 + 0.5))
 
 /* Forward declarations */
 static void notif_item_close(NotifItem *it, uint32_t reason);
@@ -192,14 +196,21 @@ popup_height(NotifItem *it)
 	probe_cr   = cairo_create(probe_surf);
 	lay        = pango_cairo_create_layout(probe_cr);
 
+	/* Apply the real screen DPI so point-size fonts produce the correct
+	 * pixel height.  cairo_image_surface defaults to 72 DPI internally,
+	 * so without this call we underestimate heights on HiDPI screens. */
+	{
+		PangoContext *pctx = pango_layout_get_context(lay);
+		pango_cairo_context_set_resolution(pctx, notif_dpi);
+	}
+
 	/* Summary line */
 	if (notif_theme_set && notif_theme.font[0]) {
 		fdesc = pango_font_description_from_string(notif_theme.font);
 		pango_layout_set_font_description(lay, fdesc);
 		pango_font_description_free(fdesc);
 	}
-	pango_layout_set_width(
-	    lay, (NOTIF_WIDTH - 56) * PANGO_SCALE); /* 56 = icon(32)+pad(12)*2 */
+	pango_layout_set_width(lay, NOTIF_SCALE(NOTIF_WIDTH - 56) * PANGO_SCALE);
 	layout_set_markup_safe(lay, it->summary ? it->summary : "");
 	{
 		int pw = 0, ph = 0;
@@ -215,7 +226,8 @@ popup_height(NotifItem *it)
 			pango_layout_set_font_description(lay, fdesc);
 			pango_font_description_free(fdesc);
 		}
-		pango_layout_set_width(lay, (NOTIF_WIDTH - 56) * PANGO_SCALE);
+		pango_layout_set_width(
+		    lay, NOTIF_SCALE(NOTIF_WIDTH - 56) * PANGO_SCALE);
 		layout_set_markup_safe(lay, it->body);
 		pango_layout_set_wrap(lay, PANGO_WRAP_WORD_CHAR);
 		{
@@ -231,9 +243,11 @@ popup_height(NotifItem *it)
 	cairo_surface_destroy(probe_surf);
 
 	{
-		int h = 12 + text_h + bh + 12; /* top-pad + summary + body + bot-pad */
-		if (h < 56)
-			h = 56; /* minimum: icon height (32) + 2*pad(12) */
+		int pad = NOTIF_SCALE(12);
+		int min = NOTIF_SCALE(56); /* icon(32) + 2*pad(12) */
+		int h   = pad + text_h + bh + pad;
+		if (h < min)
+			h = min;
 		return h;
 	}
 }
@@ -252,7 +266,7 @@ popup_position(int idx, int pop_h, int *out_x, int *out_y)
 		int        slot = 0;
 		NotifItem *it   = notif_list;
 		while (it && slot < idx) {
-			stack_off += it->h + NOTIF_GAP;
+			stack_off += it->h + NOTIF_SCALE(NOTIF_GAP);
 			slot++;
 			it = it->next;
 		}
@@ -261,20 +275,24 @@ popup_position(int idx, int pop_h, int *out_x, int *out_y)
 	switch (anchor) {
 	case TopRight:
 	default:
-		x = notif_mon_wx + notif_mon_ww - NOTIF_WIDTH - NOTIF_MARGIN_X;
-		y = notif_mon_wy + NOTIF_MARGIN_Y + stack_off;
+		x = notif_mon_wx + notif_mon_ww - NOTIF_SCALE(NOTIF_WIDTH) -
+		    NOTIF_SCALE(NOTIF_MARGIN_X);
+		y = notif_mon_wy + NOTIF_SCALE(NOTIF_MARGIN_Y) + stack_off;
 		break;
 	case BottomRight:
-		x = notif_mon_wx + notif_mon_ww - NOTIF_WIDTH - NOTIF_MARGIN_X;
-		y = notif_mon_wy + notif_mon_wh - NOTIF_MARGIN_Y - pop_h - stack_off;
+		x = notif_mon_wx + notif_mon_ww - NOTIF_SCALE(NOTIF_WIDTH) -
+		    NOTIF_SCALE(NOTIF_MARGIN_X);
+		y = notif_mon_wy + notif_mon_wh - NOTIF_SCALE(NOTIF_MARGIN_Y) - pop_h -
+		    stack_off;
 		break;
 	case TopLeft:
-		x = notif_mon_wx + NOTIF_MARGIN_X;
-		y = notif_mon_wy + NOTIF_MARGIN_Y + stack_off;
+		x = notif_mon_wx + NOTIF_SCALE(NOTIF_MARGIN_X);
+		y = notif_mon_wy + NOTIF_SCALE(NOTIF_MARGIN_Y) + stack_off;
 		break;
 	case BottomLeft:
-		x = notif_mon_wx + NOTIF_MARGIN_X;
-		y = notif_mon_wy + notif_mon_wh - NOTIF_MARGIN_Y - pop_h - stack_off;
+		x = notif_mon_wx + NOTIF_SCALE(NOTIF_MARGIN_X);
+		y = notif_mon_wy + notif_mon_wh - NOTIF_SCALE(NOTIF_MARGIN_Y) - pop_h -
+		    stack_off;
 		break;
 	}
 
@@ -321,41 +339,55 @@ on_popup_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 			b = 0.85; /* normal — blue */
 		}
 		cairo_set_source_rgb(cr, r, g, b);
-		cairo_rectangle(cr, 0, 0, 4, h);
+		cairo_rectangle(cr, 0, 0, NOTIF_SCALE(4), h);
 		cairo_fill(cr);
 	}
 
 	/* Icon — inline image-data surface or theme icon */
 	cairo_surface_t *icon_surf = it->icon_surf;
-	if (!icon_surf && it->icon_name && it->icon_name[0])
-		icon_surf = icon_load(it->icon_name, 32);
+	{
+		int icon_px = NOTIF_SCALE(32);
+		if (!icon_surf && it->icon_name && it->icon_name[0])
+			icon_surf = icon_load(it->icon_name, icon_px);
 
-	if (icon_surf) {
-		int    isw    = cairo_image_surface_get_width(icon_surf);
-		int    ish    = cairo_image_surface_get_height(icon_surf);
-		double iscale = (isw > 0 && ish > 0)
-		    ? (32.0 / (isw > ish ? (double) isw : (double) ish))
-		    : 1.0;
-		int    ix     = 12 + 4; /* after stripe */
-		int    iy     = (h - 32) / 2;
-		cairo_save(cr);
-		cairo_translate(cr, ix, iy);
-		cairo_scale(cr, iscale, iscale);
-		cairo_set_source_surface(cr, icon_surf, 0, 0);
-		cairo_paint(cr);
-		cairo_restore(cr);
-		/* Only destroy if we loaded it locally in this call */
-		if (icon_surf != it->icon_surf)
-			cairo_surface_destroy(icon_surf);
+		if (icon_surf) {
+			int    isw    = cairo_image_surface_get_width(icon_surf);
+			int    ish    = cairo_image_surface_get_height(icon_surf);
+			double iscale = (isw > 0 && ish > 0)
+			    ? ((double) icon_px /
+			          (isw > ish ? (double) isw : (double) ish))
+			    : 1.0;
+			int    ix = NOTIF_SCALE(12) + NOTIF_SCALE(4); /* pad + stripe */
+			int    iy = (h - icon_px) / 2;
+			cairo_save(cr);
+			cairo_translate(cr, ix, iy);
+			cairo_scale(cr, iscale, iscale);
+			cairo_set_source_surface(cr, icon_surf, 0, 0);
+			cairo_paint(cr);
+			cairo_restore(cr);
+			/* Only destroy if we loaded it locally in this call */
+			if (icon_surf != it->icon_surf)
+				cairo_surface_destroy(icon_surf);
+		}
 	}
 
 	/* Text */
 	{
-		int tx = 12 + 4 + 32 + 8; /* stripe + padding + icon + gap */
-		int ty = 12;
-		int tw = w - tx - 8;
+		/* stripe(4) + pad(12) + icon(32) + gap(8) — all scaled */
+		int tx = NOTIF_SCALE(4) + NOTIF_SCALE(12) + NOTIF_SCALE(32) +
+		    NOTIF_SCALE(8);
+		int ty = NOTIF_SCALE(12);
+		int tw = w - tx - NOTIF_SCALE(8);
 
 		PangoLayout *lay = pango_cairo_create_layout(cr);
+
+		/* Set DPI on the Pango context so font point sizes map to the
+		 * correct device pixels.  GTK/Cairo may already do this via GDK
+		 * screen DPI, but we set it explicitly to match popup_height(). */
+		{
+			PangoContext *pctx = pango_layout_get_context(lay);
+			pango_cairo_context_set_resolution(pctx, notif_dpi);
+		}
 
 		/* Summary — bold, use sel_fg if theme available */
 		if (tw > 0 && it->summary) {
@@ -488,10 +520,10 @@ notif_item_show(NotifItem *it)
 			gdk_window_set_override_redirect(gwin, TRUE);
 	}
 
-	gtk_window_resize(GTK_WINDOW(it->win), NOTIF_WIDTH, it->h);
+	gtk_window_resize(GTK_WINDOW(it->win), NOTIF_SCALE(NOTIF_WIDTH), it->h);
 
 	it->da = gtk_drawing_area_new();
-	gtk_widget_set_size_request(it->da, NOTIF_WIDTH, it->h);
+	gtk_widget_set_size_request(it->da, NOTIF_SCALE(NOTIF_WIDTH), it->h);
 	gtk_container_add(GTK_CONTAINER(it->win), it->da);
 
 	g_signal_connect(it->da, "draw", G_CALLBACK(on_popup_draw), it);
@@ -1069,6 +1101,8 @@ notif_update_theme(const UiThemePayload *t)
 		return;
 	notif_theme     = *t;
 	notif_theme_set = 1;
+	if (t->dpi > 0.0)
+		notif_dpi = t->dpi;
 
 	/* Force a redraw of every visible popup */
 	for (it = notif_list; it; it = it->next) {

@@ -31,6 +31,13 @@
 #include "log.h"
 #include "util.h"
 
+/* ui_dpi is defined in awm.c; forward-declare here to avoid a circular
+ * include (awm.h -> drw.h -> circular).  drw_cairo.c is linked into both
+ * the awm binary (strong definition in awm.c overrides) and the awm-ui
+ * binary (no awm.c, so the weak 96.0 default is used — awm-ui applies the
+ * real DPI via UI_MSG_THEME in notif.c independently). */
+__attribute__((weak)) double ui_dpi = 96.0;
+
 /* ── internal helpers (identical to drw.c) ─────────────────────────────── */
 
 static xcb_visualtype_t *
@@ -191,6 +198,13 @@ xfont_create(Drw *drw, const char *fontname)
 		ctx             = pango_cairo_create_context(tmp_cr);
 		cairo_destroy(tmp_cr);
 	}
+	/* Tell Pango the real screen DPI so font point sizes are converted to
+	 * the correct number of device pixels.  Without this call Pango uses
+	 * whatever fontconfig/Xft provides, which may differ from ui_dpi on
+	 * HiDPI screens.  We must NOT use cairo_surface_set_device_scale()
+	 * here — that would blur glyphs by scaling a low-resolution bitmap. */
+	if (ui_dpi > 0.0)
+		pango_cairo_context_set_resolution(ctx, ui_dpi);
 	metrics = pango_context_get_metrics(ctx, desc, NULL);
 	font->h = (unsigned int) ((pango_font_metrics_get_ascent(metrics) +
 	                              pango_font_metrics_get_descent(metrics)) /
@@ -361,6 +375,14 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 
 	cr     = cairo_create(drw->cairo_surface);
 	layout = pango_cairo_create_layout(cr);
+	/* Apply the resolved screen DPI to this layout's Pango context.
+	 * pango_cairo_create_layout() creates a fresh PangoContext that does
+	 * not inherit the resolution set in xfont_create(), so we must set it
+	 * here on every draw call.  This is what actually makes Pango convert
+	 * "12pt" → correct pixel height at ui_dpi rather than at 72 or 96. */
+	if (ui_dpi > 0.0)
+		pango_cairo_context_set_resolution(
+		    pango_layout_get_context(layout), ui_dpi);
 	pango_layout_set_font_description(layout, drw->fonts->desc);
 	pango_layout_set_text(layout, text, -1);
 

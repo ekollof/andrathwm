@@ -21,6 +21,10 @@
  * Returns 0 on success, -1 on failure. */
 int preview_init(int ui_send_fd);
 
+/* Update the DPI used for preview geometry scaling.
+ * Call whenever a UI_MSG_THEME message is received. */
+void preview_update_theme(const UiThemePayload *t);
+
 /* Show the preview popup.
  * entries points to count UiPreviewEntry structs read from the SHM segment.
  * anchor_x / anchor_y: screen coords of the bar hover trigger point. */

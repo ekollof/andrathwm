@@ -149,6 +149,7 @@ dispatch_theme(const uint8_t *payload, uint32_t len)
 	}
 	memcpy(&t, payload, sizeof(t));
 	notif_update_theme(&t);
+	preview_update_theme(&t);
 }
 
 static void

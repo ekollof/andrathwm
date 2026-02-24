@@ -57,6 +57,9 @@
 #define PV_WIN_PAD 12
 #define PV_BORDER_W 2
 
+/* Scale a 96-DPI pixel constant by the current preview DPI */
+#define PV_SCALE(px) ((int) ((px) * pv_dpi / 96.0 + 0.5))
+
 /* -------------------------------------------------------------------------
  * Per-card state
  * ---------------------------------------------------------------------- */
@@ -92,6 +95,7 @@ static PreviewCard *pv_cards  = NULL;
 static unsigned int pv_ncard  = 0;
 static int          pv_sel    = -1; /* selected card index */
 static int          pv_ui_fd  = -1;
+static double       pv_dpi    = 96.0; /* DPI from last UI_MSG_THEME */
 
 /* XCB connection dedicated to XRender thumbnail work — opened independently
  * of GDK so that raw XCB requests do not interfere with GDK's event queue. */
@@ -206,8 +210,8 @@ pv_build_thumb(PreviewCard *c)
 		return;
 
 	/* Compute thumbnail size preserving aspect ratio */
-	sx    = (double) PV_MAX_THUMB_W / (double) c->win_w;
-	sy    = (double) PV_MAX_THUMB_H / (double) c->win_h;
+	sx    = (double) PV_SCALE(PV_MAX_THUMB_W) / (double) c->win_w;
+	sy    = (double) PV_SCALE(PV_MAX_THUMB_H) / (double) c->win_h;
 	scale = sx < sy ? sx : sy;
 	if (scale > 1.0)
 		scale = 1.0;
@@ -372,18 +376,18 @@ static int
 card_w(const PreviewCard *c)
 {
 	if (c->has_thumb) {
-		int w = c->thumb_w + 2 * PV_CARD_PAD;
-		return w < PV_MIN_CARD_W ? PV_MIN_CARD_W : w;
+		int w = c->thumb_w + 2 * PV_SCALE(PV_CARD_PAD);
+		return w < PV_SCALE(PV_MIN_CARD_W) ? PV_SCALE(PV_MIN_CARD_W) : w;
 	}
-	return PV_FALLBACK_W;
+	return PV_SCALE(PV_FALLBACK_W);
 }
 
 static int
 card_h(const PreviewCard *c)
 {
 	if (c->has_thumb)
-		return c->thumb_h + 2 * PV_CARD_PAD + PV_TITLE_H;
-	return PV_FALLBACK_H;
+		return c->thumb_h + 2 * PV_SCALE(PV_CARD_PAD) + PV_SCALE(PV_TITLE_H);
+	return PV_SCALE(PV_FALLBACK_H);
 }
 
 static gboolean
@@ -405,7 +409,7 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 	/* Thumbnail */
 	if (c->has_thumb && c->thumb_surf) {
 		int tx = (w - c->thumb_w) / 2;
-		int ty = PV_CARD_PAD;
+		int ty = PV_SCALE(PV_CARD_PAD);
 		cairo_save(cr);
 		cairo_set_source_surface(cr, c->thumb_surf, tx, ty);
 		cairo_rectangle(cr, tx, ty, c->thumb_w, c->thumb_h);
@@ -413,17 +417,17 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 		cairo_restore(cr);
 	} else {
 		/* Placeholder */
-		int ph = h - PV_TITLE_H - 2 * PV_CARD_PAD;
+		int ph = h - PV_SCALE(PV_TITLE_H) - 2 * PV_SCALE(PV_CARD_PAD);
 		if (ph > 0) {
 			cairo_set_source_rgba(cr, 0.1, 0.1, 0.1, 0.5);
-			cairo_rectangle(
-			    cr, PV_CARD_PAD, PV_CARD_PAD, w - 2 * PV_CARD_PAD, ph);
+			cairo_rectangle(cr, PV_SCALE(PV_CARD_PAD), PV_SCALE(PV_CARD_PAD),
+			    w - 2 * PV_SCALE(PV_CARD_PAD), ph);
 			cairo_fill(cr);
 		}
 	}
 
 	/* Title row */
-	int title_y = h - PV_TITLE_H;
+	int title_y = h - PV_SCALE(PV_TITLE_H);
 	{
 		cairo_set_source_rgba(cr, 0.3, 0.3, 0.3, 0.6);
 		cairo_set_line_width(cr, 1.0);
@@ -433,7 +437,7 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 	}
 
 	/* Title text */
-	if (w > 2 * PV_CARD_PAD && c->title[0]) {
+	if (w > 2 * PV_SCALE(PV_CARD_PAD) && c->title[0]) {
 		PangoLayout          *lay;
 		PangoFontDescription *fdesc;
 		int                   pw = 0, ph = 0;
@@ -442,14 +446,16 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 		fdesc = pango_font_description_from_string("Sans 9");
 		pango_layout_set_font_description(lay, fdesc);
 		pango_font_description_free(fdesc);
-		pango_layout_set_width(lay, (w - 2 * PV_CARD_PAD) * PANGO_SCALE);
+		pango_layout_set_width(
+		    lay, (w - 2 * PV_SCALE(PV_CARD_PAD)) * PANGO_SCALE);
 		pango_layout_set_ellipsize(lay, PANGO_ELLIPSIZE_END);
 		pango_layout_set_single_paragraph_mode(lay, TRUE);
 		pango_layout_set_text(lay, c->title, -1);
 		pango_layout_get_pixel_size(lay, &pw, &ph);
 
 		cairo_set_source_rgba(cr, 0.88, 0.88, 0.88, 1.0);
-		cairo_move_to(cr, PV_CARD_PAD, title_y + (PV_TITLE_H - ph) / 2);
+		cairo_move_to(cr, PV_SCALE(PV_CARD_PAD),
+		    title_y + (PV_SCALE(PV_TITLE_H) - ph) / 2);
 		pango_cairo_show_layout(cr, lay);
 		g_object_unref(lay);
 		(void) pw;
@@ -457,10 +463,10 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 
 	/* Selection border */
 	if (sel) {
+		int bw = PV_SCALE(PV_BORDER_W);
 		cairo_set_source_rgba(cr, 0.2, 0.6, 0.9, 1.0);
-		cairo_set_line_width(cr, PV_BORDER_W);
-		cairo_rectangle(cr, PV_BORDER_W / 2.0, PV_BORDER_W / 2.0,
-		    w - PV_BORDER_W, h - PV_BORDER_W);
+		cairo_set_line_width(cr, (double) bw);
+		cairo_rectangle(cr, bw / 2.0, bw / 2.0, w - bw, h - bw);
 		cairo_stroke(cr);
 	}
 
@@ -533,6 +539,13 @@ preview_init(int ui_send_fd)
 }
 
 void
+preview_update_theme(const UiThemePayload *t)
+{
+	if (t && t->dpi > 0.0)
+		pv_dpi = t->dpi;
+}
+
+void
 preview_show(const UiPreviewEntry *entries, unsigned int count, int anchor_x,
     int anchor_y)
 {
@@ -591,7 +604,8 @@ preview_show(const UiPreviewEntry *entries, unsigned int count, int anchor_x,
 	}
 
 	GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-	gtk_container_set_border_width(GTK_CONTAINER(outer), PV_WIN_PAD);
+	gtk_container_set_border_width(
+	    GTK_CONTAINER(outer), (guint) PV_SCALE(PV_WIN_PAD));
 	gtk_container_add(GTK_CONTAINER(pv_win), outer);
 
 	pv_scroll = gtk_scrolled_window_new(NULL, NULL);
@@ -603,8 +617,8 @@ preview_show(const UiPreviewEntry *entries, unsigned int count, int anchor_x,
 	gtk_container_add(GTK_CONTAINER(pv_scroll), pv_box);
 
 	/* Build cards */
-	int total_w = 2 * PV_WIN_PAD;
-	int max_h   = PV_FALLBACK_H;
+	int total_w = 2 * PV_SCALE(PV_WIN_PAD);
+	int max_h   = PV_SCALE(PV_FALLBACK_H);
 
 	for (i = 0; i < pv_ncard; i++) {
 		PreviewCard *c  = &pv_cards[i];
@@ -617,18 +631,19 @@ preview_show(const UiPreviewEntry *entries, unsigned int count, int anchor_x,
 		gtk_widget_add_events(da, GDK_BUTTON_PRESS_MASK);
 		g_signal_connect(
 		    da, "button-press-event", G_CALLBACK(on_card_click), c);
-		gtk_box_pack_start(GTK_BOX(pv_box), da, FALSE, FALSE, PV_CARD_GAP / 2);
+		gtk_box_pack_start(GTK_BOX(pv_box), da, FALSE, FALSE,
+		    (guint) (PV_SCALE(PV_CARD_GAP) / 2));
 		c->card = da;
 
-		total_w += cw + PV_CARD_GAP;
+		total_w += cw + PV_SCALE(PV_CARD_GAP);
 		if (ch > max_h)
 			max_h = ch;
 	}
-	total_w += PV_WIN_PAD;
+	total_w += PV_SCALE(PV_WIN_PAD);
 
 	/* Position: centre above anchor point, but ensure it stays on screen */
 	{
-		int win_h = max_h + 2 * PV_WIN_PAD;
+		int win_h = max_h + 2 * PV_SCALE(PV_WIN_PAD);
 		int win_x = anchor_x - total_w / 2;
 		int win_y = anchor_y - win_h - 4; /* 4px gap above bar */
 

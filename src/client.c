@@ -766,7 +766,7 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 		c->y = c->mon->wy + c->mon->wh - HEIGHT(c);
 	c->x  = MAX(c->x, c->mon->wx);
 	c->y  = MAX(c->y, c->mon->wy);
-	c->bw = borderpx;
+	c->bw = (int) ui_borderpx;
 
 	{
 		uint32_t bw = (uint32_t) c->bw;
@@ -905,18 +905,19 @@ movemouse(const Arg *arg)
 
 				nx = ocx + (me->root_x - x);
 				ny = ocy + (me->root_y - y);
-				if (abs(selmon->wx - nx) < snap)
+				if (abs(selmon->wx - nx) < (int) ui_snap)
 					nx = selmon->wx;
 				else if (abs((selmon->wx + selmon->ww) - (nx + WIDTH(c))) <
-				    snap)
+				    (int) ui_snap)
 					nx = selmon->wx + selmon->ww - WIDTH(c);
-				if (abs(selmon->wy - ny) < snap)
+				if (abs(selmon->wy - ny) < (int) ui_snap)
 					ny = selmon->wy;
 				else if (abs((selmon->wy + selmon->wh) - (ny + HEIGHT(c))) <
-				    snap)
+				    (int) ui_snap)
 					ny = selmon->wy + selmon->wh - HEIGHT(c);
 				if (!c->isfloating && selmon->lt[selmon->sellt]->arrange &&
-				    (abs(nx - c->x) > snap || abs(ny - c->y) > snap))
+				    (abs(nx - c->x) > (int) ui_snap ||
+				        abs(ny - c->y) > (int) ui_snap))
 					togglefloating(NULL);
 				if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
 					resize(c, nx, ny, c->w, c->h, 1);
@@ -1067,7 +1068,8 @@ resizemouse(const Arg *arg)
 				    c->mon->wy + nh >= selmon->wy &&
 				    c->mon->wy + nh <= selmon->wy + selmon->wh) {
 					if (!c->isfloating && selmon->lt[selmon->sellt]->arrange &&
-					    (abs(nw - c->w) > snap || abs(nh - c->h) > snap))
+					    (abs(nw - c->w) > (int) ui_snap ||
+					        abs(nh - c->h) > (int) ui_snap))
 						togglefloating(NULL);
 				}
 				if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
@@ -1179,10 +1181,9 @@ setgaps(const Arg *arg)
 		break;
 	case GAP_RESET:
 		if (selmon->pertag->curtag > 0)
-			selmon->pertag->gappx[selmon->pertag->curtag] =
-			    gappx[(selmon->pertag->curtag - 1) % LENGTH(gappx)];
+			selmon->pertag->gappx[selmon->pertag->curtag] = ui_gappx;
 		else
-			selmon->pertag->gappx[0] = gappx[0];
+			selmon->pertag->gappx[0] = ui_gappx;
 		break;
 	default:
 		if (selmon->pertag->gappx[selmon->pertag->curtag] + arg->i < 0)

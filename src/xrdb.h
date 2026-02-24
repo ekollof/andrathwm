@@ -6,6 +6,10 @@
 
 #include "awm.h"
 
+/* DPI value parsed from Xft.dpi in RESOURCE_MANAGER.
+ * 0.0 means not found / not yet parsed. */
+extern double xrdb_dpi;
+
 void loadxrdb(void);
 void xrdb(const Arg *arg);
 

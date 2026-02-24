@@ -15,6 +15,72 @@
 #include "systray.h"
 #include "config.h"
 
+/* DPI parsed from Xft.dpi; 0.0 = not found */
+double xrdb_dpi = 0.0;
+
+/*
+ * Scan RESOURCE_MANAGER for a numeric resource by name.
+ *
+ * Same line-scanning logic as xrdb_lookup() but stores the raw value
+ * parsed as a double rather than validating as a hex colour.
+ * Returns 0 on success (value written to *out), -1 if not found.
+ */
+static int
+xrdb_lookup_double(const char *resm, const char *key, double *out)
+{
+	const char *p;
+	size_t      klen;
+
+	if (!resm || !key || !out)
+		return -1;
+
+	klen = strlen(key);
+	p    = resm;
+
+	while (*p) {
+		const char *eol = p;
+		const char *col;
+
+		while (*eol && *eol != '\n')
+			eol++;
+
+		col = p;
+		while (col < eol && *col != ':')
+			col++;
+
+		if (col < eol && col[1] == '\t') {
+			if ((size_t) (col - p) >= klen) {
+				const char *kstart = col - klen;
+				if (kstart == p || kstart[-1] == '*' || kstart[-1] == '.') {
+					if (strncmp(kstart, key, klen) == 0) {
+						const char *v = col + 2; /* skip ":\t" */
+						char        tmp[32];
+						size_t      vlen;
+						char       *end;
+						double      d;
+
+						/* copy value up to end-of-line */
+						vlen = (size_t) (eol - v);
+						if (vlen == 0 || vlen >= sizeof(tmp))
+							goto next_d;
+						memcpy(tmp, v, vlen);
+						tmp[vlen] = '\0';
+
+						d = strtod(tmp, &end);
+						if (end == tmp || d <= 0.0)
+							goto next_d;
+						*out = d;
+						return 0;
+					}
+				}
+			}
+		}
+	next_d:
+		p = (*eol == '\n') ? eol + 1 : eol;
+	}
+	return -1;
+}
+
 /*
  * Scan the RESOURCE_MANAGER string for a colour resource by name.
  *
@@ -177,6 +243,14 @@ loadxrdb(void)
 	xrdb_lookup(resm, "color13", termcol13);
 	xrdb_lookup(resm, "color14", termcol14);
 	xrdb_lookup(resm, "color15", termcol15);
+
+	/* Parse Xft.dpi — both "Xft.dpi" and "xft.dpi" are used in the wild */
+	{
+		double d = 0.0;
+		if (xrdb_lookup_double(resm, "Xft.dpi", &d) == 0 ||
+		    xrdb_lookup_double(resm, "xft.dpi", &d) == 0)
+			xrdb_dpi = d;
+	}
 
 	free(resm);
 }
