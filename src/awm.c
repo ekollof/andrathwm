@@ -1440,13 +1440,20 @@ main(int argc, char *argv[])
 	/* Initialise GTK on the same X display.  GTK uses the DISPLAY env var
 	 * which must already be set (awm opens xc successfully just above).
 	 * We force GDK_BACKEND=x11 so GTK doesn't pick Wayland when run inside
-	 * a nested session. */
+	 * a nested session.  GDK_DPI_SCALE is set to ui_dpi/96.0 so that GTK's
+	 * own Pango rendering (SNI context menus) uses the correct font size
+	 * from the very first gtk_init() call. */
 	unsetenv("WAYLAND_DISPLAY");
 	setenv("GDK_BACKEND", "x11", 1);
-	gtk_init(&argc, &argv);
-	checkotherwm();
 	loadxrdb();
 	resolve_dpi();
+	{
+		char dpi_scale_str[32];
+		snprintf(dpi_scale_str, sizeof(dpi_scale_str), "%.6g", ui_dpi / 96.0);
+		setenv("GDK_DPI_SCALE", dpi_scale_str, 1);
+	}
+	gtk_init(&argc, &argv);
+	checkotherwm();
 	setup();
 #ifdef __OpenBSD__
 	if (pledge("stdio rpath proc exec unix inet", NULL) == -1)
