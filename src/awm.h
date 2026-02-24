@@ -275,6 +275,7 @@ extern int               screen;
 extern int               sw, sh;
 extern int               bh;
 extern int               lrpad;
+extern int               awm_tagslength; /* = TAGSLENGTH; set in setup() */
 extern double            ui_dpi;   /* resolved screen DPI (96.0 default) */
 extern double            ui_scale; /* ui_dpi / 96.0 */
 extern Drw              *drw;

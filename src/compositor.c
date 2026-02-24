@@ -2033,6 +2033,28 @@ comp_snapshot_pixmaps(unsigned int *count_out)
 	return entries;
 }
 
+/* -------------------------------------------------------------------------
+ * State accessors for wmstate — keeps compositor_backend.h internal.
+ * ---------------------------------------------------------------------- */
+
+int
+compositor_is_active(void)
+{
+	return comp.active;
+}
+
+int
+compositor_is_paused(void)
+{
+	return comp.paused;
+}
+
+uint32_t
+compositor_paused_mask(void)
+{
+	return comp.paused_mask;
+}
+
 #endif /* COMPOSITOR */
 
 /* Satisfy ISO C99: a translation unit must contain at least one declaration */

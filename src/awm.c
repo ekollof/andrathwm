@@ -44,6 +44,7 @@
 #include "switcher.h"
 #include "systray.h"
 #include "ui_proto.h"
+#include "wmstate.h"
 #include "xrdb.h"
 #include "xsource.h"
 #define AWM_CONFIG_IMPL
@@ -55,21 +56,22 @@ static pid_t ui_pid           = -1; /* awm-ui child process */
 static int   ui_fd            = -1; /* socket fd to awm-ui */
 int          launcher_visible = 0;  /* 1 while the launcher window is open */
 xcb_window_t launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
-static GMainContext *ui_ctx = NULL; /* GMainContext used by run() — kept for
-                                     * the respawn timer callback */
+static GMainContext *ui_ctx   = NULL; /* GMainContext used by run() — kept for
+                                       * the respawn timer callback */
 char         stext[STATUS_TEXT_LEN];
 int          screen;
 int          sw, sh;             /* X display screen geometry width, height */
 int          bh;                 /* bar height */
 int          lrpad;              /* sum of left and right padding for text */
-double       ui_dpi      = 96.0; /* resolved screen DPI */
-double       ui_scale    = 1.0;  /* ui_dpi / 96.0 */
-unsigned int ui_borderpx = 1;    /* borderpx * ui_scale — set in setup() */
-unsigned int ui_snap     = 32;   /* snap     * ui_scale — set in setup() */
-unsigned int ui_iconsize = 16;   /* iconsize * ui_scale — set in setup() */
-unsigned int ui_gappx    = 5;    /* gappx[0] * ui_scale — set in setup() */
-unsigned int numlockmask = 0;
-static guint xsource_id  = 0; /* GLib source ID for the X11 event source */
+int          awm_tagslength = 0; /* = TAGSLENGTH; set in setup() */
+double       ui_dpi         = 96.0; /* resolved screen DPI */
+double       ui_scale       = 1.0;  /* ui_dpi / 96.0 */
+unsigned int ui_borderpx    = 1;    /* borderpx * ui_scale — set in setup() */
+unsigned int ui_snap        = 32;   /* snap     * ui_scale — set in setup() */
+unsigned int ui_iconsize    = 16;   /* iconsize * ui_scale — set in setup() */
+unsigned int ui_gappx       = 5;    /* gappx[0] * ui_scale — set in setup() */
+unsigned int numlockmask    = 0;
+static guint xsource_id     = 0; /* GLib source ID for the X11 event source */
 #ifdef STATUSNOTIFIER
 static guint dbus_src_id   = 0; /* GLib source ID for the D-Bus fd source */
 static guint dbus_retry_id = 0; /* GLib source ID for the reconnect timer */
@@ -1299,6 +1301,8 @@ setup(void)
 		awm_warn("compositor: init failed, running without compositing");
 #endif
 	switcher_init();
+	awm_tagslength = (int) TAGSLENGTH;
+	wmstate_update();
 }
 
 /* -------------------------------------------------------------------------

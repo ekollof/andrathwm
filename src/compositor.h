@@ -171,5 +171,13 @@ cairo_surface_t *comp_capture_thumb(Client *c, int max_w, int max_h);
  */
 UiPreviewEntry *comp_snapshot_pixmaps(unsigned int *count_out);
 
+/*
+ * State accessors — return live compositor state without exposing the
+ * internal CompShared struct (compositor_backend.h remains internal).
+ */
+int      compositor_is_active(void);
+int      compositor_is_paused(void);
+uint32_t compositor_paused_mask(void);
+
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */
