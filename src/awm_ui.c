@@ -320,6 +320,29 @@ static GSourceFuncs socket_funcs = {
  * main
  * ---------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------
+ * GLib/GTK log bridge — routes g_warning/g_critical/g_error through syslog
+ * ---------------------------------------------------------------------- */
+
+static void
+glib_log_handler(const gchar *domain, GLogLevelFlags level,
+    const gchar *message, gpointer user_data)
+{
+	(void) user_data;
+	const char *d = domain ? domain : "GLib";
+
+	if (level & (G_LOG_LEVEL_ERROR | G_LOG_LEVEL_CRITICAL)) {
+		awm_error("awm-ui: [%s] %s", d, message ? message : "(null)");
+	} else if (level & G_LOG_LEVEL_WARNING) {
+		awm_warn("awm-ui: [%s] %s", d, message ? message : "(null)");
+	} else {
+		awm_info("awm-ui: [%s] %s", d, message ? message : "(null)");
+	}
+
+	/* For fatal levels (ERROR) GLib will abort() after this returns,
+	 * which is fine — the message is now in syslog. */
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -338,6 +361,20 @@ main(int argc, char *argv[])
 
 	/* Ignore SIGPIPE — we detect broken socket via send() errno */
 	signal(SIGPIPE, SIG_IGN);
+
+	/* Route all GLib/GTK log messages through the awm logging system so
+	 * g_warning, g_critical, and g_error output appears in journald.
+	 * Register for every domain we care about; NULL catches the default
+	 * domain and anything not explicitly matched. */
+	{
+		GLogLevelFlags mask = G_LOG_LEVEL_ERROR | G_LOG_LEVEL_CRITICAL |
+		    G_LOG_LEVEL_WARNING | G_LOG_LEVEL_MESSAGE | G_LOG_LEVEL_INFO;
+		g_log_set_handler(NULL, mask, glib_log_handler, NULL);
+		g_log_set_handler("GLib", mask, glib_log_handler, NULL);
+		g_log_set_handler("Gtk", mask, glib_log_handler, NULL);
+		g_log_set_handler("Gdk", mask, glib_log_handler, NULL);
+		g_log_set_handler("GLib-GObject", mask, glib_log_handler, NULL);
+	}
 
 	/* Initialise GTK */
 	gtk_init(&argc, &argv);
