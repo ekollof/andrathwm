@@ -316,6 +316,8 @@ configurenotify(xcb_generic_event_t *e)
 			}
 			focus(NULL);
 			arrange(NULL);
+			for (m = mons; m; m = m->next)
+				updateworkarea(m);
 		}
 #ifdef COMPOSITOR
 		compositor_notify_screen_resize();

@@ -279,6 +279,8 @@ x_dispatch_cb(gpointer user_data)
 			}
 			focus(NULL);
 			arrange(NULL);
+			for (Monitor *m = mons; m; m = m->next)
+				updateworkarea(m);
 #ifdef COMPOSITOR
 			compositor_notify_screen_resize();
 #endif
