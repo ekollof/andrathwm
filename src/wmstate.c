@@ -62,8 +62,8 @@ wmstate_update(void)
 		wm->seltags   = m->seltags;
 		wm->tagset[0] = m->tagset[0];
 		wm->tagset[1] = m->tagset[1];
-		wm->curtag    = m->pertag->curtag;
-		wm->prevtag   = m->pertag->prevtag;
+		wm->curtag    = m->pertag.curtag;
+		wm->prevtag   = m->pertag.prevtag;
 		strncpy(wm->ltsymbol, m->ltsymbol, WMSTATE_LTSYM_LEN - 1);
 		wm->sel_win = m->sel ? m->sel->win : 0;
 
@@ -73,15 +73,15 @@ wmstate_update(void)
 		    ti <= (unsigned int) awm_tagslength && ti <= WMSTATE_MAX_TAGS;
 		    ti++) {
 			AWMStateTag  *wt = &wm->tags[ti];
-			const Layout *la = m->pertag->ltidxs[ti * 2 + 0];
-			const Layout *lb = m->pertag->ltidxs[ti * 2 + 1];
+			const Layout *la = m->pertag.ltidxs[ti * 2 + 0];
+			const Layout *lb = m->pertag.ltidxs[ti * 2 + 1];
 
-			wt->nmaster      = m->pertag->nmasters[ti];
-			wt->mfact        = m->pertag->mfacts[ti];
-			wt->sellt        = m->pertag->sellts[ti];
-			wt->showbar      = m->pertag->showbars[ti];
-			wt->drawwithgaps = m->pertag->drawwithgaps[ti];
-			wt->gappx        = m->pertag->gappx[ti];
+			wt->nmaster      = m->pertag.nmasters[ti];
+			wt->mfact        = m->pertag.mfacts[ti];
+			wt->sellt        = m->pertag.sellts[ti];
+			wt->showbar      = m->pertag.showbars[ti];
+			wt->drawwithgaps = m->pertag.drawwithgaps[ti];
+			wt->gappx        = m->pertag.gappx[ti];
 			strncpy(
 			    wt->lt_sym[0], la ? la->symbol : "", WMSTATE_LTSYM_LEN - 1);
 			strncpy(

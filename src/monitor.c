@@ -104,14 +104,6 @@ cleanupmon(Monitor *mon)
 
 	xcb_unmap_window(xc, mon->barwin);
 	xcb_destroy_window(xc, mon->barwin);
-	free(mon->pertag->nmasters);
-	free(mon->pertag->mfacts);
-	free(mon->pertag->sellts);
-	free(mon->pertag->ltidxs);
-	free(mon->pertag->showbars);
-	free(mon->pertag->drawwithgaps);
-	free(mon->pertag->gappx);
-	free(mon->pertag);
 	free(mon);
 }
 
@@ -153,27 +145,19 @@ createmon(void)
 	m->lt[0]                    = &layouts[0];
 	m->lt[1]                    = &layouts[1 % LENGTH(layouts)];
 	strncpy(m->ltsymbol, layouts[0].symbol, sizeof m->ltsymbol);
-	m->pertag         = ecalloc(1, sizeof(Pertag));
-	m->pertag->curtag = m->pertag->prevtag = 1;
-	m->pertag->nmasters     = ecalloc(TAGSLENGTH + 1, sizeof(int));
-	m->pertag->mfacts       = ecalloc(TAGSLENGTH + 1, sizeof(float));
-	m->pertag->sellts       = ecalloc(TAGSLENGTH + 1, sizeof(unsigned int));
-	m->pertag->ltidxs       = ecalloc((TAGSLENGTH + 1) * 2, sizeof(Layout *));
-	m->pertag->showbars     = ecalloc(TAGSLENGTH + 1, sizeof(int));
-	m->pertag->drawwithgaps = ecalloc(TAGSLENGTH + 1, sizeof(int));
-	m->pertag->gappx        = ecalloc(TAGSLENGTH + 1, sizeof(unsigned int));
+	m->pertag.curtag = m->pertag.prevtag = 1;
 
 	for (i = 0; i <= LENGTH(tags); i++) {
-		m->pertag->nmasters[i] = m->nmaster;
-		m->pertag->mfacts[i]   = m->mfact;
+		m->pertag.nmasters[i] = m->nmaster;
+		m->pertag.mfacts[i]   = m->mfact;
 
-		m->pertag->ltidxs[(i) * 2 + (0)] = m->lt[0];
-		m->pertag->ltidxs[(i) * 2 + (1)] = m->lt[1];
-		m->pertag->sellts[i]             = m->sellt;
+		m->pertag.ltidxs[(i) * 2 + (0)] = m->lt[0];
+		m->pertag.ltidxs[(i) * 2 + (1)] = m->lt[1];
+		m->pertag.sellts[i]             = m->sellt;
 
-		m->pertag->showbars[i]     = m->showbar;
-		m->pertag->drawwithgaps[i] = startwithgaps[0];
-		m->pertag->gappx[i]        = ui_gappx;
+		m->pertag.showbars[i]     = m->showbar;
+		m->pertag.drawwithgaps[i] = startwithgaps[0];
+		m->pertag.gappx[i]        = ui_gappx;
 	}
 
 	return m;
@@ -349,8 +333,8 @@ monocle(Monitor *m)
 		 * XMoveWindow (which moves the window off-screen without updating
 		 * c->x).  The window would stay off-screen. */
 		compositor_set_hidden(c, 0);
-		if (m->pertag->drawwithgaps[m->pertag->curtag]) {
-			unsigned int gp = m->pertag->gappx[m->pertag->curtag];
+		if (m->pertag.drawwithgaps[m->pertag.curtag]) {
+			unsigned int gp = m->pertag.gappx[m->pertag.curtag];
 			resizeclient(c, m->wx + gp, m->wy + gp, m->ww - 2 * gp - 2 * c->bw,
 			    m->wh - 2 * gp - 2 * c->bw);
 		} else {
@@ -464,42 +448,42 @@ tile(Monitor *m)
 	if (n == 0)
 		return;
 
-	if (m->pertag->drawwithgaps[m->pertag->curtag]) {
+	if (m->pertag.drawwithgaps[m->pertag.curtag]) {
 		if (n > m->nmaster)
 			mw = m->nmaster ? m->ww * m->mfact : 0;
 		else
-			mw = m->ww - m->pertag->gappx[m->pertag->curtag];
-		for (i = 0, my = ty = m->pertag->gappx[m->pertag->curtag],
+			mw = m->ww - m->pertag.gappx[m->pertag.curtag];
+		for (i = 0, my = ty = m->pertag.gappx[m->pertag.curtag],
 		    c    = nexttiled(m->cl->clients, m);
 		    c; c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i) -
-				    m->pertag->gappx[m->pertag->curtag];
-				resize(c, m->wx + m->pertag->gappx[m->pertag->curtag],
+				    m->pertag.gappx[m->pertag.curtag];
+				resize(c, m->wx + m->pertag.gappx[m->pertag.curtag],
 				    m->wy + my,
-				    mw - (2 * c->bw) - m->pertag->gappx[m->pertag->curtag],
+				    mw - (2 * c->bw) - m->pertag.gappx[m->pertag.curtag],
 				    h - (2 * c->bw), 0);
 				/* Advance by the ideal slot height (h + 2*bw), not the
 				 * hint-snapped HEIGHT(c).  If we used HEIGHT(c) and
 				 * applysizehints snapped the window smaller, the remaining
 				 * space would be divided as if less was consumed, causing
 				 * gaps to accumulate at the bottom of the column. */
-				if (my + h + 2 * c->bw + m->pertag->gappx[m->pertag->curtag] <
+				if (my + h + 2 * c->bw + m->pertag.gappx[m->pertag.curtag] <
 				    m->wh)
-					my += h + 2 * c->bw + m->pertag->gappx[m->pertag->curtag];
+					my += h + 2 * c->bw + m->pertag.gappx[m->pertag.curtag];
 			} else {
 				h = (m->wh - ty) / (n - i) -
-				    m->pertag->gappx[m->pertag->curtag];
-				resize(c, m->wx + mw + m->pertag->gappx[m->pertag->curtag],
+				    m->pertag.gappx[m->pertag.curtag];
+				resize(c, m->wx + mw + m->pertag.gappx[m->pertag.curtag],
 				    m->wy + ty,
 				    m->ww - mw - (2 * c->bw) -
-				        2 * m->pertag->gappx[m->pertag->curtag],
+				        2 * m->pertag.gappx[m->pertag.curtag],
 				    h - (2 * c->bw), 0);
 				/* Same: advance by ideal slot height, not snapped HEIGHT(c).
 				 */
-				if (ty + h + 2 * c->bw + m->pertag->gappx[m->pertag->curtag] <
+				if (ty + h + 2 * c->bw + m->pertag.gappx[m->pertag.curtag] <
 				    m->wh)
-					ty += h + 2 * c->bw + m->pertag->gappx[m->pertag->curtag];
+					ty += h + 2 * c->bw + m->pertag.gappx[m->pertag.curtag];
 			}
 	} else { /* draw with singularborders logic */
 		if (n > m->nmaster)
@@ -529,7 +513,7 @@ void
 togglebar(const Arg *arg)
 {
 	g_awm.selmon->showbar =
-	    g_awm.selmon->pertag->showbars[g_awm.selmon->pertag->curtag] =
+	    g_awm.selmon->pertag.showbars[g_awm.selmon->pertag.curtag] =
 	        !g_awm.selmon->showbar;
 	updatebarpos(g_awm.selmon);
 	resizebarwin(g_awm.selmon);
