@@ -97,7 +97,7 @@ Only `src/awm.c` defines `AWM_CONFIG_IMPL` before including it:
 ```
 
 Standard include order within a `.c` file:
-1. System/standard headers (`<stdint.h>`, `<stdlib.h>`, `<string.h>`, …)
+1. System/standard headers (`<stdint.h>`, `<stdlib.h>`, `<string.h>`, ...)
 2. Third-party library headers (XCB, GLib, Cairo, Pango, GTK, EGL/GL)
 3. Project headers (`"awm.h"`, then peer module headers)
 4. `"config.h"` — always last
@@ -136,7 +136,7 @@ awm_error("msg %d", val);
 ```
 
 All four automatically inject `__func__` and `__LINE__`. Output goes to both `stderr` and
-`syslog`. **Never use bare `printf` or `fprintf(stderr, …)` for diagnostics** — always use
+`syslog`. **Never use bare `printf` or `fprintf(stderr, ...)` for diagnostics** — always use
 these macros.
 
 For signal handlers use the async-signal-safe macros from `util.h` (`LOG_SAFE`,
@@ -172,8 +172,19 @@ to the `handler[]` table indexed by `response_type & ~0x80`.
 `DestroyNotify`/`UnmapNotify`.
 
 ### Monitors
-`mons` is a linked list of `Monitor`; `selmon` is focused. `updategeom()` queries RandR/
-Xinerama. Per-tag layout state lives in `Monitor.pertag`.
+Monitors are stored as a **flat array** `g_awm.monitors[WMSTATE_MAX_MONITORS]` with
+`g_awm.n_monitors` tracking the count and `g_awm.selmon_num` (int index) identifying the
+focused monitor. Use the following macros instead of direct field access:
+
+```c
+g_awm_selmon            /* expands to &g_awm.monitors[g_awm.selmon_num] */
+g_awm_set_selmon(m)     /* sets selmon_num from a Monitor * pointer */
+FOR_EACH_MON(var)       /* replaces for(m=mons; m; m=m->next) loops */
+```
+
+`Monitor` has no `next` pointer — iteration is always via `FOR_EACH_MON`. `updategeom()`
+queries RandR/Xinerama and populates the flat array. Per-tag layout state lives inline in
+`Monitor.pertag` (a value sub-struct, not a pointer).
 
 ### Compositor
 Backend vtable pattern: `CompBackend` struct of function pointers. Two singletons:
@@ -193,7 +204,7 @@ Key vtable entries in `CompBackend`:
 - `bind_pixmap(cw)` — build EGLImageKHR+GL texture (EGL) or XRender Picture (XRender)
 - `release_pixmap(cw)` — free the above; safe to call with no binding held
 - `repaint()` — execute one full composite pass
-- `capture_thumb(cw, max_w, max_h)` → `cairo_surface_t *` — render a scaled thumbnail:
+- `capture_thumb(cw, max_w, max_h)` -> `cairo_surface_t *` — render a scaled thumbnail:
   EGL path uses GL FBO + `glReadPixels`; XRender path composites to a temp pixmap + `xcb_get_image`
 - `notify_resize()` — handle screen geometry change
 - `apply_shape(cw)` — apply ShapeBounding clip (may be NULL)
@@ -245,7 +256,7 @@ Config bindings (in `config.h`):
 { MODKEY|XCB_MOD_MASK_SHIFT,   XKB_KEY_Tab, switcher_show_prev, {.i=1} },
 ```
 
-### IPC (awm ↔ awm-ui)
+### IPC (awm <-> awm-ui)
 `awm-ui` is a separate process hosting GTK popups (launcher, SNI menus). Communication is
 via `SOCK_SEQPACKET` socketpair. Protocol: fixed `UiMsgHeader` (type + payload_len) followed
 by typed payload structs defined in `src/ui_proto.h`.
@@ -271,27 +282,28 @@ to reason about ownership, and impossible to atomically manipulate state.
 
 ### Primary Goal (current)
 
-**Consolidate restartable/observable WM and compositor state into a single `WMState`
-struct.**  The immediate payoff is disambiguation and simplicity — not serialisation.
+**Consolidate restartable/observable WM and compositor state into a single `AWMState`
+struct (`g_awm`).**  The immediate payoff is disambiguation and simplicity — not
+serialisation.
 
-- `WMState` is the single source of truth for monitor topology, per-tag layout state,
+- `AWMState` is the single source of truth for monitor topology, per-tag layout state,
   client state, compositor redirect/bypass state, and focused monitor/client.
-- Functions that mutate WM state take `WMState *` (or access it via a single global
-  `g_wm`) instead of reaching into a bag of unrelated globals.
+- Functions access shared state via the single global `g_awm` rather than a bag of
+  unrelated globals.
 - State transitions become explicit: it is obvious which fields change and why.
 - Invariants are enforced at the struct boundary, not scattered across call sites.
 
-### What belongs in WMState
+### What belongs in AWMState
 
 | Field group | Contents |
 |---|---|
-| Monitor topology | `mons` linked list, `selmon`, per-monitor `tagset[2]`, `seltags`, `ltsymbol` |
-| Per-tag layout | All `Pertag` arrays: `nmasters`, `mfacts`, `sellts`, `ltidxs`, `showbars`, `drawwithgaps`, `gappx`, `curtag`, `prevtag` |
+| Monitor topology | `monitors[WMSTATE_MAX_MONITORS]` flat array, `n_monitors`, `selmon_num` |
+| Per-tag layout | Inline `Pertag` sub-struct per `Monitor`: `nmasters`, `mfacts`, `sellts`, `ltidxs`, `showbars`, `drawwithgaps`, `gappx`, `curtag`, `prevtag` |
 | Client state | Per-client: `win`, `tags`, `mon`, `x/y/w/h`, `opacity`, `isfloating`, `isfullscreen`, `ishidden`, `scratchkey`, `issteam`, `bypass_compositor` |
-| Focus | `selmon->num`, `selmon->sel->win` per monitor |
+| Focus | `selmon_num` index; per-monitor `sel` pointer |
 | Compositor | `comp.paused_mask`, per-window redirect/bypass state |
 
-### What does NOT belong in WMState (runtime-only)
+### What does NOT belong in AWMState (runtime-only)
 
 Rendering resources (`drw`, `scheme`, `cursor`), atom caches (`wmatom`, `netatom`,
 `xatom`), input state (`keysyms`, `numlockmask`), IPC fds (`ui_fd`, `ui_pid`), X
@@ -302,37 +314,89 @@ snapshotted or restored.
 
 **Step 1 (done on master, commit `838bae0`):** Three independent bug fixes.
 
-**Step 2 (done on master, commit `4eec58d` — was feature/state-refactor Step 1):**
+**Step 2 (done on master, commit `4eec58d`):**
 Replace `Monitor` cached fields with `MON_*` accessor macros.
 
-**Step 3 — WMState struct skeleton:**
-- Define `WMState` in `src/wmstate.h` covering the field groups above.
-- Add a single global `WMState g_wm` in `awm.c`; populate it in `setup()`.
-- Keep existing `extern` globals as aliases or migrate call sites incrementally —
-  do NOT break everything in one commit.
+**Step 3 — AWMState struct skeleton (done):**
+Defined `AWMState` in `src/wmstate.h`, global `AWMState g_awm` in `awm.c`,
+populated in `setup()`. Old `extern` globals removed incrementally.
 
-**Step 4 — Migrate modules to use `g_wm`:**
-- Replace direct global access in `monitor.c`, `client.c`, `events.c`, `compositor.c`
-  with `g_wm.mons`, `g_wm.selmon`, `g_wm.cl`, etc.
-- Each module migrated in its own commit; build must stay green after every commit.
+**Step 4 — Migrate modules to use `g_awm` (done):**
+`monitor.c`, `client.c`, `events.c`, `compositor.c` migrated in per-module commits.
 
-**Step 5 — Compositor state into WMState:**
-- Move `comp.paused_mask` and per-`CompWin` bypass state into `WMState` or a
-  `WMState.comp` sub-struct.
+**Step 5 — Compositor state into AWMState (done, commit `9e67b4b`):**
+`comp.paused_mask` snapshotted into `AWMState`; `AWMStateComp` dual-writes removed.
 
-**Step 6 (future, not yet):** Serialisation — once `WMState` is the single source of
-truth, session save/restore and JSON dump become a single walk of `g_wm`.  Do not
-implement serialisation until Steps 3–5 are complete and stable.
+**Step 6 — Monitor flat array (IN PROGRESS, commit `ba6ccda` WIP):**
+Replace `AWMState.mons` linked list + `AWMState.selmon` pointer with
+`AWMState.monitors[]` flat array + `AWMState.selmon_num` index.
+
+- `Monitor` no longer has a `next` pointer.
+- Access via `g_awm_selmon`, `g_awm_set_selmon(m)`, `FOR_EACH_MON(var)` macros.
+- `Pertag` is now an inline value sub-struct inside `Monitor` (not a pointer).
+- Files already migrated: `src/wmstate.h`, `src/awm.h`, `src/monitor.c`, `src/wmstate.c`.
+- Files still pending migration (all `g_awm.mons` / `g_awm.selmon` sites):
+  - `src/awm.c`
+  - `src/client.c`
+  - `src/events.c`
+  - `src/ewmh.c`
+  - `src/compositor.c`
+  - `src/switcher.c`
+
+**Step 7 (future, not yet):** Serialisation — once `AWMState` is the single source of
+truth, session save/restore and JSON dump become a single walk of `g_awm`. Do not
+implement serialisation until Step 6 is complete and stable.
+
+### Flat array migration — key patterns
+
+```c
+/* Old linked-list iteration */
+for (m = g_awm.mons; m; m = m->next) { ... }
+
+/* New flat-array iteration — declare Monitor *m before the loop */
+Monitor *m;
+FOR_EACH_MON(m) { ... }
+
+/* Old selmon read */
+g_awm.selmon->field
+
+/* New */
+g_awm_selmon->field
+
+/* Old selmon write */
+g_awm.selmon = m;
+
+/* New */
+g_awm_set_selmon(m);
+
+/* Old "more than one monitor" check (tagmon etc.) */
+g_awm.mons->next != NULL
+
+/* New */
+g_awm.n_monitors > 1
+
+/* Old selmon null-guard (ui_send_monitor_geom) */
+if (!g_awm.selmon || ...)
+
+/* New */
+if (g_awm.selmon_num < 0 || ...)
+
+/* Old cleanup loop */
+while (g_awm.mons) cleanupmon(g_awm.mons);
+
+/* New */
+while (g_awm.n_monitors) cleanupmon(&g_awm.monitors[0]);
+```
 
 ### Rules for this refactor
 
-- **Do not implement session save/restore or JSON dump yet.**  That is Step 6.
+- **Do not implement session save/restore or JSON dump yet.**  That is Step 7.
 - **Do not break the build between commits.**  Migrate incrementally.
-- **Do not introduce a `WMState *` parameter to every function immediately** — use the
-  single `g_wm` global during the transition; per-function threading can come later.
+- **Do not introduce a `AWMState *` parameter to every function** — use the
+  single `g_awm` global during the transition.
 - `src/session.c`, `src/session.h`, `src/state_dump.c`, `src/state_dump.h` introduced on
   the old `feature/state-refactor` branch are **not carried forward** — they were
-  premature and will be rewritten against `WMState` in Step 6.
+  premature and will be rewritten in Step 7.
 
 ---
 
@@ -349,4 +413,6 @@ Before committing, verify:
 - [ ] `AWM_CONFIG_IMPL` defined only in `src/awm.c`
 - [ ] New fields added to `CompShared` or other shared structs do not silently shift offsets
   used by existing code in companion `.c` files (check all `comp_backend_*` files compile)
-- [ ] WMState refactor: no session/dump code introduced before Step 6
+- [ ] WMState refactor: no session/dump code introduced before Step 7
+- [ ] No `Monitor *next` field used anywhere — use `FOR_EACH_MON` instead
+- [ ] No direct `g_awm.mons` or `g_awm.selmon` access — use macros
