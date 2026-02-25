@@ -34,6 +34,7 @@
  * That is a later step, once the consolidation is complete and stable.
  * ---------------------------------------------------------------------- */
 
+#include <stdint.h>
 #include <xcb/xcb.h>
 
 /* Forward declarations — full definitions live in awm.h.
@@ -124,6 +125,15 @@ typedef struct {
 	Monitor    *mons;   /* head of the monitor linked list          */
 	Monitor    *selmon; /* currently focused monitor                */
 	Clientlist *cl;     /* global client list (all clients + stack) */
+
+	/* Compositor bypass/unredirect state snapshot.
+	 * paused_mask: bitmask — bit N set means monitor N is bypassed
+	 *              (fullscreen window in direct-scanout mode).
+	 * paused: 1 when ALL monitors are bypassed (repaint loop stopped).
+	 * The live authority is CompShared comp in compositor.c; these
+	 * fields are synced by wmstate_update() for observability. */
+	uint32_t comp_paused_mask;
+	int      comp_paused;
 
 	/* Monitor topology snapshot (for future serialisation) */
 	unsigned int    n_monitors;

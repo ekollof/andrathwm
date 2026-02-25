@@ -14,6 +14,9 @@
 #include "awm.h"
 #include "client.h"
 #include "monitor.h"
+#ifdef COMPOSITOR
+#include "compositor.h"
+#endif
 #include "wmstate.h"
 
 /* The single global AWMState instance. */
@@ -111,4 +114,10 @@ wmstate_update(void)
 		wc->bypass_compositor = c->bypass_compositor;
 	}
 	g_awm.n_clients = ci;
+
+	/* ---- Compositor bypass state ---- */
+#ifdef COMPOSITOR
+	g_awm.comp_paused_mask = compositor_paused_mask();
+	g_awm.comp_paused      = compositor_is_paused();
+#endif
 }
