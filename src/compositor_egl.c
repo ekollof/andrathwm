@@ -904,6 +904,7 @@ egl_repaint(void)
 	{
 		/* Re-check paused immediately before the swap: if a fullscreen bypass
 		 * raced in between the repaint start and here, the overlay window may
+<<<<<<< HEAD
 		 * already be lowered.  Only swap if we are not paused — leaving dirty
 		 * state intact ensures the repaint loop restarts correctly once
 		 * compositing resumes.
@@ -917,6 +918,7 @@ egl_repaint(void)
 		if (!comp.paused) {
 			comp_dirty_clear();
 			eglSwapBuffers(egl.egl_dpy, egl.egl_win);
+			comp_dirty_clear();
 		}
 	}
 }

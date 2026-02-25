@@ -455,7 +455,11 @@ restack(Monitor *m)
 	if (m == g_awm_selmon && (m->tagset[m->seltags] & m->sel->tags) &&
 	    m->lt[m->sellt]->arrange != &monocle)
 		warp(m->sel);
-	/* Same EnterNotify drain as arrange() — see comment there. */
+	/* Same EnterNotify drain as arrange() — see comment there.
+	 * ConfigureNotify events from the stacking calls above are consumed
+	 * here and processed by comp_restack_above() — so we must raise the
+	 * floating selected window AFTER this drain to ensure it ends up at
+	 * the tail of comp.windows (visual top). */
 	{
 		xcb_generic_event_t *xe;
 		xcb_flush(xc);
@@ -470,10 +474,13 @@ restack(Monitor *m)
 			free(xe);
 		}
 	}
-	/* After stacking client windows, ensure the compositor overlay remains
-	 * on top.  xcb_configure_window(STACK_MODE_ABOVE) on client windows can
-	 * push them above the overlay, making the compositor paint under them. */
+	/* After all X stacking requests have been issued and their
+	 * ConfigureNotify events drained, correct the compositor paint order:
+	 * the selected floating window must be at the visual top. */
 #ifdef COMPOSITOR
+	if (m->sel->isfloating || !m->lt[m->sellt]->arrange)
+		compositor_raise_client(m->sel);
+	/* Ensure the overlay window remains above all clients. */
 	compositor_raise_overlay();
 #endif
 	updateclientlist(); /* Update stacking order */

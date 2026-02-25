@@ -84,6 +84,16 @@ void compositor_focus_window(Client *c);
 void compositor_raise_overlay(void);
 
 /*
+ * Move the CompWin for client c to the top of the compositor paint list
+ * (tail of comp.windows) so it is painted last and appears above all other
+ * composited windows.  Called from restack() immediately after issuing a
+ * STACK_MODE_ABOVE xcb_configure_window for a floating/selected window,
+ * bypassing the asynchronous ConfigureNotify path which can mis-order the
+ * list when geometry-only events carry a stale above_sibling.
+ */
+void compositor_raise_client(Client *c);
+
+/*
  * Fill *req_base and *err_base with the XRender major opcode and error base
  * (needed by the X error handler to whitelist transient XRender errors that
  * arise from GL windows closing while a repaint is in flight).

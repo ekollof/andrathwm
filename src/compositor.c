@@ -617,9 +617,6 @@ comp_refresh_pixmap(CompWin *cw)
 		cw->pixmap = 0;
 	}
 
-	/* New pixmap — require a full dirty on its first damage notification. */
-	cw->ever_damaged = 0;
-
 	{
 		xcb_pixmap_t         pix = xcb_generate_id(xc);
 		xcb_void_cookie_t    ck;
@@ -657,6 +654,13 @@ comp_refresh_pixmap(CompWin *cw)
 	}
 
 	comp.backend->bind_pixmap(cw);
+
+	/* The new pixmap needs a full repaint regardless of whether the app
+	 * sends damage — dirty the whole window now so the vblank loop does
+	 * not stall waiting for an XDamage event that may never arrive (e.g.
+	 * idle app that has not redrawn after a resize). */
+	cw->ever_damaged = 1;
+	comp_dirty_add_rect(cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
 }
 
 /* Read _XROOTPMAP_ID (or ESETROOT_PMAP_ID fallback) and rebuild wallpaper. */
@@ -1202,6 +1206,41 @@ compositor_raise_overlay(void)
 	}
 }
 
+void
+compositor_raise_client(Client *c)
+{
+	CompWin *cw, *prev = NULL, *cur, *tail;
+
+	if (!comp.active || !c)
+		return;
+	cw = comp_find_by_client(c);
+	if (!cw)
+		return;
+
+	/* Unlink cw from wherever it currently is. */
+	for (cur = comp.windows; cur; cur = cur->next) {
+		if (cur == cw) {
+			if (prev)
+				prev->next = cw->next;
+			else
+				comp.windows = cw->next;
+			cw->next = NULL;
+			break;
+		}
+		prev = cur;
+	}
+
+	/* Append to tail — tail is painted last = visually on top. */
+	if (!comp.windows) {
+		comp.windows = cw;
+		return;
+	}
+	tail = comp.windows;
+	while (tail->next)
+		tail = tail->next;
+	tail->next = cw;
+}
+
 /* Update the overlay window's bounding shape to punch holes for every
  * bypassed monitor.  Called whenever paused_mask changes.
  *
@@ -1573,7 +1612,16 @@ compositor_repaint_now(void)
 		g_source_remove(comp.repaint_id);
 		comp.repaint_id = 0;
 	}
+	/* Clear the pending flag before painting so any damage that arrives
+	 * during comp_do_repaint() will correctly re-arm the vblank loop. */
+	comp.repaint_pending = 0;
 	comp_do_repaint();
+	/* If dirty state remains after the repaint (swap was skipped, or new
+	 * damage arrived while eglSwapBuffers was presenting), schedule one
+	 * more repaint so the vblank loop stays alive and the pending content
+	 * reaches the screen. */
+	if (comp.dirty_bbox_valid)
+		schedule_repaint();
 }
 
 /* -------------------------------------------------------------------------
@@ -1689,7 +1737,16 @@ compositor_handle_event(xcb_generic_event_t *ev)
 			CompWin *cw = comp_find_by_xid(cev->window);
 			if (cw) {
 				if (cw->client) {
-					comp_restack_above(cw, cev->above_sibling);
+					/* For managed client windows awm owns the
+					 * compositor Z-order exclusively via restack()
+					 * and compositor_raise_client().  A geometry-only
+					 * xcb_configure_window (X|Y|W|H) generates a
+					 * ConfigureNotify that carries the X server's
+					 * current above_sibling — which for a floating
+					 * window being dragged is often 0 (bottom of the
+					 * X stack), and would spuriously bury it.  Never
+					 * let ConfigureNotify alter the compositor paint
+					 * order for client windows. */
 					schedule_repaint();
 					return;
 				}
@@ -1840,6 +1897,9 @@ compositor_handle_event(xcb_generic_event_t *ev)
 						/* Re-arm immediately for the next vblank so any
 						 * damage that arrived during rendering is caught. */
 						comp_arm_vblank();
+					} else {
+						/* Loop stops — restarts on next schedule_repaint()
+						 * call */
 					}
 					return;
 				}

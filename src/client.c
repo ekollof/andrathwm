@@ -893,7 +893,14 @@ movemouse(const Arg *arg)
 		return;
 	if (c->isfullscreen)
 		return;
-	restack(g_awm_selmon);
+	/* Only restack now if the window is already floating or there is no
+	 * tiling layout.  If the window is tiled, restack() would bury it
+	 * below the bar before togglefloating() has run on the first
+	 * MOTION_NOTIFY — causing a visible dive.  The restack triggered by
+	 * togglefloating() → arrange() handles the tiled→floating transition
+	 * correctly. */
+	if (c->isfloating || !g_awm_selmon->lt[g_awm_selmon->sellt]->arrange)
+		restack(g_awm_selmon);
 	ocx = c->x;
 	ocy = c->y;
 	{
@@ -922,6 +929,13 @@ movemouse(const Arg *arg)
 				free(xe);
 				break;
 			}
+#ifdef COMPOSITOR
+			/* Feed every event to the compositor so that
+			 * PresentCompleteNotify (XCB_GE_GENERIC) clears
+			 * vblank_armed during the drag — prevents it from
+			 * getting stuck set after the grab ends. */
+			compositor_handle_event(xe);
+#endif
 			switch (type) {
 			case XCB_CONFIGURE_REQUEST:
 			case XCB_EXPOSE:
@@ -1069,7 +1083,10 @@ resizemouse(const Arg *arg)
 		return;
 	if (c->isfullscreen)
 		return;
-	restack(g_awm_selmon);
+	/* Same guard as movemouse: skip restack for tiled windows so the
+	 * window is not buried before togglefloating() runs on first motion. */
+	if (c->isfloating || !g_awm_selmon->lt[g_awm_selmon->sellt]->arrange)
+		restack(g_awm_selmon);
 	ocx = c->x;
 	ocy = c->y;
 	{
@@ -1096,6 +1113,13 @@ resizemouse(const Arg *arg)
 				free(xe);
 				break;
 			}
+#ifdef COMPOSITOR
+			/* Feed every event to the compositor so that
+			 * PresentCompleteNotify (XCB_GE_GENERIC) clears
+			 * vblank_armed during the drag — prevents it from
+			 * getting stuck set after the grab ends. */
+			compositor_handle_event(xe);
+#endif
 			switch (type) {
 			case XCB_CONFIGURE_REQUEST:
 			case XCB_EXPOSE:
@@ -1157,6 +1181,13 @@ resizemouse(const Arg *arg)
 	xcb_flush(xc);
 	while ((xe = xcb_poll_for_event(xc))) {
 		uint8_t type = xe->response_type & ~0x80;
+#ifdef COMPOSITOR
+		/* Let the compositor process every event — specifically
+		 * PresentCompleteNotify (XCB_GE_GENERIC) which clears
+		 * vblank_armed.  Without this, vblank_armed stays set and
+		 * comp_arm_vblank() never fires again after the drag ends. */
+		compositor_handle_event(xe);
+#endif
 		if (type != XCB_ENTER_NOTIFY && type < LASTEvent && handler[type])
 			handler[type](xe);
 		free(xe);
