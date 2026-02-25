@@ -156,14 +156,21 @@ compositor_init(GMainContext *ctx)
 		return -1;
 	}
 
+/* Free render_formats and return -1; used on all early error paths below. */
+#define INIT_FAIL(msg)                      \
+	do {                                    \
+		awm_warn(msg);                      \
+		free((void *) comp.render_formats); \
+		comp.render_formats = NULL;         \
+		return -1;                          \
+	} while (0)
+
 	/* --- Check required extensions ----------------------------------------
 	 */
 
 	ext = xcb_get_extension_data(xc, &xcb_composite_id);
-	if (!ext || !ext->present) {
-		awm_warn("compositor: XComposite extension not available");
-		return -1;
-	}
+	if (!ext || !ext->present)
+		INIT_FAIL("compositor: XComposite extension not available");
 	{
 		xcb_composite_query_version_cookie_t vck;
 		xcb_composite_query_version_reply_t *vr;
@@ -174,16 +181,14 @@ compositor_init(GMainContext *ctx)
 			    vr ? (int) vr->major_version : 0,
 			    vr ? (int) vr->minor_version : 0);
 			free(vr);
-			return -1;
+			INIT_FAIL("compositor: XComposite version check failed");
 		}
 		free(vr);
 	}
 
 	ext = xcb_get_extension_data(xc, &xcb_damage_id);
-	if (!ext || !ext->present) {
-		awm_warn("compositor: XDamage extension not available");
-		return -1;
-	}
+	if (!ext || !ext->present)
+		INIT_FAIL("compositor: XDamage extension not available");
 	comp.damage_ev_base  = ext->first_event;
 	comp.damage_err_base = ext->first_error;
 	comp.damage_req_base = ext->major_opcode;
@@ -196,10 +201,8 @@ compositor_init(GMainContext *ctx)
 	}
 
 	ext = xcb_get_extension_data(xc, &xcb_xfixes_id);
-	if (!ext || !ext->present) {
-		awm_warn("compositor: XFixes extension not available");
-		return -1;
-	}
+	if (!ext || !ext->present)
+		INIT_FAIL("compositor: XFixes extension not available");
 	comp.xfixes_ev_base  = ext->first_event;
 	comp.xfixes_err_base = ext->first_error;
 	{
@@ -211,10 +214,8 @@ compositor_init(GMainContext *ctx)
 	}
 
 	ext = xcb_get_extension_data(xc, &xcb_render_id);
-	if (!ext || !ext->present) {
-		awm_warn("compositor: XRender extension not available");
-		return -1;
-	}
+	if (!ext || !ext->present)
+		INIT_FAIL("compositor: XRender extension not available");
 	comp.render_err_base     = ext->first_error;
 	comp.render_request_base = ext->major_opcode;
 
@@ -820,7 +821,13 @@ comp_add_by_xid(xcb_window_t w)
 		    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
 		xcb_flush(xc);
 		err = xcb_request_check(xc, ck);
-		free(err);
+		if (err) {
+			awm_warn("compositor: xcb_damage_create failed (error %d) "
+			         "for window 0x%08x",
+			    (int) err->error_code, (unsigned) w);
+			free(err);
+			cw->damage = 0;
+		}
 	}
 
 	comp_subscribe_present(cw);
@@ -1264,7 +1271,6 @@ comp_update_overlay_shape(void)
 			{
 				xcb_rectangle_t mr = { (int16_t) m->mx, (int16_t) m->my,
 					(uint16_t) m->mw, (uint16_t) m->mh };
-				xcb_xfixes_union_region(xc, hole_rgn, hole_rgn, hole_rgn);
 				/* Add this monitor's rect to hole_rgn */
 				xcb_xfixes_set_region(xc, result_rgn, 1, &mr);
 				xcb_xfixes_union_region(xc, hole_rgn, result_rgn, hole_rgn);
@@ -1837,7 +1843,12 @@ compositor_handle_event(xcb_generic_event_t *ev)
 					CompWin *cw = comp_find_by_xid(pev->window);
 					if (cw && cw->redirected && !comp.paused) {
 						comp_refresh_pixmap(cw);
-						compositor_damage_all();
+						/* Dirty only this window's bounding rect, not the
+						 * whole screen.  compositor_damage_all() here would
+						 * force a full-screen repaint on every pixmap refresh
+						 * event (e.g. every frame of a video player). */
+						comp_dirty_add_rect(cw->x, cw->y, cw->w + 2 * cw->bw,
+						    cw->h + 2 * cw->bw);
 						schedule_repaint();
 						awm_debug("compositor: Present CompleteNotify on "
 						          "window 0x%lx — refreshed pixmap",
