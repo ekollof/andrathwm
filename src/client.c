@@ -18,10 +18,13 @@
 /* module-local strings */
 static const char broken[] = "broken";
 
+/* O(1) window-to-client lookup table; keyed by xcb_window_t cast to pointer */
+static GHashTable *win_to_client;
+
 void
 applyrules(Client *c)
 {
-	const char  *class, *instance;
+	const char *class, *instance;
 	unsigned int i;
 	const Rule  *r;
 	Monitor     *m;
@@ -163,8 +166,11 @@ applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 void
 attach(Client *c)
 {
-	c->next             = c->mon->cl->clients;
-	c->mon->cl->clients = c;
+	if (!win_to_client)
+		win_to_client = g_hash_table_new(g_direct_hash, g_direct_equal);
+	g_hash_table_insert(win_to_client, GUINT_TO_POINTER(c->win), c);
+	c->next            = g_awm.clients_head;
+	g_awm.clients_head = c;
 }
 
 void
@@ -181,7 +187,7 @@ attachclients(Monitor *m)
 	if (tm != m)
 		utags |= tm->tagset[tm->seltags];
 
-	for (c = m->cl->clients; c; c = c->next)
+	for (c = g_awm.clients_head; c; c = c->next)
 		if (ISVISIBLE(c, m)) {
 			if (c->tags & utags) {
 				c->tags = c->tags & m->tagset[m->seltags];
@@ -200,8 +206,8 @@ attachclients(Monitor *m)
 void
 attachstack(Client *c)
 {
-	c->snext          = c->mon->cl->stack;
-	c->mon->cl->stack = c;
+	c->snext         = g_awm.stack_head;
+	g_awm.stack_head = c;
 }
 
 void
@@ -231,7 +237,9 @@ detach(Client *c)
 {
 	Client **tc;
 
-	for (tc = &c->mon->cl->clients; *tc && *tc != c; tc = &(*tc)->next)
+	if (win_to_client)
+		g_hash_table_remove(win_to_client, GUINT_TO_POINTER(c->win));
+	for (tc = &g_awm.clients_head; *tc && *tc != c; tc = &(*tc)->next)
 		;
 	*tc = c->next;
 }
@@ -241,12 +249,12 @@ detachstack(Client *c)
 {
 	Client **tc, *t;
 
-	for (tc = &c->mon->cl->stack; *tc && *tc != c; tc = &(*tc)->snext)
+	for (tc = &g_awm.stack_head; *tc && *tc != c; tc = &(*tc)->snext)
 		;
 	*tc = c->snext;
 
 	if (c == c->mon->sel) {
-		for (t = c->mon->cl->stack; t && !ISVISIBLE(t, c->mon); t = t->snext)
+		for (t = g_awm.stack_head; t && !ISVISIBLE(t, c->mon); t = t->snext)
 			;
 		c->mon->sel = t;
 	}
@@ -256,9 +264,9 @@ void
 focus(Client *c)
 {
 	if (!c || !ISVISIBLE(c, g_awm_selmon))
-		for (c = g_awm_selmon->cl->stack; c && !ISVISIBLE(c, g_awm_selmon);
-		    c  = c->snext)
-            ;
+		for (c = g_awm.stack_head; c && !ISVISIBLE(c, g_awm_selmon);
+		     c = c->snext)
+			;
 	if (g_awm_selmon->sel && g_awm_selmon->sel != c)
 		unfocus(g_awm_selmon->sel, 0);
 	if (c) {
@@ -275,7 +283,7 @@ focus(Client *c)
 			xcb_change_window_attributes(
 			    xc, c->win, XCB_CW_BORDER_PIXEL, &pix);
 			if (!g_awm_selmon->pertag
-			        .drawwithgaps[g_awm_selmon->pertag.curtag] &&
+			         .drawwithgaps[g_awm_selmon->pertag.curtag] &&
 			    !c->isfloating) {
 				uint32_t vals[2];
 				vals[0] = (uint32_t) g_awm_selmon->barwin;
@@ -316,15 +324,14 @@ focusstack(const Arg *arg)
 		return;
 	if (arg->i > 0) {
 		for (c = g_awm_selmon->sel->next; c && !ISVISIBLE(c, g_awm_selmon);
-		    c  = c->next)
-            ;
+		     c = c->next)
+			;
 		if (!c)
-			for (c = g_awm_selmon->cl->clients;
-			    c && !ISVISIBLE(c, g_awm_selmon); c = c->next)
+			for (c = g_awm.clients_head; c && !ISVISIBLE(c, g_awm_selmon);
+			     c = c->next)
 				;
 	} else {
-		for (i = g_awm_selmon->cl->clients; i != g_awm_selmon->sel;
-		    i  = i->next) {
+		for (i = g_awm.clients_head; i != g_awm_selmon->sel; i = i->next) {
 			if (ISVISIBLE(i, g_awm_selmon))
 				c = i;
 		}
@@ -350,17 +357,16 @@ focusstackhidden(const Arg *arg)
 
 	if (arg->i > 0) {
 		for (c = g_awm_selmon->sel->next;
-		    c && !(c->tags & g_awm_selmon->tagset[g_awm_selmon->seltags]);
-		    c = c->next)
+		     c && !(c->tags & g_awm_selmon->tagset[g_awm_selmon->seltags]);
+		     c = c->next)
 			;
 		if (!c)
-			for (c = g_awm_selmon->cl->clients;
-			    c && !(c->tags & g_awm_selmon->tagset[g_awm_selmon->seltags]);
-			    c = c->next)
+			for (c = g_awm.clients_head;
+			     c && !(c->tags & g_awm_selmon->tagset[g_awm_selmon->seltags]);
+			     c = c->next)
 				;
 	} else {
-		for (i = g_awm_selmon->cl->clients; i != g_awm_selmon->sel;
-		    i  = i->next) {
+		for (i = g_awm.clients_head; i != g_awm_selmon->sel; i = i->next) {
 			if (i->tags & g_awm_selmon->tagset[g_awm_selmon->seltags])
 				c = i;
 		}
@@ -694,7 +700,7 @@ restorewin(const Arg *arg)
 {
 	Client *c = (Client *) arg->v;
 	if (!c)
-		for (c = g_awm_selmon->cl->stack; c && !c->ishidden; c = c->snext)
+		for (c = g_awm.stack_head; c && !c->ishidden; c = c->snext)
 			;
 	if (!c)
 		return;
@@ -706,7 +712,7 @@ showall(const Arg *arg)
 {
 	Client *c;
 
-	for (c = g_awm_selmon->cl->clients; c; c = c->next)
+	for (c = g_awm.clients_head; c; c = c->next)
 		if (c->ishidden &&
 		    (c->tags & g_awm_selmon->tagset[g_awm_selmon->seltags]))
 			show(c);
@@ -964,7 +970,7 @@ Client *
 nexttiled(Client *c, Monitor *m)
 {
 	for (; c && (c->isfloating || !ISVISIBLE(c, m) || c->ishidden);
-	    c = c->next)
+	     c = c->next)
 		;
 	return c;
 }
@@ -1000,7 +1006,7 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	c->h    = h;
 	bw      = c->bw;
 	if (!c->mon->pertag.drawwithgaps[c->mon->pertag.curtag] &&
-	    (((nexttiled(c->mon->cl->clients, c->mon) == c &&
+	    (((nexttiled(g_awm.clients_head, c->mon) == c &&
 	          !nexttiled(c->next, c->mon)) ||
 	        &monocle == c->mon->lt[c->mon->sellt]->arrange)) &&
 	    !c->isfullscreen && !c->isfloating &&
@@ -1275,27 +1281,42 @@ seturgent(Client *c, int urg)
 void
 showhide(Client *c)
 {
-	if (!c)
-		return;
-	if (ISVISIBLE(c, c->mon) && !c->ishidden) {
-		/* For monocle layout, skip the compositor unhide here — monocle()
-		 * runs immediately after showhide() (inside arrangemon) and is the
-		 * sole authority on which windows are hidden on that monitor.
-		 * Unhiding every visible window here would only trigger a wasted
-		 * show→hide repaint cycle for the non-top windows. */
-		if (c->mon->lt[c->mon->sellt]->arrange != monocle)
-			compositor_set_hidden(c, 0);
-		{
-			uint32_t vals[2] = { (uint32_t) c->x, (uint32_t) c->y };
-			xcb_configure_window(
-			    xc, c->win, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
+	Client *hidden[1024];
+	int     nhidden = 0;
+	int     i;
+
+	/* First pass (forward): show visible clients and collect hidden ones.
+	 * The original recursive implementation processed hidden clients in
+	 * reverse stack order (recurse-then-act in the else branch), so we
+	 * gather them here and replay in reverse order in the second pass. */
+	for (; c; c = c->snext) {
+		if (ISVISIBLE(c, c->mon) && !c->ishidden) {
+			/* For monocle layout, skip the compositor unhide here —
+			 * monocle() runs immediately after showhide() (inside
+			 * arrangemon) and is the sole authority on which windows
+			 * are hidden on that monitor.  Unhiding every visible
+			 * window here would only trigger a wasted show→hide
+			 * repaint cycle for the non-top windows. */
+			if (c->mon->lt[c->mon->sellt]->arrange != monocle)
+				compositor_set_hidden(c, 0);
+			{
+				uint32_t vals[2] = { (uint32_t) c->x, (uint32_t) c->y };
+				xcb_configure_window(xc, c->win,
+				    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
+			}
+			if ((!c->mon->lt[c->mon->sellt]->arrange || c->isfloating) &&
+			    !c->isfullscreen)
+				resize(c, c->x, c->y, c->w, c->h, 0);
+		} else {
+			if (nhidden < (int) (sizeof hidden / sizeof hidden[0]))
+				hidden[nhidden++] = c;
 		}
-		if ((!c->mon->lt[c->mon->sellt]->arrange || c->isfloating) &&
-		    !c->isfullscreen)
-			resize(c, c->x, c->y, c->w, c->h, 0);
-		showhide(c->snext);
-	} else {
-		showhide(c->snext);
+	}
+
+	/* Second pass (reverse): hide clients in the same bottom-up order as
+	 * the original recursive implementation. */
+	for (i = nhidden - 1; i >= 0; i--) {
+		c = hidden[i];
 		compositor_set_hidden(c, 1);
 		{
 			uint32_t vals[2] = { (uint32_t) (int32_t) (WIDTH(c) * -2),
@@ -1360,8 +1381,9 @@ togglescratch(const Arg *arg)
 	Client      *c;
 	unsigned int found = 0;
 
-	for (c = g_awm_selmon->cl->clients;
-	    c && !(found = c->scratchkey == ((char **) arg->v)[0][0]); c = c->next)
+	for (c = g_awm.clients_head;
+	     c && !(found = c->scratchkey == ((char **) arg->v)[0][0]);
+	     c = c->next)
 		;
 	if (found) {
 		if (ISVISIBLE(c, g_awm_selmon)) {
@@ -1424,8 +1446,8 @@ toggleview(const Arg *arg)
 				selmon_curtag = 0;
 			else {
 				for (i = 0;
-				    !(g_awm_selmon->tagset[g_awm_selmon->seltags] & 1 << i);
-				    i++)
+				     !(g_awm_selmon->tagset[g_awm_selmon->seltags] & 1 << i);
+				     i++)
 					;
 				selmon_curtag = i + 1;
 			}
@@ -1741,7 +1763,7 @@ view(const Arg *arg)
 			selmon_curtag = 0;
 		else {
 			for (i = 0;
-			    !(g_awm_selmon->tagset[g_awm_selmon->seltags] & 1 << i); i++)
+			     !(g_awm_selmon->tagset[g_awm_selmon->seltags] & 1 << i); i++)
 				;
 			selmon_curtag = i + 1;
 		}
@@ -1896,12 +1918,9 @@ warp(const Client *c)
 Client *
 wintoclient(xcb_window_t w)
 {
-	Client *c;
-
-	for (c = g_awm.cl->clients; c; c = c->next)
-		if (c->win == w)
-			return c;
-	return NULL;
+	if (!win_to_client)
+		return NULL;
+	return g_hash_table_lookup(win_to_client, GUINT_TO_POINTER(w));
 }
 
 void
@@ -1911,7 +1930,7 @@ zoom(const Arg *arg)
 
 	if (!g_awm_selmon->lt[g_awm_selmon->sellt]->arrange || !c || c->isfloating)
 		return;
-	if (c == nexttiled(g_awm_selmon->cl->clients, g_awm_selmon) &&
+	if (c == nexttiled(g_awm.clients_head, g_awm_selmon) &&
 	    !(c = nexttiled(c->next, g_awm_selmon)))
 		return;
 	pop(c);
@@ -1925,18 +1944,17 @@ movestack(const Arg *arg)
 	if (arg->i > 0) {
 		/* find the client after g_awm_selmon->sel */
 		for (c = g_awm_selmon->sel->next;
-		    c && (!ISVISIBLE(c, g_awm_selmon) || c->isfloating); c = c->next)
+		     c && (!ISVISIBLE(c, g_awm_selmon) || c->isfloating); c = c->next)
 			;
 		if (!c)
-			for (c = g_awm_selmon->cl->clients;
-			    c && (!ISVISIBLE(c, g_awm_selmon) || c->isfloating);
-			    c = c->next)
+			for (c = g_awm.clients_head;
+			     c && (!ISVISIBLE(c, g_awm_selmon) || c->isfloating);
+			     c = c->next)
 				;
 
 	} else {
 		/* find the client before g_awm_selmon->sel */
-		for (i = g_awm_selmon->cl->clients; i != g_awm_selmon->sel;
-		    i  = i->next) {
+		for (i = g_awm.clients_head; i != g_awm_selmon->sel; i = i->next) {
 			if (ISVISIBLE(i, g_awm_selmon) && !i->isfloating)
 				c = i;
 		}
@@ -1946,7 +1964,7 @@ movestack(const Arg *arg)
 					c = i;
 	}
 	/* find the client before g_awm_selmon->sel and c */
-	for (i = g_awm_selmon->cl->clients; i && (!p || !pc); i = i->next) {
+	for (i = g_awm.clients_head; i && (!p || !pc); i = i->next) {
 		if (i->next == g_awm_selmon->sel)
 			p = i;
 		if (i->next == c)
@@ -1965,10 +1983,10 @@ movestack(const Arg *arg)
 		if (pc && pc != g_awm_selmon->sel)
 			pc->next = g_awm_selmon->sel;
 
-		if (g_awm_selmon->sel == g_awm_selmon->cl->clients)
-			g_awm_selmon->cl->clients = c;
-		else if (c == g_awm_selmon->cl->clients)
-			g_awm_selmon->cl->clients = g_awm_selmon->sel;
+		if (g_awm_selmon->sel == g_awm.clients_head)
+			g_awm.clients_head = c;
+		else if (c == g_awm.clients_head)
+			g_awm.clients_head = g_awm_selmon->sel;
 
 		arrange(g_awm_selmon);
 	}

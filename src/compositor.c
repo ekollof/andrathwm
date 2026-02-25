@@ -783,7 +783,7 @@ comp_add_by_xid(xcb_window_t w)
 		Monitor *m;
 		cw->client = NULL;
 		FOR_EACH_MON(m)
-		for (c = g_awm.cl->clients; c; c = c->next)
+		for (c = g_awm.clients_head; c; c = c->next)
 			if (c->win == w) {
 				cw->client = c;
 				break;
@@ -997,7 +997,7 @@ comp_pause_watchdog_cb(gpointer data)
 		Client *c;
 		if (m->num >= 32)
 			continue;
-		for (c = m->cl->clients; c; c = c->next) {
+		for (c = g_awm.clients_head; c; c = c->next) {
 			if (!ISVISIBLE(c, m))
 				continue;
 			if (c->isfullscreen && c->opacity >= 1.0 && c->x == m->mx &&
@@ -1038,7 +1038,7 @@ comp_fullscreen_bypass_cb(gpointer data)
 	FOR_EACH_MON(m)
 	{
 		Client *tc;
-		for (tc = m->cl->clients; tc; tc = tc->next) {
+		for (tc = g_awm.clients_head; tc; tc = tc->next) {
 			if (tc->win == win) {
 				c = tc;
 				break;
@@ -1292,7 +1292,7 @@ compositor_check_unredirect(void)
 		Client *c;
 		if (m->num >= 32)
 			continue;
-		for (c = m->cl->clients; c; c = c->next) {
+		for (c = g_awm.clients_head; c; c = c->next) {
 			if (!ISVISIBLE(c, m))
 				continue;
 			awm_debug("check_unredirect: mon%d client 0x%lx"
@@ -1955,7 +1955,7 @@ comp_snapshot_pixmaps(unsigned int *count_out)
 	/* Count visible managed clients on selmon */
 	m = g_awm_selmon;
 	n = 0;
-	for (c = m->cl->clients; c; c = c->next)
+	for (c = g_awm.clients_head; c; c = c->next)
 		if (ISVISIBLE(c, m) && !c->ishidden)
 			n++;
 	if (n == 0)
@@ -1966,7 +1966,7 @@ comp_snapshot_pixmaps(unsigned int *count_out)
 		return NULL;
 
 	i = 0;
-	for (c = m->cl->clients; c; c = c->next) {
+	for (c = g_awm.clients_head; c; c = c->next) {
 		UiPreviewEntry *e;
 		CompWin        *cw;
 		xcb_pixmap_t    snap;

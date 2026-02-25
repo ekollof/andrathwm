@@ -36,7 +36,7 @@ buttonpress(xcb_generic_event_t *e)
 		/* Calculate x position after tags (accounting for hidden empty tags)
 		 */
 		unsigned int occ = 0;
-		for (Client *tc = m->cl->clients; tc; tc = tc->next) {
+		for (Client *tc = g_awm.clients_head; tc; tc = tc->next) {
 			occ |= tc->tags;
 		}
 
@@ -70,7 +70,7 @@ buttonpress(xcb_generic_event_t *e)
 			x += TEXTW(g_awm_selmon->ltsymbol);
 
 			int n = 0;
-			for (Client *t = m->cl->clients; t; t = t->next)
+			for (Client *t = g_awm.clients_head; t; t = t->next)
 				if (t->tags & m->tagset[m->seltags])
 					n++;
 
@@ -81,7 +81,7 @@ buttonpress(xcb_generic_event_t *e)
 				int tabw      = remainder / n;
 				int cx        = x;
 
-				for (Client *t = m->cl->clients; t; t = t->next) {
+				for (Client *t = g_awm.clients_head; t; t = t->next) {
 					if (!(t->tags & m->tagset[m->seltags]))
 						continue;
 					if (ev->event_x >= cx && ev->event_x < cx + tabw) {
@@ -293,7 +293,7 @@ configurenotify(xcb_generic_event_t *e)
 			updatebars();
 			FOR_EACH_MON(m)
 			{
-				for (c = m->cl->clients; c; c = c->next)
+				for (c = g_awm.clients_head; c; c = c->next)
 					if (c->isfullscreen) {
 						/* Move window to fill new monitor geometry without
 						 * touching old{x,y,w,h} so unfullscreen restores

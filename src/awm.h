@@ -155,9 +155,8 @@ typedef struct {
 	const Arg arg;
 } Button;
 
-typedef struct Clientlist Clientlist;
-typedef struct Monitor    Monitor;
-typedef struct Client     Client;
+typedef struct Monitor Monitor;
+typedef struct Client  Client;
 
 /* Forward declaration — allows Client to hold a back-pointer to its CompWin
  * without requiring compositor_backend.h (internal to the compositor) to be
@@ -242,7 +241,6 @@ struct Monitor {
 	unsigned int  tagset[2];
 	int           showbar;
 	int           topbar;
-	Clientlist   *cl;
 	Client       *sel;
 	xcb_window_t  barwin;
 	const Layout *lt[2];
@@ -260,11 +258,6 @@ typedef struct {
 	const char   scratchkey;
 	double       opacity; /* 0.0 = use default (1.0); otherwise 0.0–1.0 */
 } Rule;
-
-struct Clientlist {
-	Client *clients;
-	Client *stack;
-};
 
 typedef struct Systray Systray;
 struct Systray {

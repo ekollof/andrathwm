@@ -33,10 +33,10 @@ arrange(Monitor *m)
 	Monitor *om;
 
 	if (m)
-		showhide(m->cl->stack);
+		showhide(g_awm.stack_head);
 	else
 		FOR_EACH_MON(om)
-	showhide(om->cl->stack);
+	showhide(g_awm.stack_head);
 	if (m) {
 		arrangemon(m);
 		/* showhide() walks the shared client stack and calls
@@ -116,7 +116,7 @@ cleanupmon(Monitor *mon)
 	 * slot now have a stale pointer — fix by re-pointing into the array.
 	 * Clients on the removed monitor have already been redirected by the
 	 * caller (updategeom) before cleanupmon() was invoked. */
-	for (c = g_awm.cl->clients; c; c = c->next) {
+	for (c = g_awm.clients_head; c; c = c->next) {
 		int cm = (int) (c->mon - g_awm.monitors);
 		if (cm > idx)
 			c->mon = &g_awm.monitors[cm - 1];
@@ -163,7 +163,6 @@ createmon(void)
 	/* Initialise the new slot in place. */
 	m = &g_awm.monitors[g_awm.n_monitors];
 	memset(m, 0, sizeof *m);
-	m->cl        = g_awm.cl;
 	m->tagset[0] = m->tagset[1] = (1 << i) & TAGMASK;
 	m->mfact                    = mfact;
 	m->nmaster                  = nmaster;
@@ -229,7 +228,7 @@ drawbar(Monitor *m)
 	}
 
 	resizebarwin(m);
-	for (c = m->cl->clients; c; c = c->next) {
+	for (c = g_awm.clients_head; c; c = c->next) {
 		occ |= c->tags;
 		if (c->isurgent)
 			urg |= c->tags;
@@ -263,7 +262,7 @@ drawbar(Monitor *m)
 		int remainder = w;
 		int tabw      = remainder / n;
 
-		for (c = m->cl->clients; c; c = c->next) {
+		for (c = g_awm.clients_head; c; c = c->next) {
 			/* Show all windows on current tags (visible and hidden) */
 			if (!(c->tags & m->tagset[m->seltags]))
 				continue;
@@ -343,14 +342,14 @@ monocle(Monitor *m)
 	unsigned int n = 0;
 	Client      *c;
 
-	for (c = m->cl->clients; c; c = c->next)
+	for (c = g_awm.clients_head; c; c = c->next)
 		if (ISVISIBLE(c, m))
 			n++;
 	if (n > 0) /* override layout symbol */
 		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
-	for (c = m->cl->stack; c && (!ISVISIBLE(c, m) || c->isfloating);
-	    c  = c->snext)
-        ;
+	for (c = g_awm.stack_head; c && (!ISVISIBLE(c, m) || c->isfloating);
+	     c = c->snext)
+		;
 	if (c && !c->isfloating) {
 		/* Use resizeclient() directly, bypassing applysizehints().
 		 * resize() skips the XConfigureWindow call when the stored
@@ -421,7 +420,7 @@ restack(Monitor *m)
 	}
 	if (m->lt[m->sellt]->arrange) {
 		uint32_t sibling = (uint32_t) m->barwin;
-		for (c = m->cl->stack; c; c = c->snext)
+		for (c = g_awm.stack_head; c; c = c->snext)
 			if (!c->isfloating && ISVISIBLE(c, m)) {
 				uint32_t vals[2] = { sibling, XCB_STACK_MODE_BELOW };
 				xcb_configure_window(xc, c->win,
@@ -467,8 +466,8 @@ tile(Monitor *m)
 	 * per-slot height formula  h = (wh - my) / (MIN(n, nmaster) - i)  can
 	 * distribute remaining space evenly.  Both passes are O(n) — nexttiled
 	 * advances one window at a time, not from the head each iteration. */
-	for (n = 0, c = nexttiled(m->cl->clients, m); c;
-	    c = nexttiled(c->next, m), n++)
+	for (n = 0, c = nexttiled(g_awm.clients_head, m); c;
+	     c = nexttiled(c->next, m), n++)
 		;
 
 	if (n == 0)
@@ -480,8 +479,8 @@ tile(Monitor *m)
 		else
 			mw = m->ww - m->pertag.gappx[m->pertag.curtag];
 		for (i = 0, my = ty = m->pertag.gappx[m->pertag.curtag],
-		    c    = nexttiled(m->cl->clients, m);
-		    c; c = nexttiled(c->next, m), i++)
+		    c     = nexttiled(g_awm.clients_head, m);
+		     c; c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i) -
 				    m->pertag.gappx[m->pertag.curtag];
@@ -515,8 +514,8 @@ tile(Monitor *m)
 			mw = m->nmaster ? m->ww * m->mfact : 0;
 		else
 			mw = m->ww;
-		for (i = my = ty = 0, c = nexttiled(m->cl->clients, m); c;
-		    c = nexttiled(c->next, m), i++)
+		for (i = my = ty = 0, c = nexttiled(g_awm.clients_head, m); c;
+		     c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i);
 				if (n == 1)
@@ -740,7 +739,7 @@ updategeom(void)
 				/* Redirect selmon and clients away from the dying monitor. */
 				if (g_awm.selmon_num == (int) (g_awm.n_monitors - 1))
 					g_awm.selmon_num = 0;
-				for (c = g_awm.cl->clients; c; c = c->next) {
+				for (c = g_awm.clients_head; c; c = c->next) {
 					dirty = 1;
 					if (c->mon == dying)
 						c->mon = g_awm_selmon;
@@ -808,7 +807,7 @@ xinerama_fallback:
 			Monitor *dying = &g_awm.monitors[g_awm.n_monitors - 1];
 			if (g_awm.selmon_num == (int) (g_awm.n_monitors - 1))
 				g_awm.selmon_num = 0;
-			for (c = g_awm.cl->clients; c; c = c->next) {
+			for (c = g_awm.clients_head; c; c = c->next) {
 				dirty = 1;
 				if (c->mon == dying)
 					c->mon = g_awm_selmon;

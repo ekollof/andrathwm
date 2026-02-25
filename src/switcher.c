@@ -787,7 +787,7 @@ switcher_show_internal(int all_monitors, int start_prev)
 		return;
 	sw_nentries = 0;
 
-	for (Client *c = g_awm.cl->clients; c; c = c->next) {
+	for (Client *c = g_awm.clients_head; c; c = c->next) {
 		if (c->ishidden || c->issni)
 			continue;
 		/* all_monitors=1 (Super+Tab): every window on every tag.

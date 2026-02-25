@@ -13,7 +13,7 @@
  * What lives here:
  *   - Monitor flat array (g_awm.monitors[]) — the authoritative monitor list
  *   - Focus: g_awm.selmon_num (index into monitors[])
- *   - Client list: g_awm.cl (live pointer)
+ *   - Client list: g_awm.clients_head / g_awm.stack_head (inline, no heap)
  *   - Compositor bypass/redirect state
  *
  * What does NOT live here (runtime-only, set-once in setup()):
@@ -57,30 +57,6 @@
 /* Maximum number of monitors supported in the flat monitors[] array. */
 #define WMSTATE_MAX_MONITORS 8
 
-/* Maximum number of clients tracked in AWMState. */
-#define WMSTATE_MAX_CLIENTS 512
-
-/* Client name max length (matches Client.name). */
-#define WMSTATE_NAME_LEN 256
-
-/* -------------------------------------------------------------------------
- * AWMStateClient — persistent per-client state (snapshot for future use).
- * ---------------------------------------------------------------------- */
-typedef struct {
-	xcb_window_t win; /* X window XID */
-	char         name[WMSTATE_NAME_LEN];
-	unsigned int tags;        /* tag bitmask */
-	int          monitor_num; /* owning monitor number */
-	int          x, y, w, h;  /* current geometry */
-	double       opacity;     /* compositing opacity 0.0–1.0 */
-	int          isfloating;
-	int          isfullscreen;
-	int          ishidden;
-	int          issteam;
-	char         scratchkey;        /* '\0' = not a scratchpad */
-	int          bypass_compositor; /* _NET_WM_BYPASS_COMPOSITOR hint */
-} AWMStateClient;
-
 /* -------------------------------------------------------------------------
  * AWMState — the top-level consolidated state struct.
  * ---------------------------------------------------------------------- */
@@ -95,10 +71,13 @@ typedef struct {
 	int          selmon_num;
 	Monitor      monitors[WMSTATE_MAX_MONITORS];
 
-	/* ---- Client list — live pointer ----
-	 * g_awm.cl is the shared client list (all clients + stack).
-	 * Set in setup() and never replaced. */
-	Clientlist *cl;
+	/* ---- Client list — inline heads, no heap allocation ----
+	 * clients_head: insertion-order list (Client.next).
+	 * stack_head:   MRU/focus-order list (Client.snext).
+	 * All monitors share the same two lists; client ownership is
+	 * determined by c->mon, not by which list it is in. */
+	Client *clients_head;
+	Client *stack_head;
 
 	/* ---- Compositor bypass/unredirect state ----
 	 * paused_mask: bitmask — bit N set means monitor N is bypassed.
@@ -107,10 +86,6 @@ typedef struct {
 	 * fields are synced by wmstate_update() for observability. */
 	uint32_t comp_paused_mask;
 	int      comp_paused;
-
-	/* ---- Client list snapshot (for future serialisation) ---- */
-	unsigned int   n_clients;
-	AWMStateClient clients[WMSTATE_MAX_CLIENTS];
 } AWMState;
 
 /* The single global instance — defined in wmstate.c. */
@@ -130,15 +105,15 @@ extern AWMState g_awm;
  * _femi is a hidden loop index; the body sees var as a valid Monitor *. */
 #define FOR_EACH_MON(var)                                 \
 	for (int _femi = 0; _femi < (int) g_awm.n_monitors && \
-	    ((var) = &g_awm.monitors[_femi], 1);              \
-	    _femi++)
+	     ((var) = &g_awm.monitors[_femi], 1);             \
+	     _femi++)
 
 /* -------------------------------------------------------------------------
  * wmstate_update() — sync observable state into g_awm.
  *
- * Refreshes the client snapshot and compositor state fields.  Monitor state
- * is now authoritative directly in g_awm.monitors[], so no monitor snapshot
- * loop is needed here.
+ * Refreshes the compositor state fields.  Monitor state is authoritative
+ * directly in g_awm.monitors[]; client list heads are inline in g_awm;
+ * no snapshot loops are needed here.
  * ---------------------------------------------------------------------- */
 void wmstate_update(void);
 

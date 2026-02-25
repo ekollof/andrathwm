@@ -56,8 +56,8 @@ static pid_t ui_pid           = -1; /* awm-ui child process */
 static int   ui_fd            = -1; /* socket fd to awm-ui */
 int          launcher_visible = 0;  /* 1 while the launcher window is open */
 xcb_window_t launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
-static GMainContext *ui_ctx   = NULL; /* GMainContext used by run() — kept for
-                                       * the respawn timer callback */
+static GMainContext *ui_ctx = NULL; /* GMainContext used by run() — kept for
+                                     * the respawn timer callback */
 char         stext[STATUS_TEXT_LEN];
 int          screen;
 int          sw, sh;             /* X display screen geometry width, height */
@@ -66,10 +66,10 @@ int          lrpad;              /* sum of left and right padding for text */
 int          awm_tagslength = 0; /* = TAGSLENGTH; set in setup() */
 double       ui_dpi         = 96.0; /* resolved screen DPI */
 double       ui_scale       = 1.0;  /* ui_dpi / 96.0 */
-unsigned int ui_borderpx    = 1;    /* borderpx * ui_scale — set in setup() */
-unsigned int ui_snap        = 32;   /* snap     * ui_scale — set in setup() */
-unsigned int ui_iconsize    = 16;   /* iconsize * ui_scale — set in setup() */
-unsigned int ui_gappx       = 5;    /* gappx[0] * ui_scale — set in setup() */
+unsigned int ui_borderpx    = 1;  /* borderpx * ui_scale — set in setup() */
+unsigned int ui_snap        = 32; /* snap     * ui_scale — set in setup() */
+unsigned int ui_iconsize    = 16; /* iconsize * ui_scale — set in setup() */
+unsigned int ui_gappx       = 5;  /* gappx[0] * ui_scale — set in setup() */
 unsigned int numlockmask    = 0;
 static guint xsource_id     = 0; /* GLib source ID for the X11 event source */
 #ifdef STATUSNOTIFIER
@@ -141,16 +141,14 @@ cleanup(void)
 	view(&a);
 	g_awm_selmon->lt[g_awm_selmon->sellt] = &foo;
 	FOR_EACH_MON(m)
-	while (m->cl->stack)
-		unmanage(m->cl->stack, 0);
+	while (g_awm.stack_head)
+		unmanage(g_awm.stack_head, 0);
 	{
 
 		xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
 	}
 	while (g_awm.n_monitors)
 		cleanupmon(&g_awm.monitors[0]);
-	free(g_awm.cl);
-	g_awm.cl = NULL;
 
 	if (showsystray) {
 		Client *ic = systray->icons;
@@ -556,7 +554,7 @@ x_dispatch_cb(gpointer user_data)
 				Monitor *m;
 				FOR_EACH_MON(m)
 				{
-					for (Client *c = m->cl->clients; c; c = c->next)
+					for (Client *c = g_awm.clients_head; c; c = c->next)
 						if (c->isfullscreen)
 							resizeclient(c, m->mx, m->my, m->mw, m->mh);
 					resizebarwin(m);
@@ -1190,8 +1188,7 @@ setup(void)
 		sh   = (int) sit.data->height_in_pixels;
 		root = sit.data->root;
 	}
-	if (!(g_awm.cl = (Clientlist *) calloc(1, sizeof(Clientlist))))
-		die("fatal: could not malloc() %u bytes\n", sizeof(Clientlist));
+	/* clients_head and stack_head are inline zero-initialised in g_awm */
 	/* drw uses a dedicated bare xcb_connection_t (opened inside drw_create)
 	 * for all cairo rendering, keeping its XCB traffic off xc. */
 	drw = drw_create(xc, screen, root, sw, sh);

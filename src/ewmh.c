@@ -117,28 +117,22 @@ setviewport(void)
 void
 updateclientlist(void)
 {
-	Client  *c;
-	Monitor *m;
+	Client *c;
 
 	xcb_delete_property(xc, root, netatom[NetClientList]);
-	FOR_EACH_MON(m)
-	if (m->cl) /* Safety check */
-		for (c = m->cl->clients; c; c = c->next) {
-			uint32_t win32 = (uint32_t) c->win;
-			xcb_change_property(xc, XCB_PROP_MODE_APPEND, root,
-			    netatom[NetClientList], XCB_ATOM_WINDOW, 32, 1, &win32);
-		}
+	for (c = g_awm.clients_head; c; c = c->next) {
+		uint32_t win32 = (uint32_t) c->win;
+		xcb_change_property(xc, XCB_PROP_MODE_APPEND, root,
+		    netatom[NetClientList], XCB_ATOM_WINDOW, 32, 1, &win32);
+	}
 
 	/* Update _NET_CLIENT_LIST_STACKING in bottom-to-top order */
 	xcb_delete_property(xc, root, netatom[NetClientListStacking]);
-	FOR_EACH_MON(m)
-	if (m->cl) /* Safety check */
-		for (c = m->cl->stack; c; c = c->snext) {
-			uint32_t win32 = (uint32_t) c->win;
-			xcb_change_property(xc, XCB_PROP_MODE_APPEND, root,
-			    netatom[NetClientListStacking], XCB_ATOM_WINDOW, 32, 1,
-			    &win32);
-		}
+	for (c = g_awm.stack_head; c; c = c->snext) {
+		uint32_t win32 = (uint32_t) c->win;
+		xcb_change_property(xc, XCB_PROP_MODE_APPEND, root,
+		    netatom[NetClientListStacking], XCB_ATOM_WINDOW, 32, 1, &win32);
+	}
 }
 
 void
