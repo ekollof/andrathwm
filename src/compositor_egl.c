@@ -607,6 +607,7 @@ egl_notify_resize(void)
 		awm_warn("compositor/egl: eglCreateWindowSurface failed on "
 		         "resize (0x%x) — compositor disabled",
 		    (unsigned int) eglGetError());
+		comp.active = 0;
 		return;
 	}
 	if (!eglMakeCurrent(egl.egl_dpy, egl.egl_win, egl.egl_win, egl.egl_ctx)) {
@@ -615,6 +616,7 @@ egl_notify_resize(void)
 		    (unsigned int) eglGetError());
 		eglDestroySurface(egl.egl_dpy, egl.egl_win);
 		egl.egl_win = EGL_NO_SURFACE;
+		comp.active = 0;
 		return;
 	}
 	glViewport(0, 0, sw, sh);

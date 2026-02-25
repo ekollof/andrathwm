@@ -830,6 +830,13 @@ propertynotify(xcb_generic_event_t *e)
 			    (unsigned long) getatomprop(c, netatom[NetWMWindowOpacity]);
 			compositor_set_opacity(c, raw);
 		}
+		if (ev->atom == netatom[NetWMBypassCompositor]) {
+			int hint = (int) getatomprop(c, netatom[NetWMBypassCompositor]);
+			if (hint != c->bypass_compositor) {
+				c->bypass_compositor = hint;
+				compositor_bypass_window(c, hint == 1);
+			}
+		}
 #endif
 	}
 	wmstate_update();

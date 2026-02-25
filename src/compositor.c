@@ -316,14 +316,26 @@ compositor_init(GMainContext *ctx)
 	 * it first; per-window Present ids start at 1.
 	 */
 	if (comp.has_present) {
+		xcb_void_cookie_t    pck;
+		xcb_generic_error_t *perr;
+
 		comp.vblank_eid       = 0; /* overlay uses eid=0 */
 		comp.present_eid_next = 1; /* per-window ids start at 1 */
-		xcb_present_select_input(xc, comp.vblank_eid,
+		pck = xcb_present_select_input_checked(xc, comp.vblank_eid,
 		    (xcb_window_t) comp.overlay,
 		    XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY);
 		xcb_flush(xc);
-		awm_debug("compositor: subscribed overlay to Present "
-		          "CompleteNotify (eid=0)");
+		perr = xcb_request_check(xc, pck);
+		if (perr) {
+			awm_warn("compositor: xcb_present_select_input failed "
+			         "(error %d) — falling back to idle repaint",
+			    (int) perr->error_code);
+			free(perr);
+			comp.has_present = 0;
+		} else {
+			awm_debug("compositor: subscribed overlay to Present "
+			          "CompleteNotify (eid=0)");
+		}
 	}
 
 	/* --- Claim _NET_WM_CM_S<n> composite manager selection ---------------
@@ -522,6 +534,9 @@ comp_subscribe_present(CompWin *cw)
 		return;
 
 	cw->present_eid = comp.present_eid_next++;
+	/* eid=0 is reserved for the overlay vblank channel — skip it */
+	if (comp.present_eid_next == comp.vblank_eid)
+		comp.present_eid_next++;
 
 	xcb_present_select_input(xc, cw->present_eid, (xcb_window_t) cw->win,
 	    XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY);
