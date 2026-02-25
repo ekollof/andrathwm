@@ -228,6 +228,10 @@ drawbar(Monitor *m)
 		 * tw is used below to size the title-tab area.                   */
 		drw_setscheme(drw, scheme[SchemeNorm]);
 		tw = drw_draw_statusd(drw, 0, 0, 0, 0, stext);
+		/* Pre-clear the status region with SchemeNorm bg so there is no
+		 * stale content visible between or around the s2d widgets.      */
+		drw_rect(drw, m->ww - stw - tw, 0, (unsigned int) tw,
+		    (unsigned int) bh, 1, 1);
 		drw_draw_statusd(drw, m->ww - stw - tw, 0, (unsigned int) tw,
 		    (unsigned int) bh, stext);
 	}

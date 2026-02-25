@@ -12,6 +12,10 @@
 #include "status_components.h"
 #include "status_util.h"
 
+/* bh is defined in awm.c; forward-declare so the s2d helpers can use the
+ * real bar height instead of a hardcoded constant. */
+extern int bh;
+
 struct status_arg {
 	const char *(*func)(const char *);
 	const char  *fmt;
@@ -32,18 +36,19 @@ static const char status_unknown_str[] = "n/a";
 /* -------------------------------------------------------------------------
  * Bar graph helpers — emit status2d escape sequences that drawbar() renders.
  *
- * Each helper reads the raw numeric value from the underlying component,
- * then produces a status2d string of the form:
+ * Each helper produces a status2d string of the form:
  *
- *   ^bBGCOLOR^^cFGCOLOR^LABEL^r0,PAD,FILLW,BARH^^d^^fTOTALW^
+ *   ^cCOLOR^^r1,PAD,FILLW,BH-2PAD^^fGRAPH_W^^d^LABEL
  *
- * Layout per widget (all coordinates relative to draw cursor):
- *   - Background rect    : ^r0,0,TOTALW,BH^   in bg colour
- *   - Fill rect          : ^r1,2,FILLW,BH-4^  colour-coded
- *   - Label text         : plain text centred (approximated by leading pad)
- *   - Cursor advance     : ^fTOTALW^
+ * drawbar() pre-clears the entire status region with SchemeNorm bg before
+ * calling drw_draw_statusd(), so no explicit bg rect is needed here.
  *
- * TOTALW = 56px (bh*4 equivalent at typical bh=14).  Callers can tune.
+ * Layout per widget:
+ *   [  S2D_GRAPH_W px fill bar  ][ label text ]
+ *
+ *   ^r^ draws the fill rect at cursor+1, ry=PAD, height=bh-2*PAD.
+ *   ^f S2D_GRAPH_W^ advances the cursor past the bar.
+ *   Label text is drawn at the new cursor position and advances naturally.
  * ---------------------------------------------------------------------- */
 
 /* Bar graph geometry (pixels).
@@ -56,6 +61,8 @@ static const char status_unknown_str[] = "n/a";
  * new cursor position and advances it naturally.  No trailing ^f^ needed.
  *
  * ^r^ does NOT advance the cursor itself — ^f^ is the only way to move it.
+ *
+ * Background rect spans full bh (ry=0).  Fill rect has a 2px vertical inset.
  */
 #define S2D_GRAPH_W 40 /* width of the bar-graph portion in pixels */
 #define S2D_BAR_PAD 2  /* vertical inset of fill bar from bar edge */
@@ -96,11 +103,10 @@ s2d_cpu(const char *unused)
 	perc  = atoi(raw);
 	fillw = (perc * (S2D_GRAPH_W - 2)) / 100;
 	col   = colour_for_perc(perc, 70, 90, 1);
-	/* bg rect, fill rect, advance past graph, label text */
-	snprintf(s2d_buf, sizeof(s2d_buf),
-	    "^c282828^^r0,%d,%d,%d^^c%s^^r1,%d,%d,%d^^f%d^^d^CPU ", S2D_BAR_PAD,
-	    S2D_GRAPH_W, 14 - 2 * S2D_BAR_PAD, col, S2D_BAR_PAD, fillw,
-	    14 - 2 * S2D_BAR_PAD, S2D_GRAPH_W);
+	/* bg is pre-cleared by drawbar(); just draw the fill rect, advance, label
+	 */
+	snprintf(s2d_buf, sizeof(s2d_buf), "^c%s^^r1,%d,%d,%d^^f%d^^d^CPU ", col,
+	    S2D_BAR_PAD, fillw, bh - 2 * S2D_BAR_PAD, S2D_GRAPH_W);
 	return s2d_buf;
 }
 
@@ -135,10 +141,8 @@ s2d_ram(const char *unused)
 	perc  = (int) (used * 100 / total);
 	fillw = (perc * (S2D_GRAPH_W - 2)) / 100;
 	col   = colour_for_perc(perc, 75, 90, 1);
-	snprintf(rbuf, sizeof(rbuf),
-	    "^c282828^^r0,%d,%d,%d^^c%s^^r1,%d,%d,%d^^f%d^^d^RAM ", S2D_BAR_PAD,
-	    S2D_GRAPH_W, 14 - 2 * S2D_BAR_PAD, col, S2D_BAR_PAD, fillw,
-	    14 - 2 * S2D_BAR_PAD, S2D_GRAPH_W);
+	snprintf(rbuf, sizeof(rbuf), "^c%s^^r1,%d,%d,%d^^f%d^^d^RAM ", col,
+	    S2D_BAR_PAD, fillw, bh - 2 * S2D_BAR_PAD, S2D_GRAPH_W);
 	return rbuf;
 }
 
@@ -168,10 +172,8 @@ s2d_bat(const char *bat)
 	else
 		label = "BAT";
 
-	snprintf(bbuf, sizeof(bbuf),
-	    "^c282828^^r0,%d,%d,%d^^c%s^^r1,%d,%d,%d^^f%d^^d^%s ", S2D_BAR_PAD,
-	    S2D_GRAPH_W, 14 - 2 * S2D_BAR_PAD, col, S2D_BAR_PAD, fillw,
-	    14 - 2 * S2D_BAR_PAD, S2D_GRAPH_W, label);
+	snprintf(bbuf, sizeof(bbuf), "^c%s^^r1,%d,%d,%d^^f%d^^d^%s ", col,
+	    S2D_BAR_PAD, fillw, bh - 2 * S2D_BAR_PAD, S2D_GRAPH_W, label);
 	return bbuf;
 }
 
