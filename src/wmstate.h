@@ -11,9 +11,9 @@
  * be enforced at the struct boundary rather than scattered across call sites.
  *
  * What lives here:
- *   - Monitor topology and per-tag layout/pertag state
- *   - Client persistent state (geometry, tags, flags)
- *   - Focus (selected monitor, selected client per monitor)
+ *   - Monitor flat array (g_awm.monitors[]) — the authoritative monitor list
+ *   - Focus: g_awm.selmon_num (index into monitors[])
+ *   - Client list: g_awm.cl (live pointer)
  *   - Compositor bypass/redirect state
  *
  * What does NOT live here (runtime-only, set-once in setup()):
@@ -24,11 +24,23 @@
  *   - X connection (xc, root, screen)
  *
  * The single global instance is:
- *   extern AWMState g_awm;   (defined in awm.c)
+ *   extern AWMState g_awm;   (defined in wmstate.c)
  *
- * During the incremental migration, existing extern globals (mons, selmon,
- * cl, etc.) remain as they are.  Modules are migrated to g_awm field by
- * field; the build must stay green after every commit.
+ * Monitor access macros (use these instead of g_awm.mons / g_awm.selmon):
+ *
+ *   g_awm_selmon
+ *       Pointer to the currently focused Monitor.  Replaces g_awm.selmon
+ *       reads.  Evaluates to &g_awm.monitors[g_awm.selmon_num].
+ *
+ *   g_awm_set_selmon(m)
+ *       Record monitor m as the focused monitor.  Replaces
+ *       g_awm.selmon = m assignments.
+ *
+ *   FOR_EACH_MON(var)
+ *       Loop over every monitor in creation order, assigning a Monitor *
+ *       to var on each iteration.  Replaces
+ *       for (m = g_awm.mons; m; m = m->next) loops.
+ *       var must be declared as Monitor * before the loop.
  *
  * Serialisation (session save/restore, JSON dump) is NOT implemented here.
  * That is a later step, once the consolidation is complete and stable.
@@ -36,69 +48,23 @@
 
 #include <stdint.h>
 #include <xcb/xcb.h>
+/* awm.h provides the full Monitor and Clientlist definitions needed for the
+ * inline monitors[] array.  Every .c file that uses wmstate.h already
+ * includes awm.h first; including it here as well is safe because awm.h
+ * has its own include guard. */
+#include "awm.h"
 
-/* Forward declarations — full definitions live in awm.h.
- * Guarded to avoid duplicate typedef when awm.h is already included. */
-#ifndef AWM_H
-typedef struct Monitor    Monitor;
-typedef struct Clientlist Clientlist;
-#endif
-
-/* Maximum number of monitors supported in AWMState arrays. */
+/* Maximum number of monitors supported in the flat monitors[] array. */
 #define WMSTATE_MAX_MONITORS 8
 
 /* Maximum number of clients tracked in AWMState. */
 #define WMSTATE_MAX_CLIENTS 512
 
-/* Maximum number of tags per monitor (must be >= TAGSLENGTH at runtime).
- * We use a compile-time constant here so AWMState is a plain value type with
- * no heap allocation — making it trivially copyable and comparable. */
-#define WMSTATE_MAX_TAGS 16
-
-/* Layout symbol max length (matches Monitor.ltsymbol). */
-#define WMSTATE_LTSYM_LEN 16
-
 /* Client name max length (matches Client.name). */
 #define WMSTATE_NAME_LEN 256
 
 /* -------------------------------------------------------------------------
- * AWMStateTag — per-tag (pertag slot) layout state for one monitor.
- * Mirrors the per-index fields of struct Pertag.
- * ---------------------------------------------------------------------- */
-typedef struct {
-	int          nmaster;
-	float        mfact;
-	unsigned int sellt;                /* index into lt_sym: 0 or 1 */
-	char lt_sym[2][WMSTATE_LTSYM_LEN]; /* layout symbols for alt slots */
-	int  showbar;
-	int  drawwithgaps;
-	unsigned int gappx;
-} AWMStateTag;
-
-/* -------------------------------------------------------------------------
- * AWMStateMonitor — per-monitor topology and layout state.
- * ---------------------------------------------------------------------- */
-typedef struct {
-	int          num;       /* monitor number (RandR index) */
-	int          mx, my;    /* monitor origin (screen coords) */
-	int          mw, mh;    /* monitor physical size */
-	int          wx, wy;    /* window area origin (excludes bar) */
-	int          ww, wh;    /* window area size */
-	unsigned int seltags;   /* index into tagset[]: 0 or 1 */
-	unsigned int tagset[2]; /* bitmask of visible tags (both slots) */
-	unsigned int curtag;    /* current pertag index */
-	unsigned int prevtag;   /* previous pertag index */
-	char         ltsymbol[WMSTATE_LTSYM_LEN]; /* displayed layout symbol */
-	xcb_window_t sel_win; /* XID of focused client (0 = none) */
-
-	/* Per-tag state: indices 0..n_tags.
-	 * Index 0 is the "all tags" slot; indices 1..n_tags are tag 1..n. */
-	unsigned int n_tags; /* number of valid tag entries (= TAGSLENGTH) */
-	AWMStateTag  tags[WMSTATE_MAX_TAGS + 1];
-} AWMStateMonitor;
-
-/* -------------------------------------------------------------------------
- * AWMStateClient — persistent per-client state.
+ * AWMStateClient — persistent per-client state (snapshot for future use).
  * ---------------------------------------------------------------------- */
 typedef struct {
 	xcb_window_t win; /* X window XID */
@@ -119,43 +85,60 @@ typedef struct {
  * AWMState — the top-level consolidated state struct.
  * ---------------------------------------------------------------------- */
 typedef struct {
-	/* Live runtime pointers — the authoritative WM state.
-	 * These replace the bare mons / selmon / cl globals.
-	 * Set in setup() and kept current by wmstate_update(). */
-	Monitor    *mons;   /* head of the monitor linked list          */
-	Monitor    *selmon; /* currently focused monitor                */
-	Clientlist *cl;     /* global client list (all clients + stack) */
+	/* ---- Monitor flat array — authoritative monitor state ----
+	 * monitors[0..n_monitors-1] are live Monitor values.
+	 * selmon_num is the index of the focused monitor (-1 = none).
+	 * These replace the old g_awm.mons linked list and g_awm.selmon
+	 * pointer.  Use the access macros below instead of these fields
+	 * directly where possible. */
+	unsigned int n_monitors;
+	int          selmon_num;
+	Monitor      monitors[WMSTATE_MAX_MONITORS];
 
-	/* Compositor bypass/unredirect state snapshot.
-	 * paused_mask: bitmask — bit N set means monitor N is bypassed
-	 *              (fullscreen window in direct-scanout mode).
+	/* ---- Client list — live pointer ----
+	 * g_awm.cl is the shared client list (all clients + stack).
+	 * Set in setup() and never replaced. */
+	Clientlist *cl;
+
+	/* ---- Compositor bypass/unredirect state ----
+	 * paused_mask: bitmask — bit N set means monitor N is bypassed.
 	 * paused: 1 when ALL monitors are bypassed (repaint loop stopped).
 	 * The live authority is CompShared comp in compositor.c; these
 	 * fields are synced by wmstate_update() for observability. */
 	uint32_t comp_paused_mask;
 	int      comp_paused;
 
-	/* Monitor topology snapshot (for future serialisation) */
-	unsigned int    n_monitors;
-	AWMStateMonitor monitors[WMSTATE_MAX_MONITORS];
-	int             selmon_num; /* number of focused monitor (-1 = none) */
-
-	/* Client list snapshot (for future serialisation) */
+	/* ---- Client list snapshot (for future serialisation) ---- */
 	unsigned int   n_clients;
 	AWMStateClient clients[WMSTATE_MAX_CLIENTS];
 } AWMState;
 
-/* The single global instance — defined in awm.c. */
+/* The single global instance — defined in wmstate.c. */
 extern AWMState g_awm;
 
 /* -------------------------------------------------------------------------
- * wmstate_update() — snapshot current live globals into g_awm.
+ * Monitor access macros.
+ * ---------------------------------------------------------------------- */
+
+/* Pointer to the currently focused monitor. */
+#define g_awm_selmon (&g_awm.monitors[g_awm.selmon_num])
+
+/* Set focused monitor by pointer (pointer must be into g_awm.monitors[]). */
+#define g_awm_set_selmon(m) (g_awm.selmon_num = (int) ((m) - g_awm.monitors))
+
+/* Iterate over all monitors.  var must be declared as Monitor * before use.
+ * _femi is a hidden loop index; the body sees var as a valid Monitor *. */
+#define FOR_EACH_MON(var)                                 \
+	for (int _femi = 0; _femi < (int) g_awm.n_monitors && \
+	    ((var) = &g_awm.monitors[_femi], 1);              \
+	    _femi++)
+
+/* -------------------------------------------------------------------------
+ * wmstate_update() — sync observable state into g_awm.
  *
- * Called after any significant state change to keep g_awm consistent.
- * During the incremental migration, the live globals (mons, selmon, cl,
- * comp.*) remain the authoritative runtime state; g_awm is kept in sync
- * by calling this function.  Once migration is complete, g_awm becomes
- * the authority and this function is replaced by direct writes.
+ * Refreshes the client snapshot and compositor state fields.  Monitor state
+ * is now authoritative directly in g_awm.monitors[], so no monitor snapshot
+ * loop is needed here.
  * ---------------------------------------------------------------------- */
 void wmstate_update(void);
 

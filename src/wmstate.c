@@ -3,10 +3,9 @@
 /* -------------------------------------------------------------------------
  * wmstate.c — consolidated WM + compositor state implementation.
  *
- * wmstate_update() snapshots the live state from g_awm's authoritative
- * live pointers (g_awm.mons, g_awm.selmon, g_awm.cl) into the snapshot
- * arrays in the same g_awm struct.  The live pointers are preserved across
- * the memset by saving and restoring them.
+ * wmstate_update() snapshots observable state (clients, compositor bypass)
+ * into g_awm.  Monitor state is authoritative directly in g_awm.monitors[],
+ * so no monitor snapshot loop is required here.
  * ---------------------------------------------------------------------- */
 
 #include <string.h>
@@ -29,67 +28,8 @@ AWMState g_awm;
 void
 wmstate_update(void)
 {
-	Monitor     *m;
 	Client      *c;
-	unsigned int mi, ci, ti;
-
-	/* Save live pointers before zeroing the struct. */
-	Monitor    *saved_mons   = g_awm.mons;
-	Monitor    *saved_selmon = g_awm.selmon;
-	Clientlist *saved_cl     = g_awm.cl;
-
-	memset(&g_awm, 0, sizeof g_awm);
-
-	/* Restore live pointers — these are the authoritative state. */
-	g_awm.mons   = saved_mons;
-	g_awm.selmon = saved_selmon;
-	g_awm.cl     = saved_cl;
-
-	/* ---- Monitors ---- */
-	mi = 0;
-	for (m = g_awm.mons; m && mi < WMSTATE_MAX_MONITORS; m = m->next, mi++) {
-		AWMStateMonitor *wm = &g_awm.monitors[mi];
-
-		wm->num       = m->num;
-		wm->mx        = m->mx;
-		wm->my        = m->my;
-		wm->mw        = m->mw;
-		wm->mh        = m->mh;
-		wm->wx        = m->wx;
-		wm->wy        = m->wy;
-		wm->ww        = m->ww;
-		wm->wh        = m->wh;
-		wm->seltags   = m->seltags;
-		wm->tagset[0] = m->tagset[0];
-		wm->tagset[1] = m->tagset[1];
-		wm->curtag    = m->pertag.curtag;
-		wm->prevtag   = m->pertag.prevtag;
-		strncpy(wm->ltsymbol, m->ltsymbol, WMSTATE_LTSYM_LEN - 1);
-		wm->sel_win = m->sel ? m->sel->win : 0;
-
-		/* Per-tag pertag state */
-		wm->n_tags = (unsigned int) awm_tagslength;
-		for (ti = 0;
-		    ti <= (unsigned int) awm_tagslength && ti <= WMSTATE_MAX_TAGS;
-		    ti++) {
-			AWMStateTag  *wt = &wm->tags[ti];
-			const Layout *la = m->pertag.ltidxs[ti * 2 + 0];
-			const Layout *lb = m->pertag.ltidxs[ti * 2 + 1];
-
-			wt->nmaster      = m->pertag.nmasters[ti];
-			wt->mfact        = m->pertag.mfacts[ti];
-			wt->sellt        = m->pertag.sellts[ti];
-			wt->showbar      = m->pertag.showbars[ti];
-			wt->drawwithgaps = m->pertag.drawwithgaps[ti];
-			wt->gappx        = m->pertag.gappx[ti];
-			strncpy(
-			    wt->lt_sym[0], la ? la->symbol : "", WMSTATE_LTSYM_LEN - 1);
-			strncpy(
-			    wt->lt_sym[1], lb ? lb->symbol : "", WMSTATE_LTSYM_LEN - 1);
-		}
-	}
-	g_awm.n_monitors = mi;
-	g_awm.selmon_num = g_awm.selmon ? g_awm.selmon->num : -1;
+	unsigned int ci;
 
 	/* ---- Clients ---- */
 	ci = 0;

@@ -244,7 +244,6 @@ struct Monitor {
 	int           topbar;
 	Clientlist   *cl;
 	Client       *sel;
-	Monitor      *next;
 	xcb_window_t  barwin;
 	const Layout *lt[2];
 	Pertag        pertag; /* inline — no heap allocation */

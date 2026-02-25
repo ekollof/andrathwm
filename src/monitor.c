@@ -30,11 +30,13 @@ isuniquegeom(xcb_xinerama_screen_info_t *unique, size_t n,
 void
 arrange(Monitor *m)
 {
+	Monitor *om;
+
 	if (m)
 		showhide(m->cl->stack);
 	else
-		for (m = g_awm.mons; m; m = m->next)
-			showhide(m->cl->stack);
+		FOR_EACH_MON(om)
+	showhide(om->cl->stack);
 	if (m) {
 		arrangemon(m);
 		/* showhide() walks the shared client stack and calls
@@ -44,19 +46,17 @@ arrange(Monitor *m)
 		 * every other monitor that uses a layout so those monitors
 		 * can re-apply their hidden state (e.g. monocle re-hides
 		 * the non-top windows that showhide just un-hid). */
+		FOR_EACH_MON(om)
 		{
-			Monitor *om;
-			for (om = g_awm.mons; om; om = om->next) {
-				if (om == m)
-					continue;
-				if (om->lt[om->sellt]->arrange)
-					om->lt[om->sellt]->arrange(om);
-			}
+			if (om == m)
+				continue;
+			if (om->lt[om->sellt]->arrange)
+				om->lt[om->sellt]->arrange(om);
 		}
 		restack(m);
 	} else {
-		for (m = g_awm.mons; m; m = m->next)
-			arrangemon(m);
+		FOR_EACH_MON(om)
+		arrangemon(om);
 		/* Flush all pending requests and discard stale EnterNotify
 		 * events so we don't spuriously change focus after a
 		 * layout change.  Non-EnterNotify events are dispatched
@@ -92,19 +92,35 @@ arrangemon(Monitor *m)
 void
 cleanupmon(Monitor *mon)
 {
-	Monitor *m;
+	Client *c;
+	int     idx, i;
 
-	if (mon == g_awm.mons) {
-		g_awm.mons = g_awm.mons->next;
-	} else {
-		for (m = g_awm.mons; m && m->next != mon; m = m->next)
-			;
-		m->next = mon->next;
-	}
+	/* Find index of the monitor being removed. */
+	idx = (int) (mon - g_awm.monitors);
 
 	xcb_unmap_window(xc, mon->barwin);
 	xcb_destroy_window(xc, mon->barwin);
-	free(mon);
+
+	/* Compact the array: shift entries left over the removed slot. */
+	for (i = idx; i < (int) g_awm.n_monitors - 1; i++)
+		g_awm.monitors[i] = g_awm.monitors[i + 1];
+	g_awm.n_monitors--;
+
+	/* Patch selmon_num: if it pointed past the removed slot, decrement. */
+	if (g_awm.selmon_num > idx)
+		g_awm.selmon_num--;
+	else if (g_awm.selmon_num == idx)
+		g_awm.selmon_num = 0;
+
+	/* Patch c->mon pointers: clients whose mon pointed past the removed
+	 * slot now have a stale pointer — fix by re-pointing into the array.
+	 * Clients on the removed monitor have already been redirected by the
+	 * caller (updategeom) before cleanupmon() was invoked. */
+	for (c = g_awm.cl->clients; c; c = c->next) {
+		int cm = (int) (c->mon - g_awm.monitors);
+		if (cm > idx)
+			c->mon = &g_awm.monitors[cm - 1];
+	}
 }
 
 Monitor *
@@ -113,29 +129,40 @@ createmon(void)
 	Monitor     *m, *tm;
 	unsigned int i;
 
-	/* bail out if the number of monitors exceeds the number of tags */
-	for (i = 1, tm = g_awm.mons; tm; i++, tm = tm->next)
-		;
-	if (i > LENGTH(tags)) {
+	/* Bail if the monitor array is full. */
+	if (g_awm.n_monitors >= WMSTATE_MAX_MONITORS) {
+		awm_error("failed to add monitor: WMSTATE_MAX_MONITORS exceeded");
+		return NULL;
+	}
+	/* Bail if the number of monitors would exceed the number of tags. */
+	if (g_awm.n_monitors >= LENGTH(tags)) {
 		awm_error("failed to add monitor, number of tags exceeded");
 		return NULL;
 	}
-	/* find the first tag that isn't in use */
+	/* Find the first tag that is not already in use by any monitor. */
 	for (i = 0; i < LENGTH(tags); i++) {
-		for (tm = g_awm.mons; tm && !(tm->tagset[tm->seltags] & (1 << i));
-		    tm  = tm->next)
-            ;
-		if (!tm)
+		int used = 0;
+		FOR_EACH_MON(tm)
+		if (tm->tagset[tm->seltags] & (1 << i)) {
+			used = 1;
+			break;
+		}
+		if (!used)
 			break;
 	}
-	/* reassign all tags to monitors since there's currently no free tag for
-	 * the new monitor */
-	if (i >= LENGTH(tags))
-		for (i = 0, tm = g_awm.mons; tm; tm = tm->next, i++) {
+	/* If no free tag, reassign all tags to monitors sequentially. */
+	if (i >= LENGTH(tags)) {
+		FOR_EACH_MON(tm)
+		{
+			int j = (int) (tm - g_awm.monitors);
 			tm->seltags ^= 1;
-			tm->tagset[tm->seltags] = (1 << i) & TAGMASK;
+			tm->tagset[tm->seltags] = (1 << j) & TAGMASK;
 		}
-	m            = ecalloc(1, sizeof(Monitor));
+		i = g_awm.n_monitors;
+	}
+	/* Initialise the new slot in place. */
+	m = &g_awm.monitors[g_awm.n_monitors];
+	memset(m, 0, sizeof *m);
 	m->cl        = g_awm.cl;
 	m->tagset[0] = m->tagset[1] = (1 << i) & TAGMASK;
 	m->mfact                    = mfact;
@@ -160,24 +187,23 @@ createmon(void)
 		m->pertag.gappx[i]        = ui_gappx;
 	}
 
+	g_awm.n_monitors++;
 	return m;
 }
 
 Monitor *
 dirtomon(int dir)
 {
-	Monitor *m = NULL;
+	int idx;
 
-	if (dir > 0) {
-		if (!(m = g_awm.selmon->next))
-			m = g_awm.mons;
-	} else if (g_awm.selmon == g_awm.mons)
-		for (m = g_awm.mons; m->next; m = m->next)
-			;
+	if (g_awm.n_monitors <= 1)
+		return g_awm_selmon;
+	idx = g_awm.selmon_num;
+	if (dir > 0)
+		idx = (idx + 1) % (int) g_awm.n_monitors;
 	else
-		for (m = g_awm.mons; m->next != g_awm.selmon; m = m->next)
-			;
-	return m;
+		idx = (idx - 1 + (int) g_awm.n_monitors) % (int) g_awm.n_monitors;
+	return &g_awm.monitors[idx];
 }
 
 void
@@ -196,7 +222,7 @@ drawbar(Monitor *m)
 		stw = getsystraywidth();
 
 	/* draw status first so it can be overdrawn by tags later */
-	if (m == g_awm.selmon) { /* status is only drawn on selected monitor */
+	if (m == g_awm_selmon) { /* status is only drawn on selected monitor */
 		drw_setscheme(drw, scheme[SchemeNorm]);
 		tw = TEXTW(stext) - lrpad / 2 + 2; /* 2px extra right padding */
 		drw_text(drw, m->ww - tw - stw, 0, tw, bh, lrpad / 2 - 2, stext, 0);
@@ -223,8 +249,8 @@ drawbar(Monitor *m)
 		drw_text(drw, x, 0, w, bh, lrpad / 2, tags[i], urg & 1 << i);
 		if (occ & 1 << i)
 			drw_rect(drw, x + boxs, boxs, boxw, boxw,
-			    m == g_awm.selmon && g_awm.selmon->sel &&
-			        g_awm.selmon->sel->tags & 1 << i,
+			    m == g_awm_selmon && g_awm_selmon->sel &&
+			        g_awm_selmon->sel->tags & 1 << i,
 			    urg & 1 << i);
 		x += w;
 	}
@@ -291,8 +317,8 @@ drawbars(void)
 {
 	Monitor *m;
 
-	for (m = g_awm.mons; m; m = m->next)
-		drawbar(m);
+	FOR_EACH_MON(m)
+	drawbar(m);
 }
 
 void
@@ -300,14 +326,14 @@ focusmon(const Arg *arg)
 {
 	Monitor *m;
 
-	if (!g_awm.mons->next)
+	if (g_awm.n_monitors <= 1)
 		return;
-	if ((m = dirtomon(arg->i)) == g_awm.selmon)
+	if ((m = dirtomon(arg->i)) == g_awm_selmon)
 		return;
-	unfocus(g_awm.selmon->sel, 0);
-	g_awm.selmon = m;
+	unfocus(g_awm_selmon->sel, 0);
+	g_awm_set_selmon(m);
 	focus(NULL);
-	warp(g_awm.selmon->sel);
+	warp(g_awm_selmon->sel);
 	wmstate_update();
 }
 
@@ -355,14 +381,14 @@ monocle(Monitor *m)
 Monitor *
 recttomon(int x, int y, int w, int h)
 {
-	Monitor *m, *r   = g_awm.selmon;
+	Monitor *m, *r   = g_awm_selmon;
 	int      a, area = 0;
 
-	for (m = g_awm.mons; m; m = m->next)
-		if ((a = INTERSECT(x, y, w, h, m)) > area) {
-			area = a;
-			r    = m;
-		}
+	FOR_EACH_MON(m)
+	if ((a = INTERSECT(x, y, w, h, m)) > area) {
+		area = a;
+		r    = m;
+	}
 	return r;
 }
 
@@ -404,7 +430,7 @@ restack(Monitor *m)
 				sibling = (uint32_t) c->win;
 			}
 	}
-	if (m == g_awm.selmon && (m->tagset[m->seltags] & m->sel->tags) &&
+	if (m == g_awm_selmon && (m->tagset[m->seltags] & m->sel->tags) &&
 	    m->lt[m->sellt]->arrange != &monocle)
 		warp(m->sel);
 	/* Same EnterNotify drain as arrange() — see comment there. */
@@ -472,8 +498,7 @@ tile(Monitor *m)
 				    m->wh)
 					my += h + 2 * c->bw + m->pertag.gappx[m->pertag.curtag];
 			} else {
-				h = (m->wh - ty) / (n - i) -
-				    m->pertag.gappx[m->pertag.curtag];
+				h = (m->wh - ty) / (n - i) - m->pertag.gappx[m->pertag.curtag];
 				resize(c, m->wx + mw + m->pertag.gappx[m->pertag.curtag],
 				    m->wy + ty,
 				    m->ww - mw - (2 * c->bw) -
@@ -512,26 +537,26 @@ tile(Monitor *m)
 void
 togglebar(const Arg *arg)
 {
-	g_awm.selmon->showbar =
-	    g_awm.selmon->pertag.showbars[g_awm.selmon->pertag.curtag] =
-	        !g_awm.selmon->showbar;
-	updatebarpos(g_awm.selmon);
-	resizebarwin(g_awm.selmon);
+	g_awm_selmon->showbar =
+	    g_awm_selmon->pertag.showbars[g_awm_selmon->pertag.curtag] =
+	        !g_awm_selmon->showbar;
+	updatebarpos(g_awm_selmon);
+	resizebarwin(g_awm_selmon);
 	if (showsystray) {
 		int32_t  newy;
 		uint32_t y;
-		if (!g_awm.selmon->showbar)
+		if (!g_awm_selmon->showbar)
 			newy = -bh;
 		else {
 			newy = 0;
-			if (!g_awm.selmon->topbar)
-				newy = g_awm.selmon->mh - bh;
+			if (!g_awm_selmon->topbar)
+				newy = g_awm_selmon->mh - bh;
 		}
 		y = (uint32_t) newy;
 		xcb_configure_window(xc, systray->win, XCB_CONFIG_WINDOW_Y, &y);
 	}
-	updateworkarea(g_awm.selmon);
-	arrange(g_awm.selmon);
+	updateworkarea(g_awm_selmon);
+	arrange(g_awm_selmon);
 	wmstate_update();
 }
 
@@ -545,7 +570,8 @@ updatebars(void)
 	/* WM_CLASS value: "awm\0awm" (instance NUL class) */
 	static const char wm_class[] = "awm\0awm";
 
-	for (m = g_awm.mons; m; m = m->next) {
+	FOR_EACH_MON(m)
+	{
 		if (m->barwin)
 			continue;
 		w = m->ww;
@@ -633,9 +659,8 @@ updategeom(void)
 		const xcb_query_extension_reply_t *ext =
 		    xcb_get_extension_data(xc, &xcb_randr_id);
 		if (ext && ext->present) {
-			int                                             i, j, n, nn;
+			int                                             i, n, nn;
 			Client                                         *c;
-			Monitor                                        *m;
 			xcb_randr_get_screen_resources_current_cookie_t src;
 			xcb_randr_get_screen_resources_current_reply_t *sr;
 			xcb_randr_crtc_t                               *crtcs;
@@ -643,6 +668,7 @@ updategeom(void)
 				int x, y, w, h;
 			} ScreenGeom;
 			ScreenGeom *unique = NULL;
+			int         j;
 
 			src = xcb_randr_get_screen_resources_current(xc, root);
 			sr  = xcb_randr_get_screen_resources_current_reply(xc, src, NULL);
@@ -684,26 +710,18 @@ updategeom(void)
 			}
 			free(sr);
 
-			for (n = 0, m = g_awm.mons; m; m = m->next, n++)
-				;
+			n = (int) g_awm.n_monitors;
 
 			/* Create new monitors if nn > n */
 			for (i = n; i < nn; i++) {
-				Monitor *nm = createmon();
-				if (!nm)
+				if (!createmon())
 					die("awm: createmon failed: monitor count exceeds tag "
 					    "count");
-				for (m = g_awm.mons; m && m->next; m = m->next)
-					;
-				if (m)
-					m->next = nm;
-				else {
-					g_awm.mons = nm;
-				}
 			}
 
 			/* Update monitor geometries */
-			for (i = 0, m = g_awm.mons; i < nn && m; m = m->next, i++) {
+			for (i = 0; i < nn; i++) {
+				Monitor *m = &g_awm.monitors[i];
 				if (i >= n || unique[i].x != m->mx || unique[i].y != m->my ||
 				    unique[i].w != m->mw || unique[i].h != m->mh) {
 					dirty  = 1;
@@ -716,22 +734,18 @@ updategeom(void)
 				}
 			}
 
-			/* Remove monitors if n > nn */
-			for (i = nn; i < n; i++) {
-				for (m = g_awm.mons; m && m->next; m = m->next)
-					;
-				/* Redirect selmon away from the dying monitor before
-				 * cleanupmon() frees it.  mons is always safe because we
-				 * only reach here when nn >= 1. */
-				if (m == g_awm.selmon) {
-					g_awm.selmon = g_awm.mons;
-				}
-				for (c = m->cl->clients; c; c = c->next) {
+			/* Remove monitors if n > nn — remove from the tail. */
+			while ((int) g_awm.n_monitors > nn) {
+				Monitor *dying = &g_awm.monitors[g_awm.n_monitors - 1];
+				/* Redirect selmon and clients away from the dying monitor. */
+				if (g_awm.selmon_num == (int) (g_awm.n_monitors - 1))
+					g_awm.selmon_num = 0;
+				for (c = g_awm.cl->clients; c; c = c->next) {
 					dirty = 1;
-					if (c->mon == m)
-						c->mon = g_awm.selmon;
+					if (c->mon == dying)
+						c->mon = g_awm_selmon;
 				}
-				cleanupmon(m);
+				cleanupmon(dying);
 			}
 			free(unique);
 			goto geom_done;
@@ -748,7 +762,6 @@ xinerama_fallback:
 	if (xin_active) {
 		int                                 i, j, n, nn;
 		Client                             *c;
-		Monitor                            *m;
 		xcb_xinerama_query_screens_reply_t *qi =
 		    xcb_xinerama_query_screens_reply(
 		        xc, xcb_xinerama_query_screens(xc), NULL);
@@ -761,8 +774,7 @@ xinerama_fallback:
 			free(qi);
 			goto default_monitor;
 		}
-		for (n = 0, m = g_awm.mons; m; m = m->next, n++)
-			;
+		n = (int) g_awm.n_monitors;
 		/* only consider unique geometries as separate screens */
 		unique = ecalloc((size_t) nn, sizeof(xcb_xinerama_screen_info_t));
 		for (i = 0, j = 0; i < nn; i++)
@@ -774,18 +786,11 @@ xinerama_fallback:
 
 		/* new monitors if nn > n */
 		for (i = n; i < nn; i++) {
-			Monitor *nm = createmon();
-			if (!nm)
+			if (!createmon())
 				die("awm: createmon failed: monitor count exceeds tag count");
-			for (m = g_awm.mons; m && m->next; m = m->next)
-				;
-			if (m)
-				m->next = nm;
-			else {
-				g_awm.mons = nm;
-			}
 		}
-		for (i = 0, m = g_awm.mons; i < nn && m; m = m->next, i++)
+		for (i = 0; i < nn; i++) {
+			Monitor *m = &g_awm.monitors[i];
 			if (i >= n || unique[i].x_org != m->mx ||
 			    unique[i].y_org != m->my || unique[i].width != m->mw ||
 			    unique[i].height != m->mh) {
@@ -797,21 +802,18 @@ xinerama_fallback:
 				m->mh = m->wh = unique[i].height;
 				updatebarpos(m);
 			}
-		/* removed monitors if n > nn */
-		for (i = nn; i < n; i++) {
-			for (m = g_awm.mons; m && m->next; m = m->next)
-				;
-			/* Redirect selmon away from the dying monitor before
-			 * cleanupmon() frees it.  mons is always safe here. */
-			if (m == g_awm.selmon) {
-				g_awm.selmon = g_awm.mons;
-			}
-			for (c = m->cl->clients; c; c = c->next) {
+		}
+		/* removed monitors if n > nn — remove from tail */
+		while ((int) g_awm.n_monitors > nn) {
+			Monitor *dying = &g_awm.monitors[g_awm.n_monitors - 1];
+			if (g_awm.selmon_num == (int) (g_awm.n_monitors - 1))
+				g_awm.selmon_num = 0;
+			for (c = g_awm.cl->clients; c; c = c->next) {
 				dirty = 1;
-				if (c->mon == m)
-					c->mon = g_awm.selmon;
+				if (c->mon == dying)
+					c->mon = g_awm_selmon;
 			}
-			cleanupmon(m);
+			cleanupmon(dying);
 		}
 		free(unique);
 		goto geom_done;
@@ -822,20 +824,19 @@ default_monitor:;
 default_monitor:
 #endif /* XINERAMA */
 	/* default monitor setup */
-	if (!g_awm.mons) {
-		g_awm.mons = createmon();
+	if (g_awm.n_monitors == 0) {
+		if (!createmon())
+			die("awm: createmon failed: monitor count exceeds tag count");
 	}
-	if (!g_awm.mons)
-		die("awm: createmon failed: monitor count exceeds tag count");
-	if (g_awm.mons->mw != sw || g_awm.mons->mh != sh) {
-		dirty          = 1;
-		g_awm.mons->mw = g_awm.mons->ww = sw;
-		g_awm.mons->mh = g_awm.mons->wh = sh;
-		updatebarpos(g_awm.mons);
+	if (g_awm.monitors[0].mw != sw || g_awm.monitors[0].mh != sh) {
+		dirty                = 1;
+		g_awm.monitors[0].mw = g_awm.monitors[0].ww = sw;
+		g_awm.monitors[0].mh = g_awm.monitors[0].wh = sh;
+		updatebarpos(&g_awm.monitors[0]);
 	}
 geom_done:
 	if (dirty) {
-		g_awm.selmon = wintomon(root);
+		g_awm_set_selmon(wintomon(root));
 	}
 	wmstate_update();
 	return dirty;
@@ -846,7 +847,7 @@ updatestatus(void)
 {
 	if (stext[0] == '\0')
 		snprintf(stext, sizeof(stext), "awm-" VERSION);
-	drawbar(g_awm.selmon);
+	drawbar(g_awm_selmon);
 	updatesystray();
 	wmstate_update();
 }
@@ -860,31 +861,35 @@ wintomon(xcb_window_t w)
 
 	if (w == root && getrootptr(&x, &y))
 		return recttomon(x, y, 1, 1);
-	for (m = g_awm.mons; m; m = m->next)
-		if (w == m->barwin)
-			return m;
+	FOR_EACH_MON(m)
+	if (w == m->barwin)
+		return m;
 	if ((c = wintoclient(w)))
 		return c->mon;
-	return g_awm.selmon;
+	return g_awm_selmon;
 }
 
 Monitor *
 systraytomon(Monitor *m)
 {
 	Monitor *t;
-	int      i, n;
+	int      i;
 
 	if (!systraypinning) {
 		if (!m)
-			return g_awm.selmon;
-		return m == g_awm.selmon ? m : NULL;
+			return g_awm_selmon;
+		return m == g_awm_selmon ? m : NULL;
 	}
-	for (n = 1, t = g_awm.mons; t && t->next; n++, t = t->next)
-		;
-	for (i = 1, t = g_awm.mons; t && t->next && i < systraypinning;
-	    i++, t    = t->next)
-        ;
-	if (systraypinningfailfirst && n < systraypinning)
-		return g_awm.mons;
+	/* Pin to the n-th monitor (1-indexed), clamping to last if out of range.
+	 */
+	i = 1;
+	FOR_EACH_MON(t)
+	{
+		if (i >= systraypinning)
+			break;
+		i++;
+	}
+	if (systraypinningfailfirst && (int) g_awm.n_monitors < systraypinning)
+		return &g_awm.monitors[0];
 	return t;
 }
