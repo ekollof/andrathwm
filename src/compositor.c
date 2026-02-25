@@ -1489,8 +1489,12 @@ compositor_check_unredirect(void)
 		 * is the first bypass transition. */
 		comp_update_overlay_shape();
 		xcb_flush(xc);
-		if (removed) {
-			/* Some monitors resumed — repaint them. */
+		if (removed || added) {
+			/* Overlay shape changed — repaint non-bypassed monitors.
+			 * This is needed both when monitors resume (removed) and
+			 * when monitors first enter bypass (added): in the latter
+			 * case the overlay just gained a hole and the surrounding
+			 * non-bypassed areas must be redrawn or they will freeze. */
 			compositor_damage_all();
 		}
 		if (!comp_pause_watchdog_id)
