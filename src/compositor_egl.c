@@ -50,11 +50,14 @@ static struct {
 	GLuint     vao;
 	/* uniform locations */
 	GLint u_tex;
-	GLint u_opacity;
+	GLint u_tint; /* vec4: RGBA multiply (opacity = tint.a) */
 	GLint u_solid;
 	GLint u_color;
 	GLint u_rect;
-	GLint u_screen;
+	GLint u_proj;        /* mat4: pixel-to-NDC projection, set once */
+	GLint u_mask;        /* sampler2D: per-window soft alpha mask */
+	GLint u_mask_offset; /* vec2: top-left of mask in screen space */
+	GLint u_has_mask;    /* int 0/1: whether mask sampler is active */
 	/* EGL_KHR_image_pixmap function pointers */
 	PFNEGLCREATEIMAGEKHRPROC            egl_create_image;
 	PFNEGLDESTROYIMAGEKHRPROC           egl_destroy_image;
@@ -72,43 +75,103 @@ static struct {
  * GLSL shader source
  * ---------------------------------------------------------------------- */
 
-/* Vertex shader: maps pixel coordinates to NDC. */
-static const char *vert_src = "#version 130\n"
-                              "in vec2 a_pos;\n"
-                              "in vec2 a_uv;\n"
-                              "out vec2 v_uv;\n"
-                              "uniform vec4 u_rect;\n"
-                              "uniform vec2 u_screen;\n"
-                              "void main() {\n"
-                              "    vec2 px = u_rect.xy + a_pos * u_rect.zw;\n"
-                              "    gl_Position = vec4(\n"
-                              "        px.x / u_screen.x * 2.0 - 1.0,\n"
-                              "        1.0 - px.y / u_screen.y * 2.0,\n"
-                              "        0.0, 1.0);\n"
-                              "    v_uv = a_uv;\n"
-                              "}\n";
+/* Vertex shader: maps pixel coordinates to NDC via precomputed projection. */
+static const char *vert_src =
+    "#version 330 core\n"
+    "in vec2 a_pos;\n"
+    "in vec2 a_uv;\n"
+    "out vec2 v_uv;\n"
+    "uniform vec4 u_rect;\n"
+    "uniform mat4 u_proj;\n"
+    "void main() {\n"
+    "    vec2 px = u_rect.xy + a_pos * u_rect.zw;\n"
+    "    gl_Position = u_proj * vec4(px, 0.0, 1.0);\n"
+    "    v_uv = a_uv;\n"
+    "}\n";
 
-/* Fragment shader: samples the window texture with opacity, or fills solid. */
-static const char *frag_src = "#version 130\n"
-                              "in vec2 v_uv;\n"
-                              "out vec4 frag_color;\n"
-                              "uniform sampler2D u_tex;\n"
-                              "uniform float     u_opacity;\n"
-                              "uniform int       u_solid;\n"
-                              "uniform vec4      u_color;\n"
-                              "void main() {\n"
-                              "    if (u_solid == 1) {\n"
-                              "        frag_color = u_color;\n"
-                              "    } else {\n"
-                              "        vec4 c = texture(u_tex, v_uv).rgba;\n"
-                              "        c.a *= u_opacity;\n"
-                              "        frag_color = c;\n"
-                              "    }\n"
-                              "}\n";
+/* Bayer 8x8 ordered dither — reduces banding on 8-bit output.
+ * Returns a per-pixel offset in [0, 1/255) that is added before quantisation.
+ * coord should be gl_FragCoord.xy (pixel centre, integer-aligned). */
+static const char *frag_src =
+    "#version 330 core\n"
+    "in vec2 v_uv;\n"
+    "out vec4 frag_color;\n"
+    "uniform sampler2D u_tex;\n"
+    "uniform vec4      u_tint;\n"
+    "uniform int       u_solid;\n"
+    "uniform vec4      u_color;\n"
+    "uniform sampler2D u_mask;\n"
+    "uniform vec2      u_mask_offset;\n"
+    "uniform int       u_has_mask;\n"
+    "\n"
+    "float bayer8(vec2 coord) {\n"
+    "    int x = int(mod(coord.x, 8.0));\n"
+    "    int y = int(mod(coord.y, 8.0));\n"
+    "    int bayer[64] = int[64](\n"
+    "         0, 32,  8, 40,  2, 34, 10, 42,\n"
+    "        48, 16, 56, 24, 50, 18, 58, 26,\n"
+    "        12, 44,  4, 36, 14, 46,  6, 38,\n"
+    "        60, 28, 52, 20, 62, 30, 54, 22,\n"
+    "         3, 35, 11, 43,  1, 33,  9, 41,\n"
+    "        51, 19, 59, 27, 49, 17, 57, 25,\n"
+    "        15, 47,  7, 39, 13, 45,  5, 37,\n"
+    "        63, 31, 55, 23, 61, 29, 53, 21\n"
+    "    );\n"
+    "    return float(bayer[y * 8 + x]) / 64.0;\n"
+    "}\n"
+    "\n"
+    "void main() {\n"
+    "    vec4 c;\n"
+    "    if (u_solid == 1) {\n"
+    "        c = u_color * u_tint;\n"
+    "    } else {\n"
+    "        c = texture(u_tex, v_uv) * u_tint;\n"
+    "        /* Bayer 8x8 dither: add sub-LSB noise to reduce banding */\n"
+    "        float noise = (bayer8(gl_FragCoord.xy) - 0.5) / 255.0;\n"
+    "        c.rgb = clamp(c.rgb + noise, 0.0, 1.0);\n"
+    "    }\n"
+    "    if (u_has_mask == 1) {\n"
+    "        vec2 mask_uv = (gl_FragCoord.xy - u_mask_offset)\n"
+    "                       / vec2(textureSize(u_mask, 0));\n"
+    "        c.a *= texture(u_mask, mask_uv).r;\n"
+    "    }\n"
+    "    frag_color = c;\n"
+    "}\n";
 
 /* -------------------------------------------------------------------------
  * GL helpers
  * ---------------------------------------------------------------------- */
+
+/* Build a column-major orthographic projection mapping pixel (x,y) to NDC,
+ * with Y flipped so that pixel (0,0) is the top-left of the screen.
+ * Result is written into out[16] in column-major order (OpenGL convention).
+ *
+ *   out = { 2/W, 0,  0, 0,
+ *           0, -2/H, 0, 0,
+ *           0,    0, 0, 0,
+ *          -1,    1, 0, 1 }
+ */
+static void
+make_proj(float out[16], int w, int h)
+{
+	out[0] = 2.0f / (float) w;
+	out[4] = 0.0f;
+	out[1] = 0.0f;
+	out[5] = -2.0f / (float) h;
+	out[2] = 0.0f;
+	out[6] = 0.0f;
+	out[3] = 0.0f;
+	out[7] = 0.0f;
+
+	out[8]  = 0.0f;
+	out[12] = -1.0f;
+	out[9]  = 0.0f;
+	out[13] = 1.0f;
+	out[10] = 0.0f;
+	out[14] = 0.0f;
+	out[11] = 0.0f;
+	out[15] = 1.0f;
+}
 
 static GLuint
 gl_compile_shader(GLenum type, const char *src)
@@ -404,15 +467,20 @@ egl_init(void)
 		return -1;
 	}
 
-	egl.u_tex     = glGetUniformLocation(egl.prog, "u_tex");
-	egl.u_opacity = glGetUniformLocation(egl.prog, "u_opacity");
-	egl.u_solid   = glGetUniformLocation(egl.prog, "u_solid");
-	egl.u_color   = glGetUniformLocation(egl.prog, "u_color");
-	egl.u_rect    = glGetUniformLocation(egl.prog, "u_rect");
-	egl.u_screen  = glGetUniformLocation(egl.prog, "u_screen");
+	egl.u_tex         = glGetUniformLocation(egl.prog, "u_tex");
+	egl.u_tint        = glGetUniformLocation(egl.prog, "u_tint");
+	egl.u_solid       = glGetUniformLocation(egl.prog, "u_solid");
+	egl.u_color       = glGetUniformLocation(egl.prog, "u_color");
+	egl.u_rect        = glGetUniformLocation(egl.prog, "u_rect");
+	egl.u_proj        = glGetUniformLocation(egl.prog, "u_proj");
+	egl.u_mask        = glGetUniformLocation(egl.prog, "u_mask");
+	egl.u_mask_offset = glGetUniformLocation(egl.prog, "u_mask_offset");
+	egl.u_has_mask    = glGetUniformLocation(egl.prog, "u_has_mask");
 
 	glUseProgram(egl.prog);
 	glUniform1i(egl.u_tex, 0);
+	glUniform1i(egl.u_mask, 1);
+	glUniform1i(egl.u_has_mask, 0);
 	glUseProgram(0);
 
 	glGenVertexArrays(1, &egl.vao);
@@ -429,6 +497,15 @@ egl_init(void)
 	    (void *) (2 * sizeof(float)));
 	glBindVertexArray(0);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+	/* Upload the initial projection matrix now that sw/sh are known */
+	{
+		float proj[16];
+		make_proj(proj, sw, sh);
+		glUseProgram(egl.prog);
+		glUniformMatrix4fv(egl.u_proj, 1, GL_FALSE, proj);
+		glUseProgram(0);
+	}
 
 	glDisable(GL_DEPTH_TEST);
 	glDisable(GL_SCISSOR_TEST);
@@ -634,6 +711,14 @@ egl_notify_resize(void)
 		return;
 	}
 	glViewport(0, 0, sw, sh);
+	/* Re-upload projection matrix for the new screen dimensions */
+	{
+		float proj[16];
+		make_proj(proj, sw, sh);
+		glUseProgram(egl.prog);
+		glUniformMatrix4fv(egl.u_proj, 1, GL_FALSE, proj);
+		glUseProgram(0);
+	}
 	/* Old damage ring entries are in the old coordinate space — pre-fill with
 	 * full-screen rects so the first DAMAGE_RING_SIZE frames after resize
 	 * always produce a full repaint rather than a stale scissor. */
@@ -735,8 +820,8 @@ egl_repaint(void)
 	}
 
 	glUseProgram(egl.prog);
-	glUniform2f(egl.u_screen, (float) sw, (float) sh);
 	glUniform1i(egl.u_tex, 0);
+	glUniform1i(egl.u_has_mask, 0);
 
 	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 	glClear(GL_COLOR_BUFFER_BIT);
@@ -744,7 +829,7 @@ egl_repaint(void)
 	if (egl.wallpaper_texture) {
 		glBindTexture(GL_TEXTURE_2D, egl.wallpaper_texture);
 		glUniform4f(egl.u_rect, 0.0f, 0.0f, (float) sw, (float) sh);
-		glUniform1f(egl.u_opacity, 1.0f);
+		glUniform4f(egl.u_tint, 1.0f, 1.0f, 1.0f, 1.0f);
 		glUniform1i(egl.u_solid, 0);
 		glBindVertexArray(egl.vao);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -762,7 +847,7 @@ egl_repaint(void)
 		glBindTexture(GL_TEXTURE_2D, cw->texture);
 		glUniform4f(egl.u_rect, (float) cw->x, (float) cw->y,
 		    (float) (cw->w + 2 * cw->bw), (float) (cw->h + 2 * cw->bw));
-		glUniform1f(egl.u_opacity, (float) cw->opacity);
+		glUniform4f(egl.u_tint, 1.0f, 1.0f, 1.0f, (float) cw->opacity);
 		glUniform1i(egl.u_solid, 0);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
@@ -876,10 +961,15 @@ egl_capture_thumb(CompWin *cw, int max_w, int max_h)
 	/* Render the window texture into the FBO at thumb size */
 	glViewport(0, 0, tw, th);
 	glUseProgram(egl.prog);
-	glUniform2f(egl.u_screen, (float) tw, (float) th);
+	{
+		float proj[16];
+		make_proj(proj, tw, th);
+		glUniformMatrix4fv(egl.u_proj, 1, GL_FALSE, proj);
+	}
 	glUniform4f(egl.u_rect, 0.0f, 0.0f, (float) tw, (float) th);
-	glUniform1f(egl.u_opacity, 1.0f);
+	glUniform4f(egl.u_tint, 1.0f, 1.0f, 1.0f, 1.0f);
 	glUniform1i(egl.u_solid, 0);
+	glUniform1i(egl.u_has_mask, 0);
 	glUniform1i(egl.u_tex, 0);
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, cw->texture);
@@ -929,9 +1019,16 @@ egl_capture_thumb(CompWin *cw, int max_w, int max_h)
 	pixels = NULL; /* now owned by the surface */
 
 out:
-	/* Restore normal render target and viewport */
+	/* Restore normal render target, viewport, and projection matrix */
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	glViewport(0, 0, sw, sh);
+	{
+		float proj[16];
+		make_proj(proj, sw, sh);
+		glUseProgram(egl.prog);
+		glUniformMatrix4fv(egl.u_proj, 1, GL_FALSE, proj);
+		glUseProgram(0);
+	}
 	if (fbo)
 		glDeleteFramebuffers(1, &fbo);
 	if (color_tex)
