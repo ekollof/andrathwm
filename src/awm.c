@@ -518,17 +518,8 @@ launchermenu(const Arg *arg)
 		return;
 	}
 	launcher_visible = 1;
-
-	/* The launcher window is override-redirect (GDK_WINDOW_TYPE_HINT_UTILITY
-	 * causes GDK to set override_redirect before the window is mapped), so
-	 * awm never receives a MapRequest for it and manage()/setfocus() are
-	 * never called.  Drive focus directly using the X window ID that
-	 * awm-ui sent us via UI_MSG_LAUNCHER_READY. */
-	if (launcher_xwin) {
-		xcb_set_input_focus(
-		    xc, XCB_INPUT_FOCUS_POINTER_ROOT, launcher_xwin, XCB_CURRENT_TIME);
-		xcb_flush(xc);
-	}
+	/* xcb_set_input_focus is deferred: awm-ui will send UI_MSG_LAUNCHER_SHOWN
+	 * after the window is mapped and positioned, and we set focus then. */
 }
 
 /* ---------------------------------------------------------------------------
@@ -786,6 +777,20 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 		awm_debug("awm: launcher ready, xwin=0x%x", (unsigned) launcher_xwin);
 		break;
 	}
+	case UI_MSG_LAUNCHER_SHOWN:
+		/* awm-ui sends this after gtk_widget_show_all() + gdk_display_flush().
+		 * The launcher window is now mapped and at its final position on the
+		 * server — safe to issue xcb_set_input_focus.  Calling it earlier
+		 * (before the window is mapped) is silently ignored by the X server.
+		 */
+		if (launcher_xwin) {
+			xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT,
+			    launcher_xwin, XCB_CURRENT_TIME);
+			xcb_flush(xc);
+			awm_debug("awm: launcher shown — input focus set to 0x%x",
+			    (unsigned) launcher_xwin);
+		}
+		break;
 	case UI_MSG_PREVIEW_FOCUS: {
 		/* awm-ui reports that the user clicked a preview card. */
 		if (len < sizeof(UiPreviewFocusPayload))

@@ -40,6 +40,7 @@ typedef enum {
 	UI_MSG_PREVIEW_DONE       = 12, /* payload: UiPreviewDonePayload      */
 	UI_MSG_LAUNCHER_DISMISSED = 13, /* payload: none — launcher hidden    */
 	UI_MSG_LAUNCHER_READY     = 14, /* payload: UiLauncherReadyPayload    */
+	UI_MSG_LAUNCHER_SHOWN = 15, /* payload: none — window mapped+positioned */
 } UiMsgType;
 
 /* -------------------------------------------------------------------------

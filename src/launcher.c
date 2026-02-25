@@ -1086,6 +1086,8 @@ launcher_free(Launcher *launcher)
 void
 launcher_show(Launcher *launcher, int x, int y)
 {
+	GdkWindow *gdk_win;
+
 	if (!launcher)
 		return;
 
@@ -1102,17 +1104,34 @@ launcher_show(Launcher *launcher, int x, int y)
 	if (first)
 		gtk_list_box_select_row(GTK_LIST_BOX(launcher->listbox), first);
 
-	/* Move to requested position and show.
-	 * awm will receive a MapRequest, run manage() → applyrules() → focus(),
-	 * and give us keyboard focus via setfocus() — no cross-process hack
-	 * needed. */
-	gtk_window_move(GTK_WINDOW(launcher->window), x, y);
+	/* Show first, then move.  For an override-redirect window gtk_window_move
+	 * before show only updates GTK's internal cache and the X server ignores
+	 * the ConfigureWindow on an unmapped window; GDK may then reposition the
+	 * window to its previous location when it maps.  Calling gdk_window_move()
+	 * on the underlying GdkWindow after show() guarantees the XMoveWindow
+	 * request reaches the server while the window is already mapped. */
 	gtk_widget_show_all(launcher->window);
+	gdk_win = gtk_widget_get_window(launcher->window);
+	if (gdk_win) {
+		gdk_window_move(gdk_win, x, y);
+		gdk_display_flush(gdk_window_get_display(gdk_win));
+	}
 
 	/* Give keyboard focus to the search entry (GTK-internal widget focus). */
 	gtk_widget_grab_focus(launcher->search);
 
 	launcher->visible = 1;
+
+	/* Notify awm that the window is now mapped and positioned so it can
+	 * direct X input focus to us.  xcb_set_input_focus on an unmapped window
+	 * is silently ignored by the X server; awm must wait until we are
+	 * visible before issuing the request. */
+	{
+		UiMsgHeader hdr;
+		hdr.type        = (uint32_t) UI_MSG_LAUNCHER_SHOWN;
+		hdr.payload_len = 0;
+		send(launcher->ui_fd, &hdr, sizeof(hdr), MSG_NOSIGNAL);
+	}
 }
 
 void
