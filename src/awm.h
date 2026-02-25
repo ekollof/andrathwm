@@ -66,7 +66,10 @@
  * Prefer this over XSync(dpy, False) wherever error-draining is not needed. */
 #define xflush() xcb_flush(xc)
 
-#define STATUS_TEXT_LEN 512
+/* Large enough for the fully assembled status2d string, including per-core
+ * CPU vbar escapes (up to 64 cores × ~44 bytes each) plus all other widgets.
+ * Must be >= STATUS_MAXLEN defined in status_config.h. */
+#define STATUS_TEXT_LEN 8192
 
 #define GAP_TOGGLE 100
 #define GAP_RESET 0

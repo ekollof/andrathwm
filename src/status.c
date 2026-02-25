@@ -16,7 +16,10 @@
 #include "status_util.h"
 #include "systray.h"
 
-#define STATUS_COMPONENT_MAX 256
+/* Must be large enough for the biggest single widget output.
+ * The per-core CPU widget can emit up to ~44 bytes per core × 64 cores
+ * plus label overhead — 2048 matches STATUS_MAXLEN in status_config.h. */
+#define STATUS_COMPONENT_MAX 2048
 
 static guint  status_timer_id = 0;
 static time_t last_update_time[STATUS_ARGS_LEN];
