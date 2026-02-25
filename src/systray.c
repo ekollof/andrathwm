@@ -36,7 +36,7 @@ removesystrayicon(Client *i)
 {
 	Client **ii;
 
-	if (!showsystray || !i)
+	if (!showsystray || !systray || !i)
 		return;
 	for (ii = &systray->icons; *ii && *ii != i; ii = &(*ii)->next)
 		;
@@ -328,7 +328,7 @@ wintosystrayicon(xcb_window_t w)
 {
 	Client *i = NULL;
 
-	if (!showsystray || !w)
+	if (!showsystray || !systray || !w)
 		return i;
 	for (i = systray->icons; i && (xcb_window_t) i->win != w; i = i->next)
 		;
@@ -340,7 +340,7 @@ addsniiconsystray(xcb_window_t w, int width, int height)
 {
 	Client *i;
 
-	if (!showsystray || !w)
+	if (!showsystray || !systray || !w)
 		return;
 
 	/* Check if already exists */

@@ -164,6 +164,7 @@ cleanup(void)
 		xcb_unmap_window(xc, systray->win);
 		xcb_destroy_window(xc, systray->win);
 		free(systray);
+		systray = NULL;
 	}
 	status_cleanup();
 	/* Signal awm-ui to exit and reap it.
