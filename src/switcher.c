@@ -60,6 +60,7 @@
 #include <gdk/gdkx.h>
 
 #include "awm.h"
+#include "wmstate.h"
 #include "client.h"
 #include "log.h"
 #include "compositor_backend.h"
@@ -738,8 +739,8 @@ switcher_confirm(void)
 		/* Super+Tab and window is on a hidden tag: make the tag visible.
 		 * Switch selmon to the monitor that owns the window first, then
 		 * call view() on the window's tag so it becomes visible. */
-		selmon = chosen->mon;
-		Arg a  = { .ui = chosen->tags };
+		g_awm_set_selmon(chosen->mon);
+		Arg a = { .ui = chosen->tags };
 		view(&a);
 		/* seturgent so the bar highlights the tag */
 		seturgent(chosen, 1);
@@ -786,7 +787,7 @@ switcher_show_internal(int all_monitors, int start_prev)
 		return;
 	sw_nentries = 0;
 
-	for (Client *c = cl->clients; c; c = c->next) {
+	for (Client *c = g_awm.cl->clients; c; c = c->next) {
 		if (c->ishidden || c->issni)
 			continue;
 		/* all_monitors=1 (Super+Tab): every window on every tag.
@@ -847,7 +848,7 @@ switcher_show_internal(int all_monitors, int start_prev)
 		}
 		total_w += SW_WIN_PAD;
 
-		Monitor *m = selmon;
+		Monitor *m = g_awm_selmon;
 		if (total_w > m->ww)
 			total_w = m->ww;
 

@@ -210,17 +210,24 @@ typedef struct {
 	void (*arrange)(Monitor *);
 } Layout;
 
-struct Pertag {
-	unsigned int   curtag, prevtag;
-	int           *nmasters;     /* [TAGSLENGTH + 1] */
-	float         *mfacts;       /* [TAGSLENGTH + 1] */
-	unsigned int  *sellts;       /* [TAGSLENGTH + 1] */
-	const Layout **ltidxs;       /* [(TAGSLENGTH + 1) * 2] flattened */
-	int           *showbars;     /* [TAGSLENGTH + 1] */
-	int           *drawwithgaps; /* [TAGSLENGTH + 1] */
-	unsigned int  *gappx;        /* [TAGSLENGTH + 1] */
-};
-typedef struct Pertag Pertag;
+/* Maximum per-tag slots — must be >= TAGSLENGTH at runtime.
+ * Defined here (not in wmstate.h) so Monitor can use it as an array bound
+ * before wmstate.h is included.  Must match WMSTATE_MAX_TAGS in wmstate.h. */
+#define AWM_MAX_TAGS 16
+
+/* Per-tag layout state embedded directly in Monitor — no heap allocation.
+ * Previously a heap-allocated Pertag struct with 7 pointer fields; now a
+ * plain value sub-struct so Monitor is trivially copyable. */
+typedef struct {
+	unsigned int  curtag, prevtag;
+	int           nmasters[AWM_MAX_TAGS + 1];
+	float         mfacts[AWM_MAX_TAGS + 1];
+	unsigned int  sellts[AWM_MAX_TAGS + 1];
+	const Layout *ltidxs[(AWM_MAX_TAGS + 1) * 2]; /* flattened [tag][0/1] */
+	int           showbars[AWM_MAX_TAGS + 1];
+	int           drawwithgaps[AWM_MAX_TAGS + 1];
+	unsigned int  gappx[AWM_MAX_TAGS + 1];
+} Pertag;
 
 struct Monitor {
 	char          ltsymbol[16];
@@ -237,10 +244,9 @@ struct Monitor {
 	int           topbar;
 	Clientlist   *cl;
 	Client       *sel;
-	Monitor      *next;
 	xcb_window_t  barwin;
 	const Layout *lt[2];
-	Pertag       *pertag;
+	Pertag        pertag; /* inline — no heap allocation */
 };
 
 typedef struct {
@@ -275,13 +281,12 @@ extern int               screen;
 extern int               sw, sh;
 extern int               bh;
 extern int               lrpad;
+extern int               awm_tagslength; /* = TAGSLENGTH; set in setup() */
 extern double            ui_dpi;   /* resolved screen DPI (96.0 default) */
 extern double            ui_scale; /* ui_dpi / 96.0 */
 extern Drw              *drw;
 extern Clr             **scheme;
 extern Cur              *cursor[CurLast];
-extern Monitor          *mons, *selmon;
-extern Clientlist       *cl;
 extern Systray          *systray;
 extern xcb_atom_t        wmatom[WMLast], netatom[NetLast], xatom[XLast];
 extern xcb_atom_t        utf8string_atom;
@@ -342,8 +347,5 @@ void bar_hover_leave(void);
 void preview_show_keybind(const Arg *arg);
 void switcher_show(const Arg *arg);
 void switcher_show_prev(const Arg *arg);
-
-/* The Pertag struct uses LENGTH(tags) so must be defined after config.h.
- * It is defined in awm.c after the #include "config.h". */
 
 #endif /* AWM_H */

@@ -44,6 +44,7 @@
 #include "switcher.h"
 #include "systray.h"
 #include "ui_proto.h"
+#include "wmstate.h"
 #include "xrdb.h"
 #include "xsource.h"
 #define AWM_CONFIG_IMPL
@@ -55,21 +56,22 @@ static pid_t ui_pid           = -1; /* awm-ui child process */
 static int   ui_fd            = -1; /* socket fd to awm-ui */
 int          launcher_visible = 0;  /* 1 while the launcher window is open */
 xcb_window_t launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
-static GMainContext *ui_ctx = NULL; /* GMainContext used by run() — kept for
-                                     * the respawn timer callback */
+static GMainContext *ui_ctx   = NULL; /* GMainContext used by run() — kept for
+                                       * the respawn timer callback */
 char         stext[STATUS_TEXT_LEN];
 int          screen;
 int          sw, sh;             /* X display screen geometry width, height */
 int          bh;                 /* bar height */
 int          lrpad;              /* sum of left and right padding for text */
-double       ui_dpi      = 96.0; /* resolved screen DPI */
-double       ui_scale    = 1.0;  /* ui_dpi / 96.0 */
-unsigned int ui_borderpx = 1;    /* borderpx * ui_scale — set in setup() */
-unsigned int ui_snap     = 32;   /* snap     * ui_scale — set in setup() */
-unsigned int ui_iconsize = 16;   /* iconsize * ui_scale — set in setup() */
-unsigned int ui_gappx    = 5;    /* gappx[0] * ui_scale — set in setup() */
-unsigned int numlockmask = 0;
-static guint xsource_id  = 0; /* GLib source ID for the X11 event source */
+int          awm_tagslength = 0; /* = TAGSLENGTH; set in setup() */
+double       ui_dpi         = 96.0; /* resolved screen DPI */
+double       ui_scale       = 1.0;  /* ui_dpi / 96.0 */
+unsigned int ui_borderpx    = 1;    /* borderpx * ui_scale — set in setup() */
+unsigned int ui_snap        = 32;   /* snap     * ui_scale — set in setup() */
+unsigned int ui_iconsize    = 16;   /* iconsize * ui_scale — set in setup() */
+unsigned int ui_gappx       = 5;    /* gappx[0] * ui_scale — set in setup() */
+unsigned int numlockmask    = 0;
+static guint xsource_id     = 0; /* GLib source ID for the X11 event source */
 #ifdef STATUSNOTIFIER
 static guint dbus_src_id   = 0; /* GLib source ID for the D-Bus fd source */
 static guint dbus_retry_id = 0; /* GLib source ID for the reconnect timer */
@@ -105,9 +107,7 @@ Cur               *cursor[CurLast];
 Clr              **scheme;
 xcb_connection_t  *xc;
 Drw               *drw;
-Monitor           *mons, *selmon;
 xcb_window_t       root, wmcheckwin;
-Clientlist        *cl;
 xcb_key_symbols_t *keysyms;
 
 /* ---- compile-time invariants ---- */
@@ -139,18 +139,18 @@ cleanup(void)
 	size_t   i;
 
 	view(&a);
-	selmon->lt[selmon->sellt] = &foo;
-	for (m = mons; m; m = m->next)
-		while (m->cl->stack)
-			unmanage(m->cl->stack, 0);
+	g_awm_selmon->lt[g_awm_selmon->sellt] = &foo;
+	FOR_EACH_MON(m)
+	while (m->cl->stack)
+		unmanage(m->cl->stack, 0);
 	{
 
 		xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
 	}
-	while (mons)
-		cleanupmon(mons);
-	free(cl);
-	cl = NULL;
+	while (g_awm.n_monitors)
+		cleanupmon(&g_awm.monitors[0]);
+	free(g_awm.cl);
+	g_awm.cl = NULL;
 
 	if (showsystray) {
 		Client *ic = systray->icons;
@@ -260,12 +260,12 @@ ui_send_monitor_geom(void)
 {
 	UiMonitorGeomPayload p;
 
-	if (!selmon || ui_fd < 0)
+	if (g_awm.selmon_num < 0 || ui_fd < 0)
 		return;
-	p.wx = (int32_t) selmon->wx;
-	p.wy = (int32_t) selmon->wy;
-	p.ww = (int32_t) selmon->ww;
-	p.wh = (int32_t) selmon->wh;
+	p.wx = (int32_t) g_awm_selmon->wx;
+	p.wy = (int32_t) g_awm_selmon->wy;
+	p.ww = (int32_t) g_awm_selmon->ww;
+	p.wh = (int32_t) g_awm_selmon->wh;
 	ui_send_inline(UI_MSG_MONITOR_GEOM, &p, sizeof(p));
 }
 
@@ -480,7 +480,7 @@ void
 preview_show_keybind(const Arg *arg)
 {
 	(void) arg;
-	bar_hover_enter(selmon);
+	bar_hover_enter(g_awm_selmon);
 }
 
 void
@@ -494,7 +494,7 @@ launchermenu(const Arg *arg)
 	if (ui_fd < 0)
 		return;
 
-	Monitor *m = selmon;
+	Monitor *m = g_awm_selmon;
 	p.x        = (int32_t) (m->wx + (m->ww - 420) / 2);
 	p.y        = (int32_t) (m->wy + (m->wh - 400) / 2);
 	if (p.x < (int32_t) m->wx)
@@ -552,16 +552,23 @@ x_dispatch_cb(gpointer user_data)
 			updategeom();
 			drw_resize(drw, sw, bh);
 			updatebars();
-			for (Monitor *m = mons; m; m = m->next) {
-				for (Client *c = m->cl->clients; c; c = c->next)
-					if (c->isfullscreen)
-						resizeclient(c, m->mx, m->my, m->mw, m->mh);
-				resizebarwin(m);
+			{
+				Monitor *m;
+				FOR_EACH_MON(m)
+				{
+					for (Client *c = m->cl->clients; c; c = c->next)
+						if (c->isfullscreen)
+							resizeclient(c, m->mx, m->my, m->mw, m->mh);
+					resizebarwin(m);
+				}
 			}
 			focus(NULL);
 			arrange(NULL);
-			for (Monitor *m = mons; m; m = m->next)
+			{
+				Monitor *m;
+				FOR_EACH_MON(m)
 				updateworkarea(m);
+			}
 #ifdef COMPOSITOR
 			compositor_notify_screen_resize();
 #endif
@@ -776,9 +783,9 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 			memcpy(&fp, payload, sizeof(fp));
 			c = wintoclient((xcb_window_t) fp.xwin);
 			if (c) {
-				if (c->mon != selmon) {
-					unfocus(selmon->sel, 0);
-					selmon = c->mon;
+				if (c->mon != g_awm_selmon) {
+					unfocus(g_awm_selmon->sel, 0);
+					g_awm_set_selmon(c->mon);
 				}
 				if (!ISVISIBLE(c, c->mon)) {
 					Arg a = { .ui = c->tags };
@@ -1183,7 +1190,7 @@ setup(void)
 		sh   = (int) sit.data->height_in_pixels;
 		root = sit.data->root;
 	}
-	if (!(cl = (Clientlist *) calloc(1, sizeof(Clientlist))))
+	if (!(g_awm.cl = (Clientlist *) calloc(1, sizeof(Clientlist))))
 		die("fatal: could not malloc() %u bytes\n", sizeof(Clientlist));
 	/* drw uses a dedicated bare xcb_connection_t (opened inside drw_create)
 	 * for all cairo rendering, keeping its XCB traffic off xc. */
@@ -1270,8 +1277,8 @@ setup(void)
 	/* Update workarea for all monitors */
 	{
 		Monitor *m;
-		for (m = mons; m; m = m->next)
-			updateworkarea(m);
+		FOR_EACH_MON(m)
+		updateworkarea(m);
 	}
 	/* select events */
 	{
@@ -1300,6 +1307,8 @@ setup(void)
 		awm_warn("compositor: init failed, running without compositing");
 #endif
 	switcher_init();
+	awm_tagslength = (int) TAGSLENGTH;
+	wmstate_update();
 }
 
 /* -------------------------------------------------------------------------

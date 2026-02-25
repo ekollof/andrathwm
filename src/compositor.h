@@ -171,5 +171,22 @@ cairo_surface_t *comp_capture_thumb(Client *c, int max_w, int max_h);
  */
 UiPreviewEntry *comp_snapshot_pixmaps(unsigned int *count_out);
 
+/*
+ * State accessors — return live compositor state without exposing the
+ * internal CompShared struct (compositor_backend.h remains internal).
+ */
+int      compositor_is_active(void);
+int      compositor_is_paused(void);
+uint32_t compositor_paused_mask(void);
+
+/*
+ * Walk the live CompWin list, invoking cb(win, redirected, hidden, ud)
+ * for each entry.  Keeps compositor_backend.h internal.
+ * Safe to call when compositor is inactive — cb is simply never invoked.
+ */
+typedef void (*CompWinVisitor)(
+    xcb_window_t win, int redirected, int hidden, void *ud);
+void compositor_for_each_window(CompWinVisitor cb, void *ud);
+
 #endif /* COMPOSITOR */
 #endif /* COMPOSITOR_H */

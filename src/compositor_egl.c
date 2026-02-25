@@ -26,6 +26,7 @@
 #include <cairo/cairo.h>
 
 #include "awm.h"
+#include "wmstate.h"
 #include "log.h"
 #include "compositor_backend.h"
 #include "compositor.h"
@@ -741,7 +742,8 @@ egl_repaint(void)
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
 		if (cw->client && cw->bw > 0) {
-			int          sel = (selmon && cw->client == selmon->sel);
+			int sel =
+			    (g_awm.selmon_num >= 0 && cw->client == g_awm_selmon->sel);
 			Clr         *bc = &scheme[sel ? SchemeSel : SchemeNorm][ColBorder];
 			float        r  = (float) bc->r / 65535.0f;
 			float        g  = (float) bc->g / 65535.0f;

@@ -3,6 +3,7 @@
 
 #include "systray.h"
 #include "awm.h"
+#include "wmstate.h"
 #include "client.h"
 #include "ewmh.h"
 #include "monitor.h"
@@ -352,7 +353,7 @@ addsniiconsystray(xcb_window_t w, int width, int height)
 		die("fatal: could not malloc() %u bytes\n", sizeof(Client));
 
 	i->win         = w;
-	i->mon         = selmon;
+	i->mon         = g_awm_selmon;
 	i->next        = systray->icons;
 	systray->icons = i;
 	i->tags        = 1; /* Mark as visible */
@@ -387,8 +388,8 @@ removesniiconsystray(xcb_window_t w)
 
 	awm_debug("Removing SNI window 0x%lx from systray", w);
 	removesystrayicon(i);
-	/* Guard against teardown: mons/selmon may already be freed when
+	/* Guard against teardown: monitors array may already be empty when
 	 * sni_cleanup() is called after cleanupmon() during WM exit. */
-	if (mons)
+	if (g_awm.n_monitors > 0)
 		updatesystray();
 }
