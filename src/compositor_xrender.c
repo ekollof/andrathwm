@@ -88,6 +88,11 @@ xrender_init(void)
 	pv = xcb_render_util_find_visual_format(
 	    comp.render_formats, xcb_screen_root_visual(xc, screen));
 	fmt = pv ? pv->format : 0;
+	if (!fmt) {
+		awm_warn("compositor/xrender: could not find picture format for "
+		         "root visual");
+		return -1;
+	}
 
 	pict_mask = XCB_RENDER_CP_SUBWINDOW_MODE;
 	pict_val  = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;
@@ -364,6 +369,9 @@ xrender_repaint(void)
 {
 	CompWin           *cw;
 	xcb_render_color_t bg_color = { 0, 0, 0, 0xffff };
+
+	if (!xr.back)
+		return;
 
 	xcb_xfixes_set_picture_clip_region(xc, xr.back, comp.dirty, 0, 0);
 
