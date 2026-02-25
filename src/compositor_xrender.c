@@ -403,7 +403,8 @@ xrender_repaint(void)
 		}
 
 		if (cw->client && cw->bw > 0) {
-			int  sel = (g_awm.selmon && cw->client == g_awm.selmon->sel);
+			int sel =
+			    (g_awm.selmon_num >= 0 && cw->client == g_awm_selmon->sel);
 			Clr *clr = &scheme[sel ? SchemeSel : SchemeNorm][ColBorder];
 			xcb_render_color_t bc         = { clr->r, clr->g, clr->b, clr->a };
 			uint16_t           bw         = (uint16_t) cw->bw;

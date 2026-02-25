@@ -742,12 +742,13 @@ egl_repaint(void)
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
 		if (cw->client && cw->bw > 0) {
-			int   sel = (g_awm.selmon && cw->client == g_awm.selmon->sel);
-			Clr  *bc  = &scheme[sel ? SchemeSel : SchemeNorm][ColBorder];
-			float r   = (float) bc->r / 65535.0f;
-			float g   = (float) bc->g / 65535.0f;
-			float b   = (float) bc->b / 65535.0f;
-			float a   = (float) bc->a / 65535.0f;
+			int sel =
+			    (g_awm.selmon_num >= 0 && cw->client == g_awm_selmon->sel);
+			Clr         *bc = &scheme[sel ? SchemeSel : SchemeNorm][ColBorder];
+			float        r  = (float) bc->r / 65535.0f;
+			float        g  = (float) bc->g / 65535.0f;
+			float        b  = (float) bc->b / 65535.0f;
+			float        a  = (float) bc->a / 65535.0f;
 			unsigned int bw = (unsigned int) cw->bw;
 			unsigned int ow = (unsigned int) cw->w + 2 * bw;
 			unsigned int oh = (unsigned int) cw->h + 2 * bw;

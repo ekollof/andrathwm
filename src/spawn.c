@@ -109,7 +109,7 @@ spawn(const Arg *arg)
 	struct sigaction sa;
 
 	if (arg->v == dmenucmd)
-		dmenumon[0] = '0' + g_awm.selmon->num;
+		dmenumon[0] = '0' + g_awm_selmon->num;
 	if (fork() == 0) {
 		if (xc)
 			close(xcb_get_file_descriptor(xc));

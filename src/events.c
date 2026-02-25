@@ -26,12 +26,12 @@ buttonpress(xcb_generic_event_t *e)
 
 	click = ClkRootWin;
 	/* focus monitor if necessary */
-	if ((m = wintomon(ev->event)) && m != g_awm.selmon) {
-		unfocus(g_awm.selmon->sel, 1);
-		g_awm.selmon = m;
+	if ((m = wintomon(ev->event)) && m != g_awm_selmon) {
+		unfocus(g_awm_selmon->sel, 1);
+		g_awm_set_selmon(m);
 		focus(NULL);
 	}
-	if (ev->event == g_awm.selmon->barwin) {
+	if (ev->event == g_awm_selmon->barwin) {
 		i = x = 0;
 		/* Calculate x position after tags (accounting for hidden empty tags)
 		 */
@@ -56,10 +56,10 @@ buttonpress(xcb_generic_event_t *e)
 		}
 
 		if (i >= LENGTH(tags) &&
-		    ev->event_x < x + TEXTW(g_awm.selmon->ltsymbol))
+		    ev->event_x < x + TEXTW(g_awm_selmon->ltsymbol))
 			click = ClkLtSymbol;
 		else if (ev->event_x >
-		    g_awm.selmon->ww - (int) TEXTW(stext) - getsystraywidth())
+		    g_awm_selmon->ww - (int) TEXTW(stext) - getsystraywidth())
 			click = ClkStatusText;
 		else if (i >= LENGTH(tags)) {
 			/* Awesomebar - find which window was clicked */
@@ -67,7 +67,7 @@ buttonpress(xcb_generic_event_t *e)
 			c     = NULL;
 
 			/* Add layout symbol width to x position */
-			x += TEXTW(g_awm.selmon->ltsymbol);
+			x += TEXTW(g_awm_selmon->ltsymbol);
 
 			int n = 0;
 			for (Client *t = m->cl->clients; t; t = t->next)
@@ -97,7 +97,7 @@ buttonpress(xcb_generic_event_t *e)
 		}
 	} else if ((c = wintoclient(ev->event))) {
 		focus(c);
-		restack(g_awm.selmon);
+		restack(g_awm_selmon);
 		xcb_allow_events(xc, XCB_ALLOW_REPLAY_POINTER, XCB_CURRENT_TIME);
 		xflush();
 		click = ClkClientWin;
@@ -181,7 +181,7 @@ clientmessage(xcb_generic_event_t *e)
 				free(c);
 				return;
 			}
-			c->mon         = g_awm.selmon;
+			c->mon         = g_awm_selmon;
 			c->next        = systray->icons;
 			systray->icons = c;
 			{
@@ -227,7 +227,7 @@ clientmessage(xcb_generic_event_t *e)
 			    XCB_CURRENT_TIME, XEMBED_EMBEDDED_NOTIFY, 0, systray->win,
 			    XEMBED_VERSION);
 			xflush();
-			resizebarwin(g_awm.selmon);
+			resizebarwin(g_awm_selmon);
 			updatesystray();
 			setclientstate(c, XCB_ICCCM_WM_STATE_NORMAL);
 		}
@@ -247,11 +247,11 @@ clientmessage(xcb_generic_event_t *e)
 		for (i = 0; i < LENGTH(tags) && !((1 << i) & c->tags); i++)
 			;
 		if (i < LENGTH(tags)) {
-			const Arg a  = { .ui = 1 << i };
-			g_awm.selmon = c->mon;
+			const Arg a = { .ui = 1 << i };
+			g_awm_set_selmon(c->mon);
 			view(&a);
 			focus(c);
-			restack(g_awm.selmon);
+			restack(g_awm_selmon);
 		}
 	} else if (cme->type == netatom[NetCloseWindow]) {
 		/* _NET_CLOSE_WINDOW client message */
@@ -291,7 +291,8 @@ configurenotify(xcb_generic_event_t *e)
 		if (updategeom()) {
 			drw_resize(drw, sw, bh);
 			updatebars();
-			for (m = g_awm.mons; m; m = m->next) {
+			FOR_EACH_MON(m)
+			{
 				for (c = m->cl->clients; c; c = c->next)
 					if (c->isfullscreen) {
 						/* Move window to fill new monitor geometry without
@@ -318,8 +319,8 @@ configurenotify(xcb_generic_event_t *e)
 			}
 			focus(NULL);
 			arrange(NULL);
-			for (m = g_awm.mons; m; m = m->next)
-				updateworkarea(m);
+			FOR_EACH_MON(m)
+			updateworkarea(m);
 		}
 #ifdef COMPOSITOR
 		compositor_notify_screen_resize();
@@ -346,7 +347,7 @@ configurerequest(xcb_generic_event_t *e)
 		if (ev->value_mask & XCB_CONFIG_WINDOW_BORDER_WIDTH)
 			c->bw = ev->border_width;
 		else if (c->isfloating ||
-		    !g_awm.selmon->lt[g_awm.selmon->sellt]->arrange) {
+		    !g_awm_selmon->lt[g_awm_selmon->sellt]->arrange) {
 			m = c->mon;
 			if (!c->issteam) {
 				if (ev->value_mask & XCB_CONFIG_WINDOW_X) {
@@ -426,7 +427,7 @@ destroynotify(xcb_generic_event_t *e)
 		unmanage(c, 1);
 	else if ((c = wintosystrayicon(ev->window))) {
 		removesystrayicon(c);
-		resizebarwin(g_awm.selmon);
+		resizebarwin(g_awm_selmon);
 		updatesystray();
 	}
 }
@@ -453,7 +454,8 @@ enternotify(xcb_generic_event_t *e)
 		return;
 
 	/* Bar hover — trigger window preview popup */
-	for (m = g_awm.mons; m; m = m->next) {
+	FOR_EACH_MON(m)
+	{
 		if (ev->event == m->barwin) {
 			bar_hover_enter(m);
 			return;
@@ -462,10 +464,10 @@ enternotify(xcb_generic_event_t *e)
 
 	c = wintoclient(ev->event);
 	m = c ? c->mon : wintomon(ev->event);
-	if (m != g_awm.selmon) {
-		unfocus(g_awm.selmon->sel, 1);
-		g_awm.selmon = m;
-	} else if (!c || c == g_awm.selmon->sel)
+	if (m != g_awm_selmon) {
+		unfocus(g_awm_selmon->sel, 1);
+		g_awm_set_selmon(m);
+	} else if (!c || c == g_awm_selmon->sel)
 		return;
 	focus(c);
 	wmstate_update();
@@ -487,7 +489,8 @@ leavenotify(xcb_generic_event_t *e)
 	if (launcher_visible || switcher_active())
 		return;
 
-	for (m = g_awm.mons; m; m = m->next) {
+	FOR_EACH_MON(m)
+	{
 		if (ev->event == m->barwin) {
 			bar_hover_leave();
 			return;
@@ -503,7 +506,7 @@ expose(xcb_generic_event_t *e)
 
 	if (ev->count == 0 && (m = wintomon(ev->window))) {
 		drawbar(m);
-		if (m == g_awm.selmon)
+		if (m == g_awm_selmon)
 			updatesystray();
 	}
 }
@@ -538,14 +541,14 @@ focusin(xcb_generic_event_t *e)
 	if (switcher_active())
 		return;
 
-	if (!g_awm.selmon->sel || ev->event == g_awm.selmon->sel->win)
+	if (!g_awm_selmon->sel || ev->event == g_awm_selmon->sel->win)
 		return;
 
 	/* Allow focus to move to a child window of the currently focused client
 	 * (e.g. an in-page widget, chat overlay, or popup inside a fullscreen
 	 * browser window).  Without this guard, focusin() would steal focus back
 	 * to the top-level client window, making those widgets unreachable. */
-	if (iswindowdescendant(ev->event, g_awm.selmon->sel->win))
+	if (iswindowdescendant(ev->event, g_awm_selmon->sel->win))
 		return;
 
 	/* Allow focus to move to override-redirect windows (e.g. the launcher).
@@ -564,7 +567,7 @@ focusin(xcb_generic_event_t *e)
 		}
 	}
 
-	setfocus(g_awm.selmon->sel);
+	setfocus(g_awm_selmon->sel);
 }
 
 void
@@ -726,7 +729,7 @@ maprequest(xcb_generic_event_t *e)
 	Client *i;
 	if ((i = wintosystrayicon(ev->window))) {
 		/* Systray icon requested mapping - handle via updatesystray */
-		resizebarwin(g_awm.selmon);
+		resizebarwin(g_awm_selmon);
 		updatesystray();
 		return;
 	}
@@ -763,8 +766,8 @@ motionnotify(xcb_generic_event_t *e)
 	if (ev->event != root)
 		return;
 	if ((m = recttomon(ev->root_x, ev->root_y, 1, 1)) != mon && mon) {
-		unfocus(g_awm.selmon->sel, 1);
-		g_awm.selmon = m;
+		unfocus(g_awm_selmon->sel, 1);
+		g_awm_set_selmon(m);
 		focus(NULL);
 	}
 	mon = m;
@@ -784,7 +787,7 @@ propertynotify(xcb_generic_event_t *e)
 			updatesystrayicongeom(c, c->w, c->h);
 		} else
 			updatesystrayiconstate(c, ev);
-		resizebarwin(g_awm.selmon);
+		resizebarwin(g_awm_selmon);
 		updatesystray();
 	}
 
@@ -839,7 +842,7 @@ resizerequest(xcb_generic_event_t *e)
 
 	if ((i = wintosystrayicon(ev->window))) {
 		updatesystrayicongeom(i, ev->width, ev->height);
-		resizebarwin(g_awm.selmon);
+		resizebarwin(g_awm_selmon);
 		updatesystray();
 	}
 }

@@ -139,16 +139,16 @@ cleanup(void)
 	size_t   i;
 
 	view(&a);
-	g_awm.selmon->lt[g_awm.selmon->sellt] = &foo;
-	for (m = g_awm.mons; m; m = m->next)
-		while (m->cl->stack)
-			unmanage(m->cl->stack, 0);
+	g_awm_selmon->lt[g_awm_selmon->sellt] = &foo;
+	FOR_EACH_MON(m)
+	while (m->cl->stack)
+		unmanage(m->cl->stack, 0);
 	{
 
 		xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
 	}
-	while (g_awm.mons)
-		cleanupmon(g_awm.mons);
+	while (g_awm.n_monitors)
+		cleanupmon(&g_awm.monitors[0]);
 	free(g_awm.cl);
 	g_awm.cl = NULL;
 
@@ -259,12 +259,12 @@ ui_send_monitor_geom(void)
 {
 	UiMonitorGeomPayload p;
 
-	if (!g_awm.selmon || ui_fd < 0)
+	if (g_awm.selmon_num < 0 || ui_fd < 0)
 		return;
-	p.wx = (int32_t) g_awm.selmon->wx;
-	p.wy = (int32_t) g_awm.selmon->wy;
-	p.ww = (int32_t) g_awm.selmon->ww;
-	p.wh = (int32_t) g_awm.selmon->wh;
+	p.wx = (int32_t) g_awm_selmon->wx;
+	p.wy = (int32_t) g_awm_selmon->wy;
+	p.ww = (int32_t) g_awm_selmon->ww;
+	p.wh = (int32_t) g_awm_selmon->wh;
 	ui_send_inline(UI_MSG_MONITOR_GEOM, &p, sizeof(p));
 }
 
@@ -479,7 +479,7 @@ void
 preview_show_keybind(const Arg *arg)
 {
 	(void) arg;
-	bar_hover_enter(g_awm.selmon);
+	bar_hover_enter(g_awm_selmon);
 }
 
 void
@@ -493,7 +493,7 @@ launchermenu(const Arg *arg)
 	if (ui_fd < 0)
 		return;
 
-	Monitor *m = g_awm.selmon;
+	Monitor *m = g_awm_selmon;
 	p.x        = (int32_t) (m->wx + (m->ww - 420) / 2);
 	p.y        = (int32_t) (m->wy + (m->wh - 400) / 2);
 	if (p.x < (int32_t) m->wx)
@@ -551,16 +551,23 @@ x_dispatch_cb(gpointer user_data)
 			updategeom();
 			drw_resize(drw, sw, bh);
 			updatebars();
-			for (Monitor *m = g_awm.mons; m; m = m->next) {
-				for (Client *c = m->cl->clients; c; c = c->next)
-					if (c->isfullscreen)
-						resizeclient(c, m->mx, m->my, m->mw, m->mh);
-				resizebarwin(m);
+			{
+				Monitor *m;
+				FOR_EACH_MON(m)
+				{
+					for (Client *c = m->cl->clients; c; c = c->next)
+						if (c->isfullscreen)
+							resizeclient(c, m->mx, m->my, m->mw, m->mh);
+					resizebarwin(m);
+				}
 			}
 			focus(NULL);
 			arrange(NULL);
-			for (Monitor *m = g_awm.mons; m; m = m->next)
+			{
+				Monitor *m;
+				FOR_EACH_MON(m)
 				updateworkarea(m);
+			}
 #ifdef COMPOSITOR
 			compositor_notify_screen_resize();
 #endif
@@ -775,9 +782,9 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 			memcpy(&fp, payload, sizeof(fp));
 			c = wintoclient((xcb_window_t) fp.xwin);
 			if (c) {
-				if (c->mon != g_awm.selmon) {
-					unfocus(g_awm.selmon->sel, 0);
-					g_awm.selmon = c->mon;
+				if (c->mon != g_awm_selmon) {
+					unfocus(g_awm_selmon->sel, 0);
+					g_awm_set_selmon(c->mon);
 				}
 				if (!ISVISIBLE(c, c->mon)) {
 					Arg a = { .ui = c->tags };
@@ -1269,8 +1276,8 @@ setup(void)
 	/* Update workarea for all monitors */
 	{
 		Monitor *m;
-		for (m = g_awm.mons; m; m = m->next)
-			updateworkarea(m);
+		FOR_EACH_MON(m)
+		updateworkarea(m);
 	}
 	/* select events */
 	{
