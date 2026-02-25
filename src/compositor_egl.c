@@ -438,7 +438,21 @@ egl_init(void)
 
 	egl.has_buffer_age =
 	    (egl_exts && strstr(egl_exts, "EGL_EXT_buffer_age") != NULL);
-	memset(egl.damage_ring, 0, sizeof(egl.damage_ring));
+	/* Pre-fill the damage ring with full-screen rectangles so that buffer-age
+	 * history lookups on early frames always produce conservative
+	 * (full-screen) scissors rather than zero-sized no-ops.  Without this, a
+	 * driver that returns age=1 on the very first frame would scissor to only
+	 * the current dirty region while the buffer contains uninitialised GPU
+	 * memory. */
+	{
+		int i;
+		for (i = 0; i < DAMAGE_RING_SIZE; i++) {
+			egl.damage_ring[i].x      = 0;
+			egl.damage_ring[i].y      = 0;
+			egl.damage_ring[i].width  = (unsigned short) sw;
+			egl.damage_ring[i].height = (unsigned short) sh;
+		}
+	}
 	egl.ring_idx = 0;
 
 	egl.wallpaper_egl_image = EGL_NO_IMAGE_KHR;
@@ -620,9 +634,18 @@ egl_notify_resize(void)
 		return;
 	}
 	glViewport(0, 0, sw, sh);
-	/* Old damage ring entries are in the old coordinate space — invalidate
-	 * them so the next frame does a full repaint. */
-	memset(egl.damage_ring, 0, sizeof(egl.damage_ring));
+	/* Old damage ring entries are in the old coordinate space — pre-fill with
+	 * full-screen rects so the first DAMAGE_RING_SIZE frames after resize
+	 * always produce a full repaint rather than a stale scissor. */
+	{
+		int i;
+		for (i = 0; i < DAMAGE_RING_SIZE; i++) {
+			egl.damage_ring[i].x      = 0;
+			egl.damage_ring[i].y      = 0;
+			egl.damage_ring[i].width  = (unsigned short) sw;
+			egl.damage_ring[i].height = (unsigned short) sh;
+		}
+	}
 	egl.ring_idx = 0;
 }
 
@@ -808,11 +831,12 @@ egl_repaint(void)
 static cairo_surface_t *
 egl_capture_thumb(CompWin *cw, int max_w, int max_h)
 {
-	GLuint           fbo = 0, color_tex = 0;
-	int              tw, th;
-	double           sx, sy, scale;
-	uint8_t         *pixels = NULL;
-	cairo_surface_t *surf   = NULL;
+	static const cairo_user_data_key_t pixels_key = { 0 };
+	GLuint                             fbo = 0, color_tex = 0;
+	int                                tw, th;
+	double                             sx, sy, scale;
+	uint8_t                           *pixels = NULL;
+	cairo_surface_t                   *surf   = NULL;
 
 	if (!cw || !cw->texture || cw->w <= 0 || cw->h <= 0)
 		return NULL;
@@ -901,8 +925,7 @@ egl_capture_thumb(CompWin *cw, int max_w, int max_h)
 		goto out;
 	}
 	/* Transfer ownership of pixels to the surface via a destroy callback */
-	cairo_surface_set_user_data(
-	    surf, (const cairo_user_data_key_t *) &fbo, pixels, free);
+	cairo_surface_set_user_data(surf, &pixels_key, pixels, free);
 	pixels = NULL; /* now owned by the surface */
 
 out:
