@@ -51,8 +51,8 @@
 	        XCB_MOD_MASK_2 | XCB_MOD_MASK_3 | XCB_MOD_MASK_4 |        \
 	        XCB_MOD_MASK_5))
 #define INTERSECT(x, y, w, h, m)                                     \
-	(MAX(0, MIN((x) + (w), (m)->wx + (m)->ww) - MAX((x), (m)->wx)) * \
-	    MAX(0, MIN((y) + (h), (m)->wy + (m)->wh) - MAX((y), (m)->wy)))
+	(MAX(0, MIN((x) + (w), (m)->mx + (m)->mw) - MAX((x), (m)->mx)) * \
+	    MAX(0, MIN((y) + (h), (m)->my + (m)->mh) - MAX((y), (m)->my)))
 #define ISVISIBLE(C, M) ((C->tags & M->tagset[M->seltags]))
 #define LENGTH(X) (sizeof X / sizeof X[0])
 #define MOUSEMASK (BUTTONMASK | XCB_EVENT_MASK_POINTER_MOTION)
