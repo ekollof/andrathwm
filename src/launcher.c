@@ -807,6 +807,12 @@ on_window_realize(GtkWidget *widget, gpointer user_data)
 	if (!gdk_win)
 		return;
 
+	/* Set override-redirect so awm never manages this window.
+	 * Must be done after realize (GdkWindow exists) but before the first
+	 * map.  This prevents awm's manage() from placing the window according
+	 * to tiling rules and overwriting the position we pre-set. */
+	gdk_window_set_override_redirect(gdk_win, TRUE);
+
 	if (launcher) {
 		/* Tell awm our X window ID so it can focus us directly. */
 		struct {
@@ -992,8 +998,8 @@ launcher_create(int ui_fd, const char *term)
 	gtk_window_set_skip_pager_hint(GTK_WINDOW(launcher->window), TRUE);
 	/* UTILITY avoids the "popup without a parent" GDK warning that
 	 * POPUP_MENU triggers, while still suppressing the taskbar entry.
-	 * The window is made override-redirect in launcher_show() anyway,
-	 * so the WM never sees it regardless of hint. */
+	 * override-redirect is set in on_window_realize() after the GdkWindow
+	 * is created, preventing awm from managing the window. */
 	gtk_window_set_type_hint(
 	    GTK_WINDOW(launcher->window), GDK_WINDOW_TYPE_HINT_UTILITY);
 	gtk_window_set_default_size(GTK_WINDOW(launcher->window),
@@ -1086,9 +1092,10 @@ launcher_free(Launcher *launcher)
 void
 launcher_show(Launcher *launcher, int wx, int wy, int ww, int wh)
 {
-	GdkWindow  *gdk_win;
-	GdkDisplay *disp;
-	int         win_w, win_h, x, y;
+	(void) wx;
+	(void) wy;
+	(void) ww;
+	(void) wh;
 
 	if (!launcher)
 		return;
@@ -1106,48 +1113,37 @@ launcher_show(Launcher *launcher, int wx, int wy, int ww, int wh)
 	if (first)
 		gtk_list_box_select_row(GTK_LIST_BOX(launcher->listbox), first);
 
-	/* Compute actual scaled pixel size and centre on the target monitor. */
-	win_w = LAUNCHER_SCALE(420);
-	win_h = LAUNCHER_SCALE(400);
-	x     = wx + (ww - win_w) / 2;
-	y     = wy + (wh - win_h) / 2;
-	if (x < wx)
-		x = wx;
-	if (y < wy)
-		y = wy;
-
-	awm_debug("launcher_show: monitor %dx%d+%d+%d win %dx%d -> %d,%d", ww, wh,
-	    wx, wy, win_w, win_h, x, y);
-
-	/* Move to the target position before mapping.  gtk_window_move() on an
-	 * unmapped window stores the hint in GDK's cache; for override-redirect
-	 * windows GDK skips the WM ConfigureRequest path and calls the X server
-	 * directly, so the position is applied when the window maps.
-	 * We then call gdk_display_sync() (full round-trip) after show_all to
-	 * ensure the server has processed both the Map and the ConfigureWindow
-	 * before we send UI_MSG_LAUNCHER_SHOWN to awm. */
-	gtk_window_move(GTK_WINDOW(launcher->window), x, y);
+	/* Map the window.  awm has already pre-positioned launcher_xwin via
+	 * xcb_configure_window + a synchronous round-trip before sending
+	 * UI_MSG_LAUNCHER_SHOW, so the compositor will see the correct geometry
+	 * in comp_add_by_xid when it handles the MapNotify.  No position work
+	 * is needed here. */
 	gtk_widget_show_all(launcher->window);
-	gdk_win = gtk_widget_get_window(launcher->window);
-	if (gdk_win) {
-		disp = gdk_window_get_display(gdk_win);
-		gdk_display_sync(disp);
-	}
+	gdk_display_sync(
+	    gdk_window_get_display(gtk_widget_get_window(launcher->window)));
 
 	/* Give keyboard focus to the search entry (GTK-internal widget focus). */
 	gtk_widget_grab_focus(launcher->search);
 
 	launcher->visible = 1;
 
-	/* Notify awm that the window is now mapped and positioned so it can
-	 * direct X input focus to us.  xcb_set_input_focus on an unmapped window
-	 * is silently ignored by the X server; awm must wait until we are
-	 * visible before issuing the request. */
+	/* Notify awm: window is now mapped; awm will set X input focus. */
 	{
 		UiMsgHeader hdr;
 		hdr.type        = (uint32_t) UI_MSG_LAUNCHER_SHOWN;
-		hdr.payload_len = 0;
-		send(launcher->ui_fd, &hdr, sizeof(hdr), MSG_NOSIGNAL);
+		hdr.payload_len = sizeof(UiLauncherShownPayload);
+		/* x/y fields are no longer used by awm (pre-positioned before map)
+		 * but the payload struct is kept for protocol compatibility. */
+		{
+			struct {
+				UiMsgHeader            h;
+				UiLauncherShownPayload p;
+			} msg;
+			msg.h   = hdr;
+			msg.p.x = 0;
+			msg.p.y = 0;
+			send(launcher->ui_fd, &msg, sizeof(msg), MSG_NOSIGNAL);
+		}
 	}
 }
 

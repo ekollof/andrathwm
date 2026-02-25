@@ -40,7 +40,8 @@ typedef enum {
 	UI_MSG_PREVIEW_DONE       = 12, /* payload: UiPreviewDonePayload      */
 	UI_MSG_LAUNCHER_DISMISSED = 13, /* payload: none — launcher hidden    */
 	UI_MSG_LAUNCHER_READY     = 14, /* payload: UiLauncherReadyPayload    */
-	UI_MSG_LAUNCHER_SHOWN = 15, /* payload: none — window mapped+positioned */
+	UI_MSG_LAUNCHER_SHOWN =
+	    15, /* payload: UiLauncherShownPayload (x/y reserved) */
 } UiMsgType;
 
 /* -------------------------------------------------------------------------
@@ -141,6 +142,15 @@ typedef struct {
 typedef struct {
 	uint32_t xwin; /* X11 window ID of the launcher GdkWindow */
 } UiLauncherReadyPayload;
+
+/* UI_MSG_LAUNCHER_SHOWN: sent by awm-ui after gtk_widget_show_all() +
+ * gdk_display_sync().  Signals that the window is now mapped; awm sets X
+ * input focus in response.  The x/y fields are reserved (set to 0) — awm
+ * pre-positions the window before sending UI_MSG_LAUNCHER_SHOW. */
+typedef struct {
+	int32_t x; /* reserved — always 0 */
+	int32_t y; /* reserved — always 0 */
+} UiLauncherShownPayload;
 
 /* UI_MSG_PREVIEW_FOCUS — user clicked a card; awm should focus that window. */
 typedef struct {

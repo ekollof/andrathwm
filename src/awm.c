@@ -496,10 +496,52 @@ launchermenu(const Arg *arg)
 
 	/* Use the monitor the pointer is on, not the last-focused monitor.
 	 * Falls back to selmon if the pointer query fails. */
-	if (getrootptr(&px, &py))
+	if (getrootptr(&px, &py)) {
 		m = recttomon(px, py, 1, 1);
-	else
+		awm_debug("launchermenu: ptr=%d,%d -> mon wx=%d wy=%d ww=%d wh=%d", px,
+		    py, m->wx, m->wy, m->ww, m->wh);
+	} else {
 		m = g_awm_selmon;
+		awm_debug("launchermenu: getrootptr failed, using selmon");
+	}
+
+	/* Pre-position the launcher window before it is mapped.
+	 * We compute the centred position here using the same LAUNCHER_SCALE
+	 * formula as launcher.c (nominal 420x400 px at 96 dpi).  Calling
+	 * xcb_configure_window + a synchronous round-trip before sending
+	 * UI_MSG_LAUNCHER_SHOW guarantees the X server has processed the move
+	 * before the MapWindow request arrives.  The compositor therefore reads
+	 * the correct geometry in comp_add_by_xid and the window never appears
+	 * at a stale position. */
+	if (launcher_xwin) {
+		int      win_w, win_h, lx, ly;
+		uint32_t pre_vals[2];
+
+		win_w = (int) (420.0 * ui_dpi / 96.0 + 0.5);
+		win_h = (int) (400.0 * ui_dpi / 96.0 + 0.5);
+		lx    = m->wx + (m->ww - win_w) / 2;
+		ly    = m->wy + (m->wh - win_h) / 2;
+		if (lx < m->wx)
+			lx = m->wx;
+		if (ly < m->wy)
+			ly = m->wy;
+		pre_vals[0] = (uint32_t) lx;
+		pre_vals[1] = (uint32_t) ly;
+		xcb_configure_window(xc, launcher_xwin,
+		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, pre_vals);
+		/* Synchronous round-trip: ensures the ConfigureWindow is processed
+		 * by the X server before UI_MSG_LAUNCHER_SHOW causes the MapWindow
+		 * to arrive.  xcb_get_input_focus is a cheap no-op for this. */
+		{
+			xcb_get_input_focus_cookie_t fck = xcb_get_input_focus(xc);
+			xcb_get_input_focus_reply_t *fr =
+			    xcb_get_input_focus_reply(xc, fck, NULL);
+			free(fr);
+		}
+		awm_debug("launchermenu: pre-positioned xwin=0x%x to %d,%d"
+		          " (win=%dx%d dpi=%.1f)",
+		    (unsigned) launcher_xwin, lx, ly, win_w, win_h, ui_dpi);
+	}
 
 	/* Send the monitor workarea; awm-ui computes the centred position using
 	 * the actual scaled window size (which only awm-ui knows). */
@@ -778,17 +820,15 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 		break;
 	}
 	case UI_MSG_LAUNCHER_SHOWN:
-		/* awm-ui sends this after gtk_widget_show_all() + gdk_display_flush().
-		 * The launcher window is now mapped and at its final position on the
-		 * server — safe to issue xcb_set_input_focus.  Calling it earlier
-		 * (before the window is mapped) is silently ignored by the X server.
-		 */
+		/* awm-ui sends this after gtk_widget_show_all() + gdk_display_sync().
+		 * The launcher window is now mapped.  The window was already
+		 * pre-positioned by xcb_configure_window in launchermenu() before
+		 * UI_MSG_LAUNCHER_SHOW was sent, so no coordinate work is needed
+		 * here — just set input focus. */
 		if (launcher_xwin) {
 			xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT,
 			    launcher_xwin, XCB_CURRENT_TIME);
 			xcb_flush(xc);
-			awm_debug("awm: launcher shown — input focus set to 0x%x",
-			    (unsigned) launcher_xwin);
 		}
 		break;
 	case UI_MSG_PREVIEW_FOCUS: {
