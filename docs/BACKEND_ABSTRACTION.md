@@ -522,4 +522,4 @@ Before opening a pull request from `feature/backend-abstraction` to `master`:
 - [ ] Inline XRender thumbnail path removed from `switcher.c`
 - [ ] All `awm_*` logging macros used — no bare `printf`/`fprintf`
 - [ ] `AGENTS.md` constraints checklist satisfied in full
-- [ ] Tested in Xephyr: `Xephyr :1 -screen 1280x720 && DISPLAY=:1 ./awm`
+- [ ] Tested in Xephyr: `Xephyr :1 -screen 1280x720 && DISPLAY=:1 ./awm -s`
