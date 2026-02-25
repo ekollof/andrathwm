@@ -116,7 +116,7 @@ dispatch_launcher_show(const uint8_t *payload, uint32_t len)
 	}
 	UiLauncherShowPayload p;
 	memcpy(&p, payload, sizeof(p));
-	launcher_show(launcher, (int) p.x, (int) p.y);
+	launcher_show(launcher, (int) p.wx, (int) p.wy, (int) p.ww, (int) p.wh);
 }
 
 static void

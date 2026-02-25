@@ -501,12 +501,12 @@ launchermenu(const Arg *arg)
 	else
 		m = g_awm_selmon;
 
-	p.x = (int32_t) (m->wx + (m->ww - 420) / 2);
-	p.y = (int32_t) (m->wy + (m->wh - 400) / 2);
-	if (p.x < (int32_t) m->wx)
-		p.x = (int32_t) m->wx;
-	if (p.y < (int32_t) m->wy)
-		p.y = (int32_t) m->wy;
+	/* Send the monitor workarea; awm-ui computes the centred position using
+	 * the actual scaled window size (which only awm-ui knows). */
+	p.wx = (int32_t) m->wx;
+	p.wy = (int32_t) m->wy;
+	p.ww = (int32_t) m->ww;
+	p.wh = (int32_t) m->wh;
 
 	hdr.type        = (uint32_t) UI_MSG_LAUNCHER_SHOW;
 	hdr.payload_len = sizeof(p);

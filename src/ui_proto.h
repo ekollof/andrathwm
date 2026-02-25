@@ -59,10 +59,13 @@ typedef struct {
  * awm → awm-ui payloads
  * ---------------------------------------------------------------------- */
 
-/* UI_MSG_LAUNCHER_SHOW */
+/* UI_MSG_LAUNCHER_SHOW — carries the target monitor workarea so awm-ui can
+ * centre the launcher using the actual scaled window size. */
 typedef struct {
-	int32_t x;
-	int32_t y;
+	int32_t wx; /* monitor workarea origin x */
+	int32_t wy; /* monitor workarea origin y */
+	int32_t ww; /* monitor workarea width    */
+	int32_t wh; /* monitor workarea height   */
 } UiLauncherShowPayload;
 
 /* UI_MSG_MONITOR_GEOM — sent on startup and whenever monitor geometry

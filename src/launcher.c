@@ -1084,9 +1084,11 @@ launcher_free(Launcher *launcher)
 }
 
 void
-launcher_show(Launcher *launcher, int x, int y)
+launcher_show(Launcher *launcher, int wx, int wy, int ww, int wh)
 {
-	GdkWindow *gdk_win;
+	GdkWindow  *gdk_win;
+	GdkDisplay *disp;
+	int         win_w, win_h, x, y;
 
 	if (!launcher)
 		return;
@@ -1104,17 +1106,32 @@ launcher_show(Launcher *launcher, int x, int y)
 	if (first)
 		gtk_list_box_select_row(GTK_LIST_BOX(launcher->listbox), first);
 
-	/* Show first, then move.  For an override-redirect window gtk_window_move
-	 * before show only updates GTK's internal cache and the X server ignores
-	 * the ConfigureWindow on an unmapped window; GDK may then reposition the
-	 * window to its previous location when it maps.  Calling gdk_window_move()
-	 * on the underlying GdkWindow after show() guarantees the XMoveWindow
-	 * request reaches the server while the window is already mapped. */
+	/* Compute actual scaled pixel size and centre on the target monitor. */
+	win_w = LAUNCHER_SCALE(420);
+	win_h = LAUNCHER_SCALE(400);
+	x     = wx + (ww - win_w) / 2;
+	y     = wy + (wh - win_h) / 2;
+	if (x < wx)
+		x = wx;
+	if (y < wy)
+		y = wy;
+
+	awm_debug("launcher_show: monitor %dx%d+%d+%d win %dx%d -> %d,%d", ww, wh,
+	    wx, wy, win_w, win_h, x, y);
+
+	/* Move to the target position before mapping.  gtk_window_move() on an
+	 * unmapped window stores the hint in GDK's cache; for override-redirect
+	 * windows GDK skips the WM ConfigureRequest path and calls the X server
+	 * directly, so the position is applied when the window maps.
+	 * We then call gdk_display_sync() (full round-trip) after show_all to
+	 * ensure the server has processed both the Map and the ConfigureWindow
+	 * before we send UI_MSG_LAUNCHER_SHOWN to awm. */
+	gtk_window_move(GTK_WINDOW(launcher->window), x, y);
 	gtk_widget_show_all(launcher->window);
 	gdk_win = gtk_widget_get_window(launcher->window);
 	if (gdk_win) {
-		gdk_window_move(gdk_win, x, y);
-		gdk_display_flush(gdk_window_get_display(gdk_win));
+		disp = gdk_window_get_display(gdk_win);
+		gdk_display_sync(disp);
 	}
 
 	/* Give keyboard focus to the search entry (GTK-internal widget focus). */

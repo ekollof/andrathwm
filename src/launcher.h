@@ -51,7 +51,7 @@ typedef struct {
  * term   — terminal emulator binary (may be NULL to use "st") */
 Launcher *launcher_create(int ui_fd, const char *term);
 void      launcher_free(Launcher *launcher);
-void      launcher_show(Launcher *launcher, int x, int y);
+void      launcher_show(Launcher *launcher, int wx, int wy, int ww, int wh);
 void      launcher_hide(Launcher *launcher);
 void      launcher_update_theme(Launcher *launcher, const UiThemePayload *t);
 
