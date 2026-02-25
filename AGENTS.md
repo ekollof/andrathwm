@@ -4,7 +4,7 @@
 
 ```sh
 make                  # build awm, awm-ui, xidle (default Cairo backend)
-make DRW_LEGACY=1     # build with legacy XCB+Cairo hybrid backend
+make DRW_LEGACY=1     # build with legacy XCB+Cairo hybrid backend (deprecated — will be removed on feature/backend-abstraction)
 make clean            # remove all build artefacts
 make install          # install to ${PREFIX}/bin (default /usr/bin)
 make compdb           # generate compile_commands.json for clangd
@@ -327,7 +327,7 @@ populated in `setup()`. Old `extern` globals removed incrementally.
 **Step 5 — Compositor state into AWMState (done, commit `9e67b4b`):**
 `comp.paused_mask` snapshotted into `AWMState`; `AWMStateComp` dual-writes removed.
 
-**Step 6 — Monitor flat array (IN PROGRESS, commit `ba6ccda` WIP):**
+**Step 6 — Monitor flat array (done, commit `86e9238`):**
 Replace `AWMState.mons` linked list + `AWMState.selmon` pointer with
 `AWMState.monitors[]` flat array + `AWMState.selmon_num` index.
 
@@ -400,6 +400,59 @@ while (g_awm.n_monitors) cleanupmon(&g_awm.monitors[0]);
 
 ---
 
+## Backend Abstraction — Incoming Change
+
+**Branch: `feature/backend-abstraction`** (not yet started; planned after WMState Step 7)
+
+The backend abstraction refactor decouples WM logic, bar rendering, and input
+handling from XCB/X11 so that a future wlroots/Wayland backend can be added
+without invasive changes to core WM files.  Full design in
+`docs/BACKEND_ABSTRACTION.md`.
+
+### What changes
+
+| Area | Change |
+|---|---|
+| `PlatformCtx` struct | All ~30 `extern` globals (`xc`, `root`, atoms, `keysyms`, DPI) move into a single `g_plat` struct defined in `platform_x11.c`. All call sites updated at once — no alias period. |
+| `WmBackend` vtable | Runtime struct of function pointers for every logical WM operation. After migration `client.c`, `monitor.c`, `events.c` contain zero `xcb_*` calls. |
+| `RenderBackend` vtable | Thin wrapper over the `Drw` API. `drw_cairo.c` → `render_cairo_xcb.c`. `drw.c` (legacy) deleted. `drw.h` → `render.h`. |
+| `platform_source` | `xsource.c` → `platform_x11_source.c`; `xsource.h` → `platform_source.h`; `xsource_attach()` → `platform_source_attach()`. |
+| Switcher | Inline XRender thumbnail path (~80 lines) removed from `switcher.c`; all captures route through `comp_capture_thumb()`. |
+| systray / ewmh | Both files wrapped in `#ifdef BACKEND_X11`. Narrow `wmprop_*` interface extracted to `wm_properties.h`. |
+| Build system | `BACKEND ?= X11` in `config.mk`; emits `-DBACKEND_X11`. `DRW_LEGACY=1` flag removed. |
+
+### What does NOT change on this branch
+
+- The compositor (`compositor.c`, `compositor_egl.c`, `compositor_xrender.c`)
+  stays X11-only and is not touched.
+- No Wayland or wlroots code is written.
+- No per-monitor fractional DPI.
+- No session save/restore (WMState Step 7 — separate concern).
+- No changes to `ui_proto.h` or the awm-ui IPC protocol.
+
+### New files
+
+| File | Purpose |
+|---|---|
+| `src/platform.h` | `PlatformCtx` struct; `WmBackend` vtable typedef |
+| `src/platform_x11.c` | X11 implementation of `WmBackend`; defines `g_plat` |
+| `src/platform_source.h` | `platform_source_attach()` declaration |
+| `src/platform_x11_source.c` | `xsource.c` renamed |
+| `src/render.h` | `RenderBackend` vtable; `AwmSurface` opaque type |
+| `src/render_cairo_xcb.c` | `drw_cairo.c` renamed |
+
+### Rules for this refactor
+
+- All work on `feature/backend-abstraction` — never directly on `master`.
+- Build must pass with zero warnings/errors after every commit.
+- All `g_plat.*` migration done in one commit — no alias macros during transition.
+- After Step 2: `client.c`, `monitor.c`, `events.c` must be grep-clean of `xcb_*`.
+- After Step 3: no `drw_*` call outside `render_cairo_xcb.c`; `drw.h`/`drw.c` deleted.
+- Compositor files are not modified on this branch.
+- No Wayland code introduced on this branch.
+
+---
+
 ## Constraints Checklist
 
 Before committing, verify:
@@ -416,3 +469,4 @@ Before committing, verify:
 - [ ] WMState refactor: no session/dump code introduced before Step 7
 - [ ] No `Monitor *next` field used anywhere — use `FOR_EACH_MON` instead
 - [ ] No direct `g_awm.mons` or `g_awm.selmon` access — use macros
+- [ ] Backend abstraction: on `feature/backend-abstraction` only — no vtable/platform code on `master` before the branch merges

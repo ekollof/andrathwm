@@ -150,7 +150,7 @@ This will install:
 
 ```sh
 make              # default: drw_cairo.c backend (pure Cairo, no XCB in hot path)
-make DRW_LEGACY=1 # use original drw.c (XCB + Cairo)
+make DRW_LEGACY=1 # use original drw.c (XCB + Cairo) — deprecated, will be removed in feature/backend-abstraction
 ```
 
 ### Optional Features
@@ -362,8 +362,8 @@ andrathwm/
 │   ├── compositor_egl.c                  # EGL/GL compositor backend
 │   ├── compositor_xrender.c              # XRender compositor backend
 │   ├── switcher.c/switcher.h             # Alt+Tab window switcher with live thumbnails
-│   ├── drw.c/drw.h              # Drawing library (XCB + PangoCairo)
-│   ├── drw_cairo.c              # Pure-Cairo drawing backend (default)
+│   ├── drw.c/drw.h              # Drawing library (XCB + PangoCairo) — to be replaced by render.h/render_cairo_xcb.c
+│   ├── drw_cairo.c              # Pure-Cairo drawing backend (default) — to be renamed render_cairo_xcb.c
 │   ├── x11_constants.h          # KeySym typedef, LASTEvent, X_ opcodes
 │   ├── dbus.c/dbus.h            # D-Bus integration
 │   ├── sni.c/sni.h              # StatusNotifier (SNI) system tray
@@ -376,7 +376,7 @@ andrathwm/
 │   ├── status_util.c/h          # Status utility functions
 │   ├── spawn.c/spawn.h          # Process spawning
 │   ├── xrdb.c/xrdb.h            # Xresources query (pure XCB)
-│   ├── xsource.c/xsource.h      # GLib GSource wrapping XCB fd
+│   ├── xsource.c/xsource.h      # GLib GSource wrapping XCB fd — to be renamed platform_x11_source.c/platform_source.h
 │   ├── log.c/log.h              # Logging subsystem
 │   ├── util.c/util.h            # Utility functions
 │   └── xidle.c                  # Idle detection utility (xcb-screensaver)
@@ -384,6 +384,7 @@ andrathwm/
 ├── build/                       # Build artifacts (.o files)
 ├── docs/                        # Documentation
 │   ├── AWESOMEBAR.md            # Awesomebar feature docs
+│   ├── BACKEND_ABSTRACTION.md   # Backend abstraction refactor plan (future)
 │   ├── LAUNCHER.md              # Application launcher docs
 │   ├── MULTIMONITOR.md          # Multi-monitor setup
 │   ├── SWITCHER.md              # Window switcher docs
@@ -401,6 +402,44 @@ andrathwm/
 ├── awm.1                        # Man page
 └── awm.png                      # Icon
 ```
+
+## Roadmap
+
+### Backend abstraction (`feature/backend-abstraction`)
+
+The codebase currently couples WM logic, bar rendering, and input handling
+directly to XCB/X11. The planned backend abstraction refactor will decouple
+these layers to make a future wlroots/Wayland backend possible without
+invasive surgery to core WM logic.
+
+Key changes planned on the `feature/backend-abstraction` branch:
+
+- **`PlatformCtx` struct** — consolidate all X11 connection state (`xc`,
+  `root`, atoms, `keysyms`, DPI constants) from ~30 bare `extern` globals
+  into a single struct.
+- **`WmBackend` runtime vtable** — one function pointer per logical WM
+  operation (geometry, focus, stacking, grabs, property writes). Core WM
+  files (`client.c`, `monitor.c`, `events.c`) call through the vtable and
+  contain no `xcb_*` calls after the migration.
+- **`RenderBackend` vtable** — thin wrapper over the existing `Drw` API;
+  `drw_cairo.c` becomes `render_cairo_xcb.c`; the legacy `drw.c`
+  (XCB+XRender hybrid) is retired.
+- **`platform_source`** — `xsource.c` renamed to `platform_x11_source.c`
+  with a backend-neutral `platform_source_attach()` declaration.
+- **Switcher simplification** — the inline XRender thumbnail path in
+  `switcher.c` is removed; all thumbnail captures route through
+  `comp_capture_thumb()`.
+- **systray / ewmh guards** — both files wrapped in `#ifdef BACKEND_X11`
+  since they have no Wayland equivalents.
+
+The compositor (EGL/XRender) is **out of scope** for this refactor and
+remains X11-only. Per-monitor fractional DPI is deferred until XLibre
+exposes fractional scaling at the protocol level. The target Wayland
+backend is **wlroots** (not raw `libwayland-server`), but no Wayland code
+is written on this branch — it is purely a structural preparation.
+
+See [docs/BACKEND_ABSTRACTION.md](docs/BACKEND_ABSTRACTION.md) for the
+full design, vtable definitions, migration steps, and merge checklist.
 
 ## Patches Applied
 
