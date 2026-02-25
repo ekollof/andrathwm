@@ -13,6 +13,12 @@ const char *battery_status(const char *bat);
 /* cpu */
 const char *cpu_perc(const char *unused);
 
+/* Per-core CPU usage for status2d bar widgets.
+ * Fills out[] with one integer percentage per core (0-100).
+ * Returns the number of cores filled (>0), or 0 on error.
+ * Only defined on Linux; other platforms return 0 immediately. */
+int cpu_percpu(int *out, int maxcores);
+
 /* datetime */
 const char *datetime(const char *fmt);
 

@@ -318,6 +318,66 @@ cpu_perc(const char *unused)
 	            (a[0] + a[1] + a[2] + a[5] + a[6])) /
 	        sum));
 }
+
+/* cpu_percpu — read per-core usage from /proc/stat.
+ * Fills out[0..n-1] with integer percentages.  Returns core count.
+ * Uses static previous-sample arrays; first call returns 0 (no delta). */
+#define CPU_PERCPU_MAX 64
+
+int
+cpu_percpu(int *out, int maxcores)
+{
+	static long double prev[CPU_PERCPU_MAX][7];
+	long double        cur[CPU_PERCPU_MAX][7];
+	long double        sum;
+	FILE              *fp;
+	char               line[256];
+	int                n = 0;
+	int                i;
+
+	fp = fopen("/proc/stat", "r");
+	if (!fp)
+		return 0;
+
+	/* Skip the aggregate "cpu " line. */
+	if (!fgets(line, sizeof(line), fp)) {
+		fclose(fp);
+		return 0;
+	}
+
+	while (
+	    n < maxcores && n < CPU_PERCPU_MAX && fgets(line, sizeof(line), fp)) {
+		/* Stop at non-cpu lines (e.g. "intr", "ctxt"). */
+		if (line[0] != 'c' || line[1] != 'p' || line[2] != 'u')
+			break;
+		if (sscanf(line, "%*s %Lf %Lf %Lf %Lf %Lf %Lf %Lf", &cur[n][0],
+		        &cur[n][1], &cur[n][2], &cur[n][3], &cur[n][4], &cur[n][5],
+		        &cur[n][6]) != 7)
+			break;
+		n++;
+	}
+	fclose(fp);
+
+	for (i = 0; i < n; i++) {
+		sum = (cur[i][0] + cur[i][1] + cur[i][2] + cur[i][3] + cur[i][4] +
+		          cur[i][5] + cur[i][6]) -
+		    (prev[i][0] + prev[i][1] + prev[i][2] + prev[i][3] + prev[i][4] +
+		        prev[i][5] + prev[i][6]);
+
+		if (sum <= 0 || prev[i][0] == 0) {
+			out[i] = 0;
+		} else {
+			out[i] = (int) (100 *
+			    ((cur[i][0] + cur[i][1] + cur[i][2] + cur[i][5] + cur[i][6]) -
+			        (prev[i][0] + prev[i][1] + prev[i][2] + prev[i][5] +
+			            prev[i][6])) /
+			    sum);
+		}
+		memcpy(prev[i], cur[i], sizeof(prev[i]));
+	}
+
+	return n;
+}
 #elif defined(__OpenBSD__)
 #include <sys/param.h>
 #include <sys/sched.h>
@@ -382,6 +442,17 @@ cpu_perc(const char *unused)
 	        ((a[CP_USER] + a[CP_NICE] + a[CP_SYS] + a[CP_INTR]) -
 	            (b[CP_USER] + b[CP_NICE] + b[CP_SYS] + b[CP_INTR])) /
 	        sum);
+}
+#endif
+
+/* cpu_percpu stub for non-Linux platforms */
+#if !defined(__linux__)
+int
+cpu_percpu(int *out, int maxcores)
+{
+	(void) out;
+	(void) maxcores;
+	return 0;
 }
 #endif
 
