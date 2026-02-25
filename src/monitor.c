@@ -674,7 +674,7 @@ updategeom(void)
 				    xcb_randr_get_crtc_info(xc, crtcs[i], XCB_CURRENT_TIME);
 				xcb_randr_get_crtc_info_reply_t *ci =
 				    xcb_randr_get_crtc_info_reply(xc, cic, NULL);
-				if (!ci || ci->num_outputs == 0) {
+				if (!ci || ci->num_outputs == 0 || ci->width == 0) {
 					free(ci);
 					continue;
 				}
