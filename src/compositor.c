@@ -1049,6 +1049,8 @@ comp_fullscreen_bypass_cb(gpointer data)
 	if (!c || !c->isfullscreen)
 		return G_SOURCE_REMOVE;
 
+	awm_debug("comp_fullscreen_bypass_cb: firing for win 0x%lx mon=%d", c->win,
+	    c->mon ? c->mon->num : -1);
 	compositor_bypass_window(c, 1);
 
 	{
@@ -1289,6 +1291,11 @@ compositor_check_unredirect(void)
 		for (c = m->cl->clients; c; c = c->next) {
 			if (!ISVISIBLE(c, m))
 				continue;
+			awm_debug("check_unredirect: mon%d client 0x%lx"
+			          " fs=%d op=%.2f cx=%d cy=%d cw=%d ch=%d"
+			          " mx=%d my=%d mw=%d mh=%d",
+			    m->num, c->win, c->isfullscreen, c->opacity, c->x, c->y, c->w,
+			    c->h, m->mx, m->my, m->mw, m->mh);
 			if (c->isfullscreen && c->opacity >= 1.0 && c->x == m->mx &&
 			    c->y == m->my && c->w == m->mw && c->h == m->mh) {
 				new_mask |= (1u << (unsigned) m->num);
