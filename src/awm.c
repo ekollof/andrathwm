@@ -486,15 +486,23 @@ launchermenu(const Arg *arg)
 {
 	UiMsgHeader           hdr;
 	UiLauncherShowPayload p;
-	uint8_t buf[sizeof(UiMsgHeader) + sizeof(UiLauncherShowPayload)];
+	uint8_t  buf[sizeof(UiMsgHeader) + sizeof(UiLauncherShowPayload)];
+	Monitor *m;
+	int      px, py;
 	(void) arg;
 
 	if (ui_fd < 0)
 		return;
 
-	Monitor *m = g_awm_selmon;
-	p.x        = (int32_t) (m->wx + (m->ww - 420) / 2);
-	p.y        = (int32_t) (m->wy + (m->wh - 400) / 2);
+	/* Use the monitor the pointer is on, not the last-focused monitor.
+	 * Falls back to selmon if the pointer query fails. */
+	if (getrootptr(&px, &py))
+		m = recttomon(px, py, 1, 1);
+	else
+		m = g_awm_selmon;
+
+	p.x = (int32_t) (m->wx + (m->ww - 420) / 2);
+	p.y = (int32_t) (m->wy + (m->wh - 400) / 2);
 	if (p.x < (int32_t) m->wx)
 		p.x = (int32_t) m->wx;
 	if (p.y < (int32_t) m->wy)
@@ -507,12 +515,19 @@ launchermenu(const Arg *arg)
 
 	if (send(ui_fd, buf, sizeof(buf), MSG_NOSIGNAL) < 0) {
 		awm_error("launchermenu: send: %s", strerror(errno));
-	} else {
-		launcher_visible = 1;
-		/* awm-ui owns X focus for the launcher: launcher_show() calls
-		 * gdk_display_sync() then gdk_window_focus() on its own GDK
-		 * connection, which guarantees the window is mapped before
-		 * XSetInputFocus is sent — no cross-process race. */
+		return;
+	}
+	launcher_visible = 1;
+
+	/* The launcher window is override-redirect (GDK_WINDOW_TYPE_HINT_UTILITY
+	 * causes GDK to set override_redirect before the window is mapped), so
+	 * awm never receives a MapRequest for it and manage()/setfocus() are
+	 * never called.  Drive focus directly using the X window ID that
+	 * awm-ui sent us via UI_MSG_LAUNCHER_READY. */
+	if (launcher_xwin) {
+		xcb_set_input_focus(
+		    xc, XCB_INPUT_FOCUS_POINTER_ROOT, launcher_xwin, XCB_CURRENT_TIME);
+		xcb_flush(xc);
 	}
 }
 
