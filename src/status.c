@@ -1,6 +1,8 @@
 /* AndrathWM - embedded status module (slstatus-based)
  * See LICENSE file for copyright and license details. */
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -19,6 +21,7 @@
 static guint  status_timer_id = 0;
 static time_t last_update_time[STATUS_ARGS_LEN];
 static char   cached_results[STATUS_ARGS_LEN][STATUS_COMPONENT_MAX];
+static int    slot_disabled[STATUS_ARGS_LEN];
 
 static void
 status_set_text(const char *text)
@@ -38,9 +41,11 @@ status_set_text(const char *text)
 static void
 status_prime_components(void)
 {
-	size_t i;
+	size_t      i;
+	const char *res;
 
 	memset(last_update_time, 0, sizeof(last_update_time));
+	memset(slot_disabled, 0, sizeof(slot_disabled));
 	for (i = 0; i < STATUS_ARGS_LEN; i++) {
 		strncpy(cached_results[i], status_unknown_str,
 		    sizeof(cached_results[i]) - 1);
@@ -54,6 +59,25 @@ status_prime_components(void)
 	for (i = 0; i < STATUS_ARGS_LEN; i++) {
 		if (status_args[i].prime)
 			(void) status_args[i].func(status_args[i].args);
+	}
+
+	/* Probe non-prime components once at startup.  If a component returns
+	 * NULL (e.g. battery_status on a machine with no battery), mark the
+	 * slot disabled so it is silently omitted from every status_build()
+	 * pass.  The cache seed is cleared for disabled slots so no stale
+	 * "n/a" string leaks into the bar output. */
+	for (i = 0; i < STATUS_ARGS_LEN; i++) {
+		if (status_args[i].prime)
+			continue;
+		res = status_args[i].func(status_args[i].args);
+		if (res == NULL) {
+			slot_disabled[i]     = 1;
+			cached_results[i][0] = '\0';
+		} else {
+			strncpy(cached_results[i], res, sizeof(cached_results[i]) - 1);
+			cached_results[i][sizeof(cached_results[i]) - 1] = '\0';
+			last_update_time[i]                              = time(NULL);
+		}
 	}
 }
 
@@ -73,6 +97,8 @@ status_build(char *out, size_t out_len)
 	current_time = time(NULL);
 
 	for (i = 0; i < STATUS_ARGS_LEN; i++) {
+		if (slot_disabled[i])
+			continue;
 		if (current_time - last_update_time[i] >= status_args[i].interval) {
 			res = status_args[i].func(status_args[i].args);
 			if (res) {

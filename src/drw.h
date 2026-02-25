@@ -72,6 +72,14 @@ int  drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h,
      unsigned int lpad, const char *text, int invert);
 void drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
     cairo_surface_t *surface);
+/*
+ * drw_draw_statusd — render a status2d-encoded status string.
+ * Returns the total pixel width consumed by the rendered content.
+ * When x==0 && y==0 && w==0 && h==0, performs measurement only (no draw).
+ * Supported escapes: ^cRRGGBB^ ^bRRGGBB^ ^rx,y,w,h^ ^fN^ ^d^
+ */
+int drw_draw_statusd(
+    Drw *drw, int x, int y, unsigned int w, unsigned int h, const char *text);
 
 /* Map functions */
 void drw_map(

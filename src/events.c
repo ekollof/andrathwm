@@ -7,6 +7,7 @@
 #include "client.h"
 #include "compositor.h"
 #include "ewmh.h"
+#include "drw.h"
 #include "monitor.h"
 #include "spawn.h"
 #include "switcher.h"
@@ -58,8 +59,8 @@ buttonpress(xcb_generic_event_t *e)
 		if (i >= LENGTH(tags) &&
 		    ev->event_x < x + TEXTW(g_awm_selmon->ltsymbol))
 			click = ClkLtSymbol;
-		else if (ev->event_x >
-		    g_awm_selmon->ww - (int) TEXTW(stext) - getsystraywidth())
+		else if (ev->event_x > g_awm_selmon->ww -
+		        drw_draw_statusd(drw, 0, 0, 0, 0, stext) - getsystraywidth())
 			click = ClkStatusText;
 		else if (i >= LENGTH(tags)) {
 			/* Awesomebar - find which window was clicked */
@@ -75,7 +76,7 @@ buttonpress(xcb_generic_event_t *e)
 					n++;
 
 			if (n > 0) {
-				int tw        = TEXTW(stext);
+				int tw        = drw_draw_statusd(drw, 0, 0, 0, 0, stext);
 				int stw       = getsystraywidth();
 				int remainder = m->ww - tw - stw - x;
 				int tabw      = remainder / n;

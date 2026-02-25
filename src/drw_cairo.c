@@ -20,6 +20,7 @@
  *                      used only as the required GC argument to xcb_copy_area
  */
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <xcb/xcb.h>
@@ -31,12 +32,12 @@
 #include "log.h"
 #include "util.h"
 
-/* ui_dpi is defined in awm.c; forward-declare here to avoid a circular
- * include (awm.h -> drw.h -> circular).  drw_cairo.c is linked into both
- * the awm binary (strong definition in awm.c overrides) and the awm-ui
- * binary (no awm.c, so the weak 96.0 default is used — awm-ui applies the
- * real DPI via UI_MSG_THEME in notif.c independently). */
+/* ui_dpi and lrpad are defined in awm.c; forward-declare here to avoid a
+ * circular include (awm.h -> drw.h -> circular).  drw_cairo.c is linked
+ * into both the awm binary (strong definition in awm.c overrides) and the
+ * awm-ui binary (no awm.c, so weak defaults are used). */
 __attribute__((weak)) double ui_dpi = 96.0;
+__attribute__((weak)) int    lrpad  = 4;
 
 /* ── internal helpers (identical to drw.c) ─────────────────────────────── */
 
@@ -466,6 +467,272 @@ drw_pic(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 	cairo_paint(cr);
 	cairo_restore(cr);
 	cairo_destroy(cr);
+}
+
+/* ── status2d escape-code renderer ─────────────────────────────────────── */
+
+/*
+ * drw_draw_statusd — render a status2d-encoded string into the bar pixmap.
+ *
+ * Supported escape sequences (all delimited by '^'):
+ *   ^cRRGGBB^   set foreground colour (#RRGGBB hex, leading '#' optional)
+ *   ^bRRGGBB^   set background colour (#RRGGBB hex, leading '#' optional)
+ *   ^r x,y,w,h^ draw a filled rectangle relative to current draw cursor X
+ *   ^f N^        advance draw cursor forward by N pixels
+ *   ^d^          reset fg/bg to current drw->scheme (SchemeNorm)
+ *
+ * Measurement-only mode: when x==0 && y==0 && w==0 && h==0, no drawing is
+ * performed and the function returns the pixel width the string would consume.
+ * This mirrors the drw_text() convention.
+ *
+ * Returns the total pixel width consumed.
+ *
+ * @drw  : draw context (scheme must be set by caller before calling)
+ * @x    : left edge of the status area in the bar pixmap (0 = measure only)
+ * @y    : top edge (0 = measure only)
+ * @w    : total available width / clipping budget (0 = measure only)
+ * @h    : bar height (0 = measure only)
+ * @text : status string, may be NULL (draws nothing, returns 0)
+ */
+int
+drw_draw_statusd(
+    Drw *drw, int x, int y, unsigned int w, unsigned int h, const char *text)
+{
+	int render = x || y || w || h;
+	/* Working colours — start at SchemeNorm values. */
+	double      cfg_r, cfg_g, cfg_b; /* current fg rgb (0-1) */
+	double      cbg_r, cbg_g, cbg_b; /* current bg rgb (0-1) */
+	int         cx;                  /* current X cursor */
+	const char *p, *seg;
+	char        buf[256];
+	int         seg_len;
+	cairo_t    *cr       = NULL;
+	int         consumed = 0;
+
+	if (!drw || !drw->scheme || !text)
+		return 0;
+	if (render && !drw->cairo_surface)
+		return 0;
+
+	/* Seed working colours from current scheme. */
+	cfg_r = drw->scheme[ColFg].r / 65535.0;
+	cfg_g = drw->scheme[ColFg].g / 65535.0;
+	cfg_b = drw->scheme[ColFg].b / 65535.0;
+	cbg_r = drw->scheme[ColBg].r / 65535.0;
+	cbg_g = drw->scheme[ColBg].g / 65535.0;
+	cbg_b = drw->scheme[ColBg].b / 65535.0;
+
+	cx  = x;
+	p   = text;
+	seg = text;
+
+	if (render)
+		cr = cairo_create(drw->cairo_surface);
+
+	while (*p) {
+		if (*p != '^') {
+			p++;
+			continue;
+		}
+
+		/* Flush plain-text segment preceding this escape. */
+		seg_len = (int) (p - seg);
+		if (seg_len > 0 && (!render || (unsigned int) (cx - x) < w)) {
+			if (seg_len >= (int) sizeof(buf))
+				seg_len = (int) sizeof(buf) - 1;
+			memcpy(buf, seg, (size_t) seg_len);
+			buf[seg_len] = '\0';
+			{
+				PangoLayout          *layout;
+				PangoFontDescription *desc;
+				int                   tw, th;
+				cairo_t              *tmp_cr;
+
+				/* Need a cairo context for Pango even in measure-only mode. */
+				if (render) {
+					tmp_cr = cr;
+				} else {
+					tmp_cr = cairo_create(drw->cairo_surface);
+				}
+
+				layout = pango_cairo_create_layout(tmp_cr);
+				if (ui_dpi > 0.0)
+					pango_cairo_context_set_resolution(
+					    pango_layout_get_context(layout), ui_dpi);
+				desc = drw->fonts ? drw->fonts->desc : NULL;
+				if (desc)
+					pango_layout_set_font_description(layout, desc);
+				pango_layout_set_text(layout, buf, -1);
+				pango_layout_get_pixel_size(layout, &tw, &th);
+
+				if (render) {
+					/* Fill only the text's own width — do not blot out rects
+					 * that were drawn earlier in the same widget. */
+					cairo_set_source_rgb(cr, cbg_r, cbg_g, cbg_b);
+					cairo_rectangle(
+					    cr, cx, y, (double) (tw + lrpad / 2), (double) h);
+					cairo_fill(cr);
+					cairo_set_source_rgb(cr, cfg_r, cfg_g, cfg_b);
+					cairo_move_to(cr, cx + lrpad / 2, y + ((int) h - th) / 2);
+					pango_cairo_show_layout(cr, layout);
+				} else {
+					cairo_destroy(tmp_cr);
+				}
+				g_object_unref(layout);
+
+				cx += tw + lrpad / 2;
+				consumed += tw + lrpad / 2;
+			}
+		}
+
+		/* Skip the opening '^'. */
+		p++;
+
+		if (*p == '^') {
+			/* Escaped '^' — treat as literal. */
+			seg = p;
+			p++;
+			continue;
+		}
+
+		/* Parse escape command. */
+		if ((*p == 'c' || *p == 'b') && p[1] != '^') {
+			/* ^cRRGGBB^ or ^bRRGGBB^ — colour change. */
+			char         cmd   = *p++;
+			int          ishex = (*p == '#');
+			unsigned int rv = 0, gv = 0, bv = 0;
+			const char  *q = p + ishex;
+
+			/* Accept 6 hex digits. */
+			if (sscanf(q, "%2x%2x%2x", &rv, &gv, &bv) == 3) {
+				double dr = rv / 255.0;
+				double dg = gv / 255.0;
+				double db = bv / 255.0;
+				if (cmd == 'c') {
+					cfg_r = dr;
+					cfg_g = dg;
+					cfg_b = db;
+				} else {
+					cbg_r = dr;
+					cbg_g = dg;
+					cbg_b = db;
+				}
+			}
+			/* Skip to closing '^'. */
+			while (*p && *p != '^')
+				p++;
+			if (*p == '^')
+				p++;
+		} else if (*p == 'r') {
+			/* ^r rx,ry,rw,rh^ — filled rectangle relative to cursor.
+			 * cx is NOT advanced by ^r^; use ^f^ to reserve widget width. */
+			int rx = 0, ry = 0, rw = 0, rh = 0;
+			p++;
+			/* skip optional space */
+			while (*p == ' ')
+				p++;
+			sscanf(p, "%d,%d,%d,%d", &rx, &ry, &rw, &rh);
+			while (*p && *p != '^')
+				p++;
+			if (*p == '^')
+				p++;
+			/* Draw filled rect at (cx+rx, y+ry). cx unchanged — caller
+			 * uses ^f^ to advance past the widget. */
+			if (render && rw > 0 && rh > 0) {
+				cairo_set_source_rgb(cr, cfg_r, cfg_g, cfg_b);
+				cairo_rectangle(cr, cx + rx, y + ry, (double) rw, (double) rh);
+				cairo_fill(cr);
+			}
+		} else if (*p == 'f') {
+			/* ^f N^ — advance cursor by N pixels. */
+			int fwd = 0;
+			p++;
+			while (*p == ' ')
+				p++;
+			if (*p >= '0' && *p <= '9') {
+				fwd = atoi(p);
+				while (*p >= '0' && *p <= '9')
+					p++;
+			}
+			while (*p && *p != '^')
+				p++;
+			if (*p == '^')
+				p++;
+			cx += fwd;
+			consumed += fwd;
+		} else if (*p == 'd') {
+			/* ^d^ — reset to SchemeNorm. */
+			while (*p && *p != '^')
+				p++;
+			if (*p == '^')
+				p++;
+			cfg_r = drw->scheme[ColFg].r / 65535.0;
+			cfg_g = drw->scheme[ColFg].g / 65535.0;
+			cfg_b = drw->scheme[ColFg].b / 65535.0;
+			cbg_r = drw->scheme[ColBg].r / 65535.0;
+			cbg_g = drw->scheme[ColBg].g / 65535.0;
+			cbg_b = drw->scheme[ColBg].b / 65535.0;
+		} else {
+			/* Unknown escape — skip to closing '^'. */
+			while (*p && *p != '^')
+				p++;
+			if (*p == '^')
+				p++;
+		}
+		seg = p;
+	}
+
+	/* Flush any trailing plain-text segment. */
+	seg_len = (int) (p - seg);
+	if (seg_len > 0 && (!render || (unsigned int) (cx - x) < w)) {
+		if (seg_len >= (int) sizeof(buf))
+			seg_len = (int) sizeof(buf) - 1;
+		memcpy(buf, seg, (size_t) seg_len);
+		buf[seg_len] = '\0';
+		{
+			PangoLayout          *layout;
+			PangoFontDescription *desc;
+			int                   tw, th;
+			cairo_t              *tmp_cr;
+
+			if (render) {
+				tmp_cr = cr;
+			} else {
+				tmp_cr = cairo_create(drw->cairo_surface);
+			}
+
+			layout = pango_cairo_create_layout(tmp_cr);
+			if (ui_dpi > 0.0)
+				pango_cairo_context_set_resolution(
+				    pango_layout_get_context(layout), ui_dpi);
+			desc = drw->fonts ? drw->fonts->desc : NULL;
+			if (desc)
+				pango_layout_set_font_description(layout, desc);
+			pango_layout_set_text(layout, buf, -1);
+			pango_layout_get_pixel_size(layout, &tw, &th);
+
+			if (render) {
+				/* Same: fill only the text's own width. */
+				cairo_set_source_rgb(cr, cbg_r, cbg_g, cbg_b);
+				cairo_rectangle(
+				    cr, cx, y, (double) (tw + lrpad / 2), (double) h);
+				cairo_fill(cr);
+				cairo_set_source_rgb(cr, cfg_r, cfg_g, cfg_b);
+				cairo_move_to(cr, cx + lrpad / 2, y + ((int) h - th) / 2);
+				pango_cairo_show_layout(cr, layout);
+			} else {
+				cairo_destroy(tmp_cr);
+			}
+			g_object_unref(layout);
+
+			cx += tw + lrpad / 2;
+			consumed += tw + lrpad / 2;
+		}
+	}
+
+	if (render)
+		cairo_destroy(cr);
+	return consumed;
 }
 
 /* ── map (blit to window) ───────────────────────────────────────────────── */

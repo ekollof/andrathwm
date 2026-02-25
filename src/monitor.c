@@ -6,6 +6,7 @@
 #include "client.h"
 #include "ewmh.h"
 #include "spawn.h"
+#include "status.h"
 #include "systray.h"
 #include "xrdb.h"
 #ifdef COMPOSITOR
@@ -222,9 +223,13 @@ drawbar(Monitor *m)
 
 	/* draw status first so it can be overdrawn by tags later */
 	if (m == g_awm_selmon) { /* status is only drawn on selected monitor */
+		/* Measure the status2d string first (measurement-only: all zeros),
+		 * then render it right-aligned against the bar edge.
+		 * tw is used below to size the title-tab area.                   */
 		drw_setscheme(drw, scheme[SchemeNorm]);
-		tw = TEXTW(stext) - lrpad / 2 + 2; /* 2px extra right padding */
-		drw_text(drw, m->ww - tw - stw, 0, tw, bh, lrpad / 2 - 2, stext, 0);
+		tw = drw_draw_statusd(drw, 0, 0, 0, 0, stext);
+		drw_draw_statusd(drw, m->ww - stw - tw, 0, (unsigned int) tw,
+		    (unsigned int) bh, stext);
 	}
 
 	resizebarwin(m);
