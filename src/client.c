@@ -921,6 +921,10 @@ movemouse(const Arg *arg)
 #ifdef COMPOSITOR
 			case XCB_GE_GENERIC:
 				compositor_handle_event(xe);
+				/* g_idle_add callbacks never fire while the grab
+				 * loop owns the thread — flush any pending repaint
+				 * synchronously. */
+				compositor_repaint_now();
 				break;
 #endif
 			case XCB_MOTION_NOTIFY: {
@@ -1086,6 +1090,10 @@ resizemouse(const Arg *arg)
 #ifdef COMPOSITOR
 			case XCB_GE_GENERIC:
 				compositor_handle_event(xe);
+				/* g_idle_add callbacks never fire while the grab
+				 * loop owns the thread — flush any pending repaint
+				 * synchronously. */
+				compositor_repaint_now();
 				break;
 #endif
 			case XCB_MOTION_NOTIFY: {
