@@ -898,10 +898,17 @@ egl_repaint(void)
 	{
 		/* Re-check paused immediately before the swap: if a fullscreen bypass
 		 * raced in between the repaint start and here, the overlay window may
-		 * already be lowered.  Only clear dirty and swap if we are not paused
-		 * — leaving dirty state intact ensures the repaint loop restarts
-		 * correctly once compositing resumes. */
-		if (!comp.paused && comp.dirty_bbox_valid) {
+		 * already be lowered.  Only swap if we are not paused — leaving dirty
+		 * state intact ensures the repaint loop restarts correctly once
+		 * compositing resumes.
+		 *
+		 * NOTE: do NOT gate the swap on dirty_bbox_valid.  The bbox is only
+		 * used for the partial-repaint scissor rect; it can be legitimately
+		 * zero (e.g. after compositor_repaint_now() already called
+		 * comp_dirty_clear()) even when the scene has been repainted and the
+		 * new frame must be presented.  Gating the swap here would stall the
+		 * vblank loop after any forced repaint until new damage arrives. */
+		if (!comp.paused) {
 			comp_dirty_clear();
 			eglSwapBuffers(egl.egl_dpy, egl.egl_win);
 		}
