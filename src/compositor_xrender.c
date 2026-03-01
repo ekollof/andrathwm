@@ -12,6 +12,7 @@
 
 #ifdef COMPOSITOR
 
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -179,6 +180,7 @@ xrender_cleanup(void)
 static void
 xrender_apply_shape(CompWin *cw)
 {
+	assert(cw != NULL);
 	if (!cw->picture)
 		return;
 
@@ -226,6 +228,8 @@ xrender_bind_pixmap(CompWin *cw)
 	xcb_void_cookie_t              ck;
 	xcb_generic_error_t           *err;
 
+	assert(cw != NULL);
+
 	pv = xcb_render_util_find_visual_format(
 	    comp.render_formats, xcb_screen_root_visual(xc, screen));
 	fmt = pv ? pv->format : 0;
@@ -260,6 +264,7 @@ xrender_bind_pixmap(CompWin *cw)
 static void
 xrender_release_pixmap(CompWin *cw)
 {
+	assert(cw != NULL);
 	if (cw->picture) {
 		xcb_render_free_picture(xc, cw->picture);
 		cw->picture = 0;
@@ -396,6 +401,7 @@ xrender_repaint(void)
 			alpha_idx = 0;
 		if (alpha_idx > 255)
 			alpha_idx = 255;
+		assert(alpha_idx >= 0 && alpha_idx <= 255);
 
 		if (cw->argb || alpha_idx < 255) {
 			mask = xr.alpha_pict[alpha_idx];
@@ -502,7 +508,8 @@ xrender_capture_thumb(CompWin *cw, int max_w, int max_h)
 	cairo_surface_t        *surf     = NULL;
 	uint8_t                *img_data = NULL;
 
-	if (!cw || cw->w <= 0 || cw->h <= 0)
+	assert(cw != NULL);
+	if (cw->w <= 0 || cw->h <= 0)
 		return NULL;
 
 	/* Compute thumbnail size preserving aspect ratio */

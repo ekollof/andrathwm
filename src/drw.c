@@ -1,4 +1,5 @@
 /* See LICENSE file for copyright and license details. */
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include <xcb/xcb.h>
@@ -140,6 +141,7 @@ drw_resize(Drw *drw, unsigned int w, unsigned int h)
 void
 drw_free(Drw *drw)
 {
+	assert(drw != NULL);
 	if (drw->cairo_surface)
 		cairo_surface_destroy(drw->cairo_surface);
 	xcb_free_pixmap(drw->xc, drw->drawable);

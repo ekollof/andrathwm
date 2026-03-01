@@ -20,6 +20,7 @@
  *
  * To understand everything else, start reading main().
  */
+#include <assert.h>
 #include <stdint.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -142,6 +143,7 @@ cleanup(void)
 	while (g_awm.stack_head)
 		unmanage(g_awm.stack_head, 0);
 	xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
+	assert(g_awm.n_monitors >= 0);
 	while (g_awm.n_monitors)
 		cleanupmon(&g_awm.monitors[0]);
 
@@ -1247,8 +1249,10 @@ setup(void)
 	/* drw uses a dedicated bare xcb_connection_t (opened inside drw_create)
 	 * for all cairo rendering, keeping its XCB traffic off xc. */
 	drw = drw_create(xc, screen, root, sw, sh);
+	assert(drw != NULL);
 	if (!drw_fontset_create(drw, fonts, LENGTH(fonts)))
 		die("no fonts could be loaded.");
+	assert(drw->fonts != NULL);
 	lrpad = drw->fonts->h;
 	bh    = drw->fonts->h + 2;
 	/* Scale pixel geometry constants by the resolved DPI factor */

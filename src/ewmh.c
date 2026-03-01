@@ -1,6 +1,7 @@
 /* AndrathWM - EWMH/ICCCM protocol functions
  * See LICENSE file for copyright and license details. */
 
+#include <assert.h>
 #include <stdint.h>
 
 #include "awm.h"
@@ -95,6 +96,7 @@ setnumdesktops(void)
 void
 setfocus(Client *c)
 {
+	assert(c != NULL);
 	if (!c->neverfocus) {
 		xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT,
 		    (xcb_window_t) c->win, XCB_CURRENT_TIME);
@@ -138,8 +140,11 @@ updateclientlist(void)
 void
 updatecurrentdesktop(void)
 {
-	unsigned int rawdata = g_awm_selmon->tagset[g_awm_selmon->seltags];
-	uint32_t     i       = 0;
+	unsigned int rawdata;
+	uint32_t     i = 0;
+
+	assert(g_awm.selmon_num >= 0 && g_awm.selmon_num < (int) g_awm.n_monitors);
+	rawdata = g_awm_selmon->tagset[g_awm_selmon->seltags];
 	while (rawdata >> (i + 1))
 		i++;
 	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
@@ -151,6 +156,8 @@ setwmstate(Client *c)
 {
 	xcb_atom_t state[8];
 	uint32_t   n = 0;
+
+	assert(c != NULL);
 
 	if (c->isfullscreen)
 		state[n++] = netatom[NetWMFullscreen];
@@ -169,6 +176,8 @@ setewmhdesktop(Client *c)
 	uint32_t data;
 	int      i;
 
+	assert(c != NULL);
+
 	/* Calculate desktop number from tags */
 	for (i = 0; i < LENGTH(tags) && !(c->tags & (1 << i)); i++)
 		;
@@ -185,6 +194,8 @@ updateworkarea(Monitor *m)
 {
 	uint32_t     data[4 * TAGSLENGTH];
 	unsigned int i;
+
+	assert(m != NULL);
 
 	/* EWMH requires one 4-tuple per desktop (tag).
 	 * We set all desktops to the same workarea for this monitor. */

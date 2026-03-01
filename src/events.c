@@ -1,6 +1,7 @@
 /* AndrathWM - X event handlers
  * See LICENSE file for copyright and license details. */
 
+#include <assert.h>
 #include "events.h"
 #include "awm.h"
 #include <xkbcommon/xkbcommon-keysyms.h>

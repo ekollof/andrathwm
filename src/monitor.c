@@ -1,6 +1,7 @@
 /* AndrathWM - monitor management
  * See LICENSE file for copyright and license details. */
 
+#include <assert.h>
 #include "monitor.h"
 #include "awm.h"
 #include "client.h"
@@ -85,6 +86,9 @@ arrange(Monitor *m)
 void
 arrangemon(Monitor *m)
 {
+	assert(m != NULL);
+	assert(m->seltags == 0 || m->seltags == 1);
+	assert(m->sellt == 0 || m->sellt == 1);
 	strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, sizeof m->ltsymbol);
 	if (m->lt[m->sellt]->arrange)
 		m->lt[m->sellt]->arrange(m);
@@ -95,6 +99,10 @@ cleanupmon(Monitor *mon)
 {
 	Client *c;
 	int     idx, i;
+
+	assert(mon != NULL);
+	assert(
+	    mon >= g_awm.monitors && mon < g_awm.monitors + WMSTATE_MAX_MONITORS);
 
 	/* Find index of the monitor being removed. */
 	idx = (int) (mon - g_awm.monitors);
@@ -210,10 +218,16 @@ void
 drawbar(Monitor *m)
 {
 	int          x, w, tw = 0, stw = 0;
-	int          boxs = drw->fonts->h / 9;
-	int          boxw = drw->fonts->h / 6 + 2;
+	int          boxs;
+	int          boxw;
 	unsigned int i, occ = 0, urg = 0, n = 0;
 	Client      *c;
+
+	assert(m != NULL);
+	assert(drw != NULL);
+	assert(drw->fonts != NULL);
+	boxs = drw->fonts->h / 9;
+	boxw = drw->fonts->h / 6 + 2;
 
 	if (!m->showbar)
 		return;
@@ -357,8 +371,8 @@ monocle(Monitor *m)
 	if (n > 0) /* override layout symbol */
 		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
 	for (c = g_awm.stack_head; c && (!ISVISIBLE(c, m) || c->isfloating);
-	     c = c->snext)
-		;
+	    c  = c->snext)
+        ;
 	if (c && !c->isfloating) {
 		/* Use resizeclient() directly, bypassing applysizehints().
 		 * resize() skips the XConfigureWindow call when the stored
@@ -471,12 +485,14 @@ tile(Monitor *m)
 	unsigned int i, n, h, mw, my, ty;
 	Client      *c;
 
+	assert(m != NULL);
+
 	/* Pass 1: count tiled windows.  The total is needed up-front so that the
 	 * per-slot height formula  h = (wh - my) / (MIN(n, nmaster) - i)  can
 	 * distribute remaining space evenly.  Both passes are O(n) — nexttiled
 	 * advances one window at a time, not from the head each iteration. */
 	for (n = 0, c = nexttiled(g_awm.clients_head, m); c;
-	     c = nexttiled(c->next, m), n++)
+	    c = nexttiled(c->next, m), n++)
 		;
 
 	if (n == 0)
@@ -488,8 +504,8 @@ tile(Monitor *m)
 		else
 			mw = m->ww - m->pertag.gappx[m->pertag.curtag];
 		for (i = 0, my = ty = m->pertag.gappx[m->pertag.curtag],
-		    c     = nexttiled(g_awm.clients_head, m);
-		     c; c = nexttiled(c->next, m), i++)
+		    c    = nexttiled(g_awm.clients_head, m);
+		    c; c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i) -
 				    m->pertag.gappx[m->pertag.curtag];
@@ -524,7 +540,7 @@ tile(Monitor *m)
 		else
 			mw = m->ww;
 		for (i = my = ty = 0, c = nexttiled(g_awm.clients_head, m); c;
-		     c = nexttiled(c->next, m), i++)
+		    c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i);
 				if (n == 1)
@@ -846,6 +862,7 @@ geom_done:
 	if (dirty) {
 		g_awm_set_selmon(wintomon(root));
 	}
+	assert(g_awm.n_monitors >= 0 && g_awm.n_monitors <= WMSTATE_MAX_MONITORS);
 	wmstate_update();
 	return dirty;
 }

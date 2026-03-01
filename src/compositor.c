@@ -22,6 +22,7 @@
 
 #ifdef COMPOSITOR
 
+#include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1910,6 +1911,7 @@ schedule_repaint(void)
 	if (!comp.active || comp.paused)
 		return;
 
+	assert(comp.backend != NULL);
 	comp.repaint_pending = 1;
 	comp_arm_vblank();
 }
@@ -1938,6 +1940,8 @@ comp_do_repaint(void)
 	if (!comp.active || comp.paused)
 		return;
 
+	assert(comp.backend != NULL);
+	assert(comp.backend->repaint != NULL);
 	comp.backend->repaint();
 }
 
@@ -1950,7 +1954,8 @@ comp_capture_thumb(Client *c, int max_w, int max_h)
 {
 	CompWin *cw;
 
-	if (!comp.active || !c || !comp.backend->capture_thumb)
+	assert(c != NULL);
+	if (!comp.active || !comp.backend->capture_thumb)
 		return NULL;
 
 	for (cw = comp.windows; cw; cw = cw->next)

@@ -1,6 +1,7 @@
 /* AndrathWM - process spawning
  * See LICENSE file for copyright and license details. */
 
+#include <assert.h>
 #include "spawn.h"
 #include "awm.h"
 #include "wmstate.h"
@@ -108,6 +109,9 @@ spawn(const Arg *arg)
 {
 	struct sigaction sa;
 
+	assert(arg != NULL);
+	assert(arg->v != NULL);
+
 	if (arg->v == dmenucmd)
 		dmenumon[0] = '0' + g_awm_selmon->num;
 	if (fork() == 0) {
@@ -128,6 +132,9 @@ spawn(const Arg *arg)
 void
 spawnscratch(const Arg *arg)
 {
+	assert(arg != NULL);
+	assert(arg->v != NULL);
+	assert(((char **) arg->v)[1] != NULL);
 	if (fork() == 0) {
 		if (xc)
 			close(xcb_get_file_descriptor(xc));

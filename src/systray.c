@@ -1,6 +1,7 @@
 /* AndrathWM - XEMBED systray functions
  * See LICENSE file for copyright and license details. */
 
+#include <assert.h>
 #include "systray.h"
 #include "awm.h"
 #include "wmstate.h"
@@ -50,6 +51,8 @@ removesystrayicon(Client *i)
 void
 updatesystrayicongeom(Client *i, int w, int h)
 {
+	assert(i != NULL);
+	assert(i->mon != NULL);
 	if (i) {
 		i->h = bh;
 		if (w == h)
@@ -127,10 +130,13 @@ void
 updatesystray(void)
 {
 	Client      *i;
-	Monitor     *m  = systraytomon(NULL);
-	int          x  = (int) (m->mx + m->mw);
+	Monitor     *m = systraytomon(NULL);
+	int          x;
 	unsigned int sw = TEXTW(stext) - lrpad + systrayspacing;
 	unsigned int w  = 1;
+
+	assert(m != NULL);
+	x = (int) (m->mx + m->mw);
 
 	if (!showsystray)
 		return;
@@ -352,7 +358,8 @@ addsniiconsystray(xcb_window_t w, int width, int height)
 	if (!(i = (Client *) calloc(1, sizeof(Client))))
 		die("fatal: could not malloc() %u bytes\n", sizeof(Client));
 
-	i->win         = w;
+	i->win = w;
+	assert(g_awm.selmon_num >= 0 && g_awm.selmon_num < (int) g_awm.n_monitors);
 	i->mon         = g_awm_selmon;
 	i->next        = systray->icons;
 	systray->icons = i;

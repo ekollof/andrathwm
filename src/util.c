@@ -1,4 +1,5 @@
 /* See LICENSE file for copyright and license details. */
+#include <assert.h>
 #include <stdarg.h>
 #include <stdnoreturn.h>
 #include <stdio.h>
@@ -31,6 +32,8 @@ ecalloc(size_t nmemb, size_t size)
 {
 	void *p;
 
+	assert(nmemb > 0);
+	assert(size > 0);
 	if (!(p = calloc(nmemb, size)))
 		die("calloc:");
 	return p;

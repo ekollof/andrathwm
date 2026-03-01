@@ -10,6 +10,7 @@
 
 #ifdef COMPOSITOR
 
+#include <assert.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -583,6 +584,7 @@ egl_bind_pixmap(CompWin *cw)
 {
 	EGLint img_attr[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
 
+	assert(cw != NULL);
 	if (!cw->pixmap)
 		return;
 
@@ -621,6 +623,7 @@ egl_bind_pixmap(CompWin *cw)
 static void
 egl_release_pixmap(CompWin *cw)
 {
+	assert(cw != NULL);
 	if (cw->texture) {
 		glDeleteTextures(1, &cw->texture);
 		cw->texture = 0;
@@ -744,6 +747,9 @@ egl_repaint(void)
 	CompWin        *cw;
 	xcb_rectangle_t scissor;
 	int             use_scissor = 0;
+
+	assert(egl.egl_dpy != EGL_NO_DISPLAY);
+	assert(egl.egl_ctx != EGL_NO_CONTEXT);
 
 	/* --- Partial repaint via EGL_EXT_buffer_age + glScissor ------------- */
 	if (egl.has_buffer_age) {
@@ -930,7 +936,8 @@ egl_capture_thumb(CompWin *cw, int max_w, int max_h)
 	uint8_t                           *pixels = NULL;
 	cairo_surface_t                   *surf   = NULL;
 
-	if (!cw || !cw->texture || cw->w <= 0 || cw->h <= 0)
+	assert(cw != NULL);
+	if (!cw->texture || cw->w <= 0 || cw->h <= 0)
 		return NULL;
 
 	/* Compute thumbnail size preserving aspect ratio */

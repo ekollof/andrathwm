@@ -20,6 +20,7 @@
  *                      used only as the required GC argument to xcb_copy_area
  */
 
+#include <assert.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -155,6 +156,7 @@ drw_resize(Drw *drw, unsigned int w, unsigned int h)
 void
 drw_free(Drw *drw)
 {
+	assert(drw != NULL);
 	if (drw->cairo_surface)
 		cairo_surface_destroy(drw->cairo_surface);
 	xcb_free_pixmap(drw->xc, drw->drawable);

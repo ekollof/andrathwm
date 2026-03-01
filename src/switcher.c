@@ -47,6 +47,7 @@
 
 #ifdef COMPOSITOR
 
+#include <assert.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -476,6 +477,9 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 	int            w   = gtk_widget_get_allocated_width(widget);
 	int            h   = gtk_widget_get_allocated_height(widget);
 
+	assert(e != NULL);
+	assert(e->c != NULL);
+
 	/* Find our index */
 	for (int i = 0; i < sw_nentries; i++) {
 		if (sw_entries[i].card == widget) {
@@ -669,6 +673,8 @@ switcher_select(int idx)
 	if (idx >= sw_nentries)
 		idx = 0;
 
+	assert(sw_sel >= 0 || sw_nentries == 0);
+	assert(idx >= 0 && idx < sw_nentries);
 	int old = sw_sel;
 	sw_sel  = idx;
 
@@ -735,6 +741,7 @@ switcher_confirm(void)
 	if (!chosen)
 		return;
 
+	assert(chosen->mon != NULL);
 	if (all && !ISVISIBLE(chosen, chosen->mon)) {
 		/* Super+Tab and window is on a hidden tag: make the tag visible.
 		 * Switch selmon to the monitor that owns the window first, then
@@ -848,6 +855,8 @@ switcher_show_internal(int all_monitors, int start_prev)
 		}
 		total_w += SW_WIN_PAD;
 
+		assert(g_awm.selmon_num >= 0 &&
+		    g_awm.selmon_num < (int) g_awm.n_monitors);
 		Monitor *m = g_awm_selmon;
 		if (total_w > m->ww)
 			total_w = m->ww;

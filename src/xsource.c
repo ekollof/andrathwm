@@ -2,6 +2,7 @@
  * See LICENSE file for copyright and license details.
  */
 
+#include <assert.h>
 #include "xsource.h"
 
 #include <xcb/xcb.h>
@@ -97,6 +98,7 @@ xsource_new(xcb_connection_t *xc, GSourceFunc callback, gpointer user_data)
 	GSource *src;
 	XSource *xs;
 
+	assert(xcb_get_file_descriptor(xc) >= 0);
 	src = g_source_new(&xsource_funcs, sizeof(XSource));
 	xs  = (XSource *) src;
 

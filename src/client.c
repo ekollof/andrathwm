@@ -1,6 +1,7 @@
 /* AndrathWM - client management
  * See LICENSE file for copyright and license details. */
 
+#include <assert.h>
 #include <stdint.h>
 #include <xcb/xcb.h>
 
@@ -102,7 +103,11 @@ int
 applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 {
 	int      baseismin;
-	Monitor *m = c->mon;
+	Monitor *m;
+
+	assert(c != NULL);
+	assert(c->mon != NULL);
+	m = c->mon;
 
 	/* set minimum possible */
 	*w = MAX(1, *w);
@@ -249,6 +254,9 @@ detachstack(Client *c)
 {
 	Client **tc, *t;
 
+	assert(c != NULL);
+	assert(c->mon != NULL);
+
 	for (tc = &g_awm.stack_head; *tc && *tc != c; tc = &(*tc)->snext)
 		;
 	*tc = c->snext;
@@ -263,6 +271,8 @@ detachstack(Client *c)
 void
 focus(Client *c)
 {
+	if (c)
+		assert(c->mon != NULL);
 	if (!c || !ISVISIBLE(c, g_awm_selmon))
 		for (c = g_awm.stack_head; c && !ISVISIBLE(c, g_awm_selmon);
 		    c  = c->snext)
@@ -771,6 +781,7 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 		c->mon = g_awm_selmon;
 		applyrules(c);
 	}
+	assert(c->mon != NULL);
 #ifdef COMPOSITOR
 	/* If the window already has _NET_WM_WINDOW_OPACITY set (common for apps
 	 * that manage their own translucency), let it override the rule value so
@@ -1006,6 +1017,10 @@ resizeclient(Client *c, int x, int y, int w, int h)
 {
 	int bw;
 
+	assert(c != NULL);
+	assert(c->mon != NULL);
+	assert(w > 0);
+	assert(h > 0);
 	c->oldx = c->x;
 	c->x    = x;
 	c->oldy = c->y;
@@ -1156,6 +1171,8 @@ resizemouse(const Arg *arg)
 void
 sendmon(Client *c, Monitor *m)
 {
+	assert(c != NULL);
+	assert(m != NULL);
 	if (c->mon == m)
 		return;
 	unfocus(c, 1);
@@ -1182,6 +1199,8 @@ setclientstate(Client *c, long state)
 void
 setfullscreen(Client *c, int fullscreen)
 {
+	assert(c != NULL);
+	assert(c->mon != NULL);
 	if (fullscreen && !c->isfullscreen) {
 		c->isfullscreen = 1;
 		c->oldstate     = c->isfloating;
