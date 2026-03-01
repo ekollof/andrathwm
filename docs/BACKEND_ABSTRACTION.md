@@ -9,10 +9,26 @@ until the full migration checklist at the end of this document is satisfied.
 ## Motivation
 
 AndrathWM currently couples the WM logic, bar rendering, and input handling
-tightly to XCB/X11. The ~200 `xcb_*` call sites are spread across
-`client.c`, `monitor.c`, `events.c`, `ewmh.c`, `awm.c`, `compositor.c`,
-and `systray.c`, with a further ~30 runtime globals holding the X connection,
-root window, atoms, and DPI constants declared as bare `extern` in `awm.h`.
+tightly to XCB/X11. There are approximately **770 lines containing `xcb_*`
+calls** spread across the seven core files:
+
+| File | xcb_* lines |
+|---|---|
+| `compositor.c` | 278 |
+| `client.c` | 133 |
+| `awm.c` | 121 |
+| `events.c` | 109 |
+| `monitor.c` | 51 |
+| `systray.c` | 46 |
+| `ewmh.c` | 31 |
+
+Additional `xcb_*` usage exists in `compositor_xrender.c` (166),
+`switcher.c` (86), `drw.c` (109), `drw_cairo.c` (55), and `xsource.c` (6).
+The total across all `src/` files is approximately 1,500 lines.
+
+Runtime state is held in **39 bare `extern` globals** in `awm.h`
+(lines 274–312), including the X connection, root window, atoms, keysyms,
+DPI constants, and renderer state — all visible to every translation unit.
 
 This makes it impossible to run awm under any display server other than X11
 without invasive surgery to core WM logic.
@@ -50,8 +66,12 @@ at the protocol level.
   drawing. `drw_cairo.c` becomes `render_cairo_xcb.c`; `drw.c` (legacy) is
   retired.
 - `xsource.c` renamed to `platform_x11_source.c`; header to `platform_source.h`.
-- Switcher thumbnail path simplified: the inline XRender path in `switcher.c`
-  is removed; all thumbnail captures go through `comp_capture_thumb()`.
+- Switcher XRender inline path removed: the four helper functions
+  (`find_visual_format`, `find_format_for_depth`, `get_root_visualtype`,
+  `build_thumbnail`) and the XRender-specific parts of `free_thumbnails`
+  (approximately 247 lines, switcher.c lines 138–392 and 616–623) are
+  deleted. All thumbnail captures go through `comp_capture_thumb()`.
+  `refresh_thumbnail()` already uses `comp_capture_thumb()` and is unchanged.
 - `systray.c` and `ewmh.c` guarded with `#ifdef BACKEND_X11`.
 - Build system: `BACKEND ?= X11` variable in `config.mk`; `DRW_LEGACY` retired.
 
@@ -98,14 +118,14 @@ Target:
 
 ## New files
 
-| File                      | Purpose                                          |
-|---------------------------|--------------------------------------------------|
-| `src/platform.h`          | `PlatformCtx` struct; `WmBackend` vtable typedef |
-| `src/platform_x11.c`      | X11 implementation of `WmBackend`                |
-| `src/platform_source.h`   | `platform_source_attach()` declaration           |
-| `src/platform_x11_source.c` | `xsource.c` renamed; GLib/XCB fd integration   |
-| `src/render.h`            | `RenderBackend` vtable typedef; `AwmSurface`     |
-| `src/render_cairo_xcb.c`  | `drw_cairo.c` renamed; X11 Cairo implementation |
+| File                        | Purpose                                          |
+|-----------------------------|--------------------------------------------------|
+| `src/platform.h`            | `PlatformCtx` struct; `WmBackend` vtable typedef |
+| `src/platform_x11.c`        | X11 implementation of `WmBackend`                |
+| `src/platform_source.h`     | `platform_source_attach()` declaration           |
+| `src/platform_x11_source.c` | `xsource.c` renamed; GLib/XCB fd integration    |
+| `src/render.h`              | `RenderBackend` vtable typedef; `AwmSurface`     |
+| `src/render_cairo_xcb.c`    | `drw_cairo.c` renamed; X11 Cairo implementation |
 
 `drw.c` (legacy XCB+XRender hybrid backend) is removed. `drw.h` / `drw_cairo.c`
 are renamed to `render.h` / `render_cairo_xcb.c` in Step 3.
@@ -128,28 +148,39 @@ are renamed to `render.h` / `render_cairo_xcb.c` in Step 3.
 /* -------------------------------------------------------------------------
  * PlatformCtx — all display-server connection state.
  *
- * Replaces the ~30 bare extern globals in awm.h:
+ * Replaces the X11-specific subset of bare extern globals in awm.h:
  *   xc, root, wmcheckwin, screen, sw, sh, bh, lrpad,
  *   wmatom[], netatom[], xatom[], utf8string_atom,
  *   keysyms, numlockmask, ui_dpi, ui_scale,
  *   ui_borderpx, ui_snap, ui_iconsize, ui_gappx.
  *
+ * Globals that are NOT moved into PlatformCtx (they are either
+ * renderer-owned or WM-logic state, not platform state):
+ *   drw, scheme, cursor[]  — owned by RenderBackend after Step 3
+ *   systray                — X11-only, stays in systray.c (guarded)
+ *   stext, restart, barsdirty — WM logic state, stay in awm.c
+ *   launcher_visible, launcher_xwin — UI IPC state, stay in awm.c
+ *   last_event_time        — event handling state, stays in awm.c
+ *   awm_tagslength         — config-derived constant, stays in awm.c
+ *   sniconsize, iconcachesize, iconcachemaxentries, dbustimeout
+ *                          — config-derived constants, stay in awm.c
+ *   handler[]              — event dispatch table, stays in awm.c
+ *
  * One global instance: extern PlatformCtx g_plat;  (defined in platform_x11.c)
  * ---------------------------------------------------------------------- */
 
 #ifdef BACKEND_X11
-#include <xcb/xcb_keysyms.h>
 typedef struct {
     xcb_connection_t    *xc;
     xcb_window_t         root;
     xcb_window_t         wmcheckwin;
     int                  screen;
-    int                  sw, sh;         /* screen width / height (px)     */
-    int                  bh;             /* bar height (px)                */
-    int                  lrpad;          /* sum of left+right font padding  */
-    xcb_atom_t           wmatom[4];      /* WMLast */
-    xcb_atom_t           netatom[40];    /* NetLast */
-    xcb_atom_t           xatom[3];       /* XLast */
+    int                  sw, sh;          /* screen width / height (px)    */
+    int                  bh;              /* bar height (px)               */
+    int                  lrpad;           /* sum of left+right font padding */
+    xcb_atom_t           wmatom[WMLast];
+    xcb_atom_t           netatom[NetLast];
+    xcb_atom_t           xatom[XLast];
     xcb_atom_t           utf8string_atom;
     xcb_key_symbols_t   *keysyms;
     unsigned int         numlockmask;
@@ -325,18 +356,27 @@ wraps `wl_display_get_fd()`.
 
 ---
 
-## Switcher thumbnail simplification
+## Switcher XRender path removal
 
-`switcher.c` currently contains a full inline XRender thumbnail path
-(~80 lines: `XRenderCreatePicture`, projective scale transform,
-`xcb_get_image` readback) that duplicates logic already in
-`compositor_xrender.c::xrender_capture_thumb()`.
+`switcher.c` contains a full inline XRender thumbnail path spanning
+approximately **247 lines** that is X11-specific:
 
-On this branch, the inline path is removed entirely. All thumbnail
-captures in `switcher.c` call `comp_capture_thumb(c, max_w, max_h)`
-which dispatches through the `CompBackend` vtable. If the compositor
-is not active the function already returns `NULL`; the switcher already
-handles that case by drawing a placeholder box.
+| Block | Lines | Size |
+|---|---|---|
+| Section divider + `find_visual_format()` | 133–148 | ~16 |
+| `find_format_for_depth()` | 151–172 | 22 |
+| `get_root_visualtype()` | 174–193 | 20 |
+| `build_thumbnail()` | 199–392 | ~194 |
+| XRender parts of `free_thumbnails()` | 616–623 | ~8 |
+
+`refresh_thumbnail()` (lines 402–423) has already been migrated to use
+`comp_capture_thumb()` and is not touched.
+
+On this branch, the four helper functions and `build_thumbnail` are deleted
+entirely. `free_thumbnails()` is reduced to releasing only `thumb_surf`
+(the Cairo surface — backend-neutral). If the compositor is not active,
+`comp_capture_thumb()` returns `NULL`; the switcher already handles that
+case by drawing a placeholder box.
 
 ---
 
@@ -402,7 +442,7 @@ Cairo + Pango against XCB).
 Each step is an independent commit. The build must pass with zero warnings
 and zero errors after every commit.
 
-### Step 1 — Consolidate globals into `PlatformCtx`
+### Step 1 — Consolidate X11 globals into `PlatformCtx`
 
 - Add `src/platform.h` with `PlatformCtx` struct (X11 variant, see above).
 - Define `PlatformCtx g_plat` in `src/platform_x11.c` (new file, stubs only).
@@ -412,7 +452,13 @@ and zero errors after every commit.
   `numlockmask`, `ui_dpi`, `ui_scale`, `ui_borderpx`, `ui_snap`, `ui_iconsize`,
   `ui_gappx` to use `g_plat.*`.
 - All call sites changed at once — no alias macros.
-- `awm.h` `extern` globals block shrinks to zero for the migrated fields.
+- The following globals are NOT moved and stay in `awm.h` / `awm.c`:
+  `drw`, `scheme`, `cursor[]` (renderer-owned until Step 3);
+  `systray` (X11-guarded, Step 6);
+  `stext`, `restart`, `barsdirty`, `launcher_visible`, `launcher_xwin`,
+  `last_event_time`, `awm_tagslength`, `sniconsize`, `iconcachesize`,
+  `iconcachemaxentries`, `dbustimeout`, `handler[]` (WM/IPC state — never
+  belong in `PlatformCtx`).
 
 Files touched: `awm.c`, `awm.h`, `client.c`, `events.c`, `monitor.c`,
 `ewmh.c`, `compositor.c`, `systray.c`, `switcher.c`, `drw_cairo.c`,
@@ -434,6 +480,8 @@ Files touched: `awm.c`, `awm.h`, `client.c`, `events.c`, `monitor.c`,
 - Add `RenderBackend` vtable and opaque `AwmSurface` type to `render.h`.
 - Wrap `Drw` inside `AwmSurface` in `render_cairo_xcb.c`.
 - Update all `drw_*()` call sites to `g_render_backend->*()`.
+- Move `drw`, `scheme`, `cursor[]` ownership to `RenderBackend` / `AwmSurface`;
+  remove their `extern` declarations from `awm.h`.
 - Delete `drw.c` (legacy XCB+XRender backend).
 - Update `Makefile` / `config.mk`: retire `DRW_LEGACY`, add `RENDER_SRC`.
 
@@ -446,8 +494,10 @@ Files touched: `awm.c`, `awm.h`, `client.c`, `events.c`, `monitor.c`,
 
 ### Step 5 — Remove inline XRender path from `switcher.c`
 
-- Delete the inline XRender thumbnail block (~80 lines) from `switcher.c`.
-- Ensure all thumbnail captures use `comp_capture_thumb()`.
+- Delete `find_visual_format()`, `find_format_for_depth()`,
+  `get_root_visualtype()`, `build_thumbnail()` (lines 133–392), and the
+  `thumb_pict` / `thumb_pixmap` cleanup in `free_thumbnails()` (lines 616–623).
+- Remove `thumb_pixmap` and `thumb_pict` fields from `SwitcherEntry`.
 - Verify placeholder-box path still works when compositor is inactive.
 
 ### Step 6 — Guard `systray.c` and `ewmh.c`; add `wm_properties.h`
@@ -471,6 +521,9 @@ In addition to all rules in `AGENTS.md`, the following hold on this branch:
   `drw.h` and `drw.c` do not exist.
 - After Step 4: no `#include "xsource.h"` anywhere. Only
   `#include "platform_source.h"`.
+- After Step 5: no `xcb_render_*`, `xcb_composite_*`, `xcb_create_pixmap`,
+  or `xcb_free_pixmap` calls appear in `switcher.c`. `thumb_pict` and
+  `thumb_pixmap` fields do not exist in `SwitcherEntry`.
 - After Step 6: no `xcb_intern_atom`, `xcb_change_property`, or
   `xcb_get_property` call appears outside `platform_x11.c`,
   `ewmh.c` (guarded), or `systray.c` (guarded).
@@ -496,14 +549,14 @@ In addition to all rules in `AGENTS.md`, the following hold on this branch:
 
 ## Future work (post-merge, separate branch)
 
-| Item                           | File(s)                                      |
-|--------------------------------|----------------------------------------------|
-| Wayland platform layer         | `src/platform_wayland.c`                     |
-| Wayland event source           | `src/platform_wayland_source.c`              |
-| wlroots scene-graph render     | `src/render_cairo_wl.c`                      |
-| xdg-shell property stubs       | `src/wm_properties_xdg.c`                   |
-| SNI systray replacement        | extend existing `sni.c` / `STATUSNOTIFIER`   |
-| Session save/restore           | `src/session.c` (WMState Step 7)             |
+| Item                           | File(s)                                        |
+|--------------------------------|------------------------------------------------|
+| Wayland platform layer         | `src/platform_wayland.c`                       |
+| Wayland event source           | `src/platform_wayland_source.c`                |
+| wlroots scene-graph render     | `src/render_cairo_wl.c`                        |
+| xdg-shell property stubs       | `src/wm_properties_xdg.c`                     |
+| SNI systray replacement        | extend existing `sni.c` / `STATUSNOTIFIER`     |
+| Session save/restore           | `src/session.c` (WMState Step 7)               |
 
 ---
 
@@ -516,10 +569,11 @@ Before opening a pull request from `feature/backend-abstraction` to `master`:
 - [ ] No `#include <X11/...>` in any `src/` file
 - [ ] No `xcb_*` in `client.c`, `monitor.c`, `events.c` (grep clean)
 - [ ] No `drw_*` outside `render_cairo_xcb.c` (grep clean)
-- [ ] No `xsource.h` include anywhere
+- [ ] No `#include "xsource.h"` anywhere
 - [ ] `systray.c` and `ewmh.c` wrapped in `#ifdef BACKEND_X11`
 - [ ] `config.h` is last `#include` in every `.c` that uses it
-- [ ] Inline XRender thumbnail path removed from `switcher.c`
+- [ ] Inline XRender path removed from `switcher.c`; `thumb_pict` and
+      `thumb_pixmap` fields removed from `SwitcherEntry`
 - [ ] All `awm_*` logging macros used — no bare `printf`/`fprintf`
 - [ ] `AGENTS.md` constraints checklist satisfied in full
 - [ ] Tested in Xephyr: `Xephyr :1 -screen 1280x720 && DISPLAY=:1 ./awm -s`
