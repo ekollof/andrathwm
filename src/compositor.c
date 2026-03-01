@@ -1639,6 +1639,11 @@ compositor_handle_event(xcb_generic_event_t *ev)
 			    dcw->x, dcw->y, dcw->w + 2 * dcw->bw, dcw->h + 2 * dcw->bw);
 		}
 
+		/* Re-sync the backend texture from the updated pixmap contents.
+		 * The EGL backend requires this; XRender leaves the pointer NULL. */
+		if (comp.backend->notify_damage)
+			comp.backend->notify_damage(dcw);
+
 		schedule_repaint();
 		return;
 	}

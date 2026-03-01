@@ -110,6 +110,15 @@ typedef struct CompBackend {
 	 * The EGL backend re-acquires the pixmap; XRender updates the picture
 	 * clip.  May be NULL if the backend has nothing to do here. */
 	void (*apply_shape)(CompWin *cw);
+
+	/* Notify the backend that new damage has arrived for a window.
+	 * Called from the DamageNotify handler after xcb_damage_subtract.
+	 * The EGL backend uses this to re-sync the GL texture from the
+	 * existing EGLImage (glEGLImageTargetTexture2DOES) so the GPU sees
+	 * updated pixmap contents without a full pixmap re-acquire.
+	 * The XRender backend leaves this NULL — XRender Pictures track the
+	 * backing pixmap contents live without any explicit sync step. */
+	void (*notify_damage)(CompWin *cw);
 } CompBackend;
 
 /* Backend singletons — defined in compositor_egl.c / compositor_xrender.c */

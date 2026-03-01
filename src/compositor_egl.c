@@ -1048,6 +1048,26 @@ out:
  * Backend vtable singleton
  * ---------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------
+ * Backend vtable — notify_damage
+ * ---------------------------------------------------------------------- */
+
+static void
+egl_notify_damage(CompWin *cw)
+{
+	/* Re-sync the GL texture from the existing EGLImage.  With
+	 * EGL_KHR_image_pixmap the EGLImage is a live reference to the X
+	 * pixmap, but on many Mesa/X.org drivers the GL texture does not
+	 * automatically reflect pixmap updates — the driver requires a
+	 * fresh glEGLImageTargetTexture2DOES call to pull in new pixel data.
+	 * This is cheap (no X round-trip, no new EGLImage allocation). */
+	if (!cw->texture || cw->egl_image == EGL_NO_IMAGE_KHR)
+		return;
+	glBindTexture(GL_TEXTURE_2D, cw->texture);
+	egl.egl_image_target_tex(GL_TEXTURE_2D, (GLeglImageOES) cw->egl_image);
+	glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 const CompBackend comp_backend_egl = {
 	.init              = egl_init,
 	.cleanup           = egl_cleanup,
@@ -1058,8 +1078,9 @@ const CompBackend comp_backend_egl = {
 	.repaint           = egl_repaint,
 	.notify_resize     = egl_notify_resize,
 	.capture_thumb     = egl_capture_thumb,
-	.apply_shape = NULL, /* EGL handles ShapeNotify via comp_refresh_pixmap in
-	                        compositor.c */
+	.apply_shape = NULL, /* EGL handles ShapeNotify via comp_refresh_pixmap
+	                        in compositor.c */
+	.notify_damage = egl_notify_damage,
 };
 
 #endif /* COMPOSITOR */

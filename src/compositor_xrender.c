@@ -671,6 +671,7 @@ const CompBackend comp_backend_xrender = {
 	.notify_resize     = xrender_notify_resize,
 	.capture_thumb     = xrender_capture_thumb,
 	.apply_shape       = xrender_apply_shape,
+	.notify_damage = NULL, /* XRender Pictures track pixmap contents live */
 };
 
 #endif /* COMPOSITOR */
