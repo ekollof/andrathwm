@@ -86,9 +86,9 @@ runautostart(void)
 	if (access(path, X_OK) == 0)
 		system(path);
 
-	/* now the non-blocking script — allocate +3 for " &\0" */
+	/* now the non-blocking script — allocate +4 for " &\0" after path */
 	free(path);
-	path = ecalloc(1, strlen(pathpfx) + strlen(autostartsh) + 3);
+	path = ecalloc(1, strlen(pathpfx) + strlen(autostartsh) + 4);
 	if (snprintf(path, strlen(pathpfx) + strlen(autostartsh) + 2, "%s/%s",
 	        pathpfx, autostartsh) < 0) {
 		free(path);
