@@ -24,7 +24,7 @@ static GHashTable *win_to_client;
 void
 applyrules(Client *c)
 {
-	const char *class, *instance;
+	const char  *class, *instance;
 	unsigned int i;
 	const Rule  *r;
 	Monitor     *m;
@@ -265,8 +265,8 @@ focus(Client *c)
 {
 	if (!c || !ISVISIBLE(c, g_awm_selmon))
 		for (c = g_awm.stack_head; c && !ISVISIBLE(c, g_awm_selmon);
-		     c = c->snext)
-			;
+		    c  = c->snext)
+            ;
 	if (g_awm_selmon->sel && g_awm_selmon->sel != c)
 		unfocus(g_awm_selmon->sel, 0);
 	if (c) {
@@ -283,7 +283,7 @@ focus(Client *c)
 			xcb_change_window_attributes(
 			    xc, c->win, XCB_CW_BORDER_PIXEL, &pix);
 			if (!g_awm_selmon->pertag
-			         .drawwithgaps[g_awm_selmon->pertag.curtag] &&
+			        .drawwithgaps[g_awm_selmon->pertag.curtag] &&
 			    !c->isfloating) {
 				uint32_t vals[2];
 				vals[0] = (uint32_t) g_awm_selmon->barwin;
@@ -324,12 +324,12 @@ focusstack(const Arg *arg)
 		return;
 	if (arg->i > 0) {
 		for (c = g_awm_selmon->sel->next; c && !ISVISIBLE(c, g_awm_selmon);
-		     c = c->next)
-			;
+		    c  = c->next)
+            ;
 		if (!c)
 			for (c = g_awm.clients_head; c && !ISVISIBLE(c, g_awm_selmon);
-			     c = c->next)
-				;
+			    c  = c->next)
+                ;
 	} else {
 		for (i = g_awm.clients_head; i != g_awm_selmon->sel; i = i->next) {
 			if (ISVISIBLE(i, g_awm_selmon))
@@ -357,13 +357,13 @@ focusstackhidden(const Arg *arg)
 
 	if (arg->i > 0) {
 		for (c = g_awm_selmon->sel->next;
-		     c && !(c->tags & g_awm_selmon->tagset[g_awm_selmon->seltags]);
-		     c = c->next)
+		    c && !(c->tags & g_awm_selmon->tagset[g_awm_selmon->seltags]);
+		    c = c->next)
 			;
 		if (!c)
 			for (c = g_awm.clients_head;
-			     c && !(c->tags & g_awm_selmon->tagset[g_awm_selmon->seltags]);
-			     c = c->next)
+			    c && !(c->tags & g_awm_selmon->tagset[g_awm_selmon->seltags]);
+			    c = c->next)
 				;
 	} else {
 		for (i = g_awm.clients_head; i != g_awm_selmon->sel; i = i->next) {
@@ -918,6 +918,11 @@ movemouse(const Arg *arg)
 				if (handler[type])
 					handler[type](xe);
 				break;
+#ifdef COMPOSITOR
+			case XCB_GE_GENERIC:
+				compositor_handle_event(xe);
+				break;
+#endif
 			case XCB_MOTION_NOTIFY: {
 				xcb_motion_notify_event_t *me =
 				    (xcb_motion_notify_event_t *) xe;
@@ -970,7 +975,7 @@ Client *
 nexttiled(Client *c, Monitor *m)
 {
 	for (; c && (c->isfloating || !ISVISIBLE(c, m) || c->ishidden);
-	     c = c->next)
+	    c = c->next)
 		;
 	return c;
 }
@@ -1078,6 +1083,11 @@ resizemouse(const Arg *arg)
 				if (handler[type])
 					handler[type](xe);
 				break;
+#ifdef COMPOSITOR
+			case XCB_GE_GENERIC:
+				compositor_handle_event(xe);
+				break;
+#endif
 			case XCB_MOTION_NOTIFY: {
 				xcb_motion_notify_event_t *me =
 				    (xcb_motion_notify_event_t *) xe;
@@ -1382,8 +1392,7 @@ togglescratch(const Arg *arg)
 	unsigned int found = 0;
 
 	for (c = g_awm.clients_head;
-	     c && !(found = c->scratchkey == ((char **) arg->v)[0][0]);
-	     c = c->next)
+	    c && !(found = c->scratchkey == ((char **) arg->v)[0][0]); c = c->next)
 		;
 	if (found) {
 		if (ISVISIBLE(c, g_awm_selmon)) {
@@ -1446,8 +1455,8 @@ toggleview(const Arg *arg)
 				selmon_curtag = 0;
 			else {
 				for (i = 0;
-				     !(g_awm_selmon->tagset[g_awm_selmon->seltags] & 1 << i);
-				     i++)
+				    !(g_awm_selmon->tagset[g_awm_selmon->seltags] & 1 << i);
+				    i++)
 					;
 				selmon_curtag = i + 1;
 			}
@@ -1763,7 +1772,7 @@ view(const Arg *arg)
 			selmon_curtag = 0;
 		else {
 			for (i = 0;
-			     !(g_awm_selmon->tagset[g_awm_selmon->seltags] & 1 << i); i++)
+			    !(g_awm_selmon->tagset[g_awm_selmon->seltags] & 1 << i); i++)
 				;
 			selmon_curtag = i + 1;
 		}
@@ -1944,12 +1953,12 @@ movestack(const Arg *arg)
 	if (arg->i > 0) {
 		/* find the client after g_awm_selmon->sel */
 		for (c = g_awm_selmon->sel->next;
-		     c && (!ISVISIBLE(c, g_awm_selmon) || c->isfloating); c = c->next)
+		    c && (!ISVISIBLE(c, g_awm_selmon) || c->isfloating); c = c->next)
 			;
 		if (!c)
 			for (c = g_awm.clients_head;
-			     c && (!ISVISIBLE(c, g_awm_selmon) || c->isfloating);
-			     c = c->next)
+			    c && (!ISVISIBLE(c, g_awm_selmon) || c->isfloating);
+			    c = c->next)
 				;
 
 	} else {
