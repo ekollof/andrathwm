@@ -918,15 +918,6 @@ movemouse(const Arg *arg)
 				if (handler[type])
 					handler[type](xe);
 				break;
-#ifdef COMPOSITOR
-			case XCB_GE_GENERIC:
-				compositor_handle_event(xe);
-				/* g_idle_add callbacks never fire while the grab
-				 * loop owns the thread — flush any pending repaint
-				 * synchronously. */
-				compositor_repaint_now();
-				break;
-#endif
 			case XCB_MOTION_NOTIFY: {
 				xcb_motion_notify_event_t *me =
 				    (xcb_motion_notify_event_t *) xe;
@@ -962,6 +953,16 @@ movemouse(const Arg *arg)
 				break;
 			}
 			default:
+#ifdef COMPOSITOR
+				/* Damage events use a dynamic event code
+				 * (damage_ev_base + XCB_DAMAGE_NOTIFY) that
+				 * cannot appear as a switch case constant.
+				 * Forward all unhandled events to the compositor
+				 * and flush any queued repaint synchronously —
+				 * g_idle_add never fires inside the grab loop. */
+				compositor_handle_event(xe);
+				compositor_repaint_now();
+#endif
 				break;
 			}
 		}
@@ -1087,15 +1088,6 @@ resizemouse(const Arg *arg)
 				if (handler[type])
 					handler[type](xe);
 				break;
-#ifdef COMPOSITOR
-			case XCB_GE_GENERIC:
-				compositor_handle_event(xe);
-				/* g_idle_add callbacks never fire while the grab
-				 * loop owns the thread — flush any pending repaint
-				 * synchronously. */
-				compositor_repaint_now();
-				break;
-#endif
 			case XCB_MOTION_NOTIFY: {
 				xcb_motion_notify_event_t *me =
 				    (xcb_motion_notify_event_t *) xe;
@@ -1126,6 +1118,16 @@ resizemouse(const Arg *arg)
 				break;
 			}
 			default:
+#ifdef COMPOSITOR
+				/* Damage events use a dynamic event code
+				 * (damage_ev_base + XCB_DAMAGE_NOTIFY) that
+				 * cannot appear as a switch case constant.
+				 * Forward all unhandled events to the compositor
+				 * and flush any queued repaint synchronously —
+				 * g_idle_add never fires inside the grab loop. */
+				compositor_handle_event(xe);
+				compositor_repaint_now();
+#endif
 				break;
 			}
 		}
