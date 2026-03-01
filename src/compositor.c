@@ -1568,10 +1568,26 @@ compositor_repaint_now(void)
 {
 	if (!comp.active)
 		return;
+	/* Cancel any pending idle repaint — we are about to repaint
+	 * synchronously. */
 	if (comp.repaint_id) {
 		g_source_remove(comp.repaint_id);
 		comp.repaint_id = 0;
 	}
+	/* This function is called from blocking grab loops (movemouse,
+	 * resizemouse) where xcb_wait_for_event() prevents the GLib main loop
+	 * from running.  PresentCompleteNotify events therefore never arrive
+	 * through XSource, so vblank_armed can stay set to 1 indefinitely.
+	 * With vblank_armed=1, every subsequent comp_arm_vblank() call is a
+	 * no-op, and schedule_repaint() never queues another repaint — causing
+	 * the display to freeze after the first motion event.
+	 *
+	 * Fix: reset vblank_armed and repaint_pending before the synchronous
+	 * repaint so that the next schedule_repaint() call (from
+	 * compositor_configure_window() on the following motion event) will
+	 * unconditionally arm the vblank or queue an idle repaint. */
+	comp.vblank_armed    = 0;
+	comp.repaint_pending = 0;
 	comp_do_repaint();
 }
 
