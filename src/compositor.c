@@ -795,10 +795,8 @@ comp_add_by_xid(xcb_window_t w)
 	cw->egl_image  = EGL_NO_IMAGE_KHR;
 
 	{
-		Client  *c;
-		Monitor *m;
+		Client *c;
 		cw->client = NULL;
-		FOR_EACH_MON(m)
 		for (c = g_awm.clients_head; c; c = c->next)
 			if (c->win == w) {
 				cw->client = c;

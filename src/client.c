@@ -761,7 +761,7 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 	c->bypass_compositor = 0;
 
 	updatetitle(c);
-	c->icon = getwmicon(w, 16);
+	c->icon = getwmicon(w, (int) ui_iconsize);
 	if (xcb_icccm_get_wm_transient_for_reply(
 	        xc, xcb_icccm_get_wm_transient_for(xc, w), &trans, NULL) &&
 	    (t = wintoclient(trans))) {

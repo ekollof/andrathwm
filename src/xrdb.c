@@ -258,8 +258,9 @@ loadxrdb(void)
 void
 xrdb(const Arg *arg)
 {
-	loadxrdb();
 	int i;
+
+	loadxrdb();
 	for (i = 0; i < LENGTH(colors); i++)
 		scheme[i] = drw_scm_create(drw, colors[i], 3);
 	updatesystrayiconcolors();

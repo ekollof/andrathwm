@@ -56,8 +56,8 @@ static pid_t ui_pid           = -1; /* awm-ui child process */
 static int   ui_fd            = -1; /* socket fd to awm-ui */
 int          launcher_visible = 0;  /* 1 while the launcher window is open */
 xcb_window_t launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
-static GMainContext *ui_ctx = NULL; /* GMainContext used by run() — kept for
-                                     * the respawn timer callback */
+static GMainContext *ui_ctx   = NULL; /* GMainContext used by run() — kept for
+                                       * the respawn timer callback */
 char         stext[STATUS_TEXT_LEN];
 int          screen;
 int          sw, sh;             /* X display screen geometry width, height */
@@ -66,10 +66,10 @@ int          lrpad;              /* sum of left and right padding for text */
 int          awm_tagslength = 0; /* = TAGSLENGTH; set in setup() */
 double       ui_dpi         = 96.0; /* resolved screen DPI */
 double       ui_scale       = 1.0;  /* ui_dpi / 96.0 */
-unsigned int ui_borderpx    = 1;  /* borderpx * ui_scale — set in setup() */
-unsigned int ui_snap        = 32; /* snap     * ui_scale — set in setup() */
-unsigned int ui_iconsize    = 16; /* iconsize * ui_scale — set in setup() */
-unsigned int ui_gappx       = 5;  /* gappx[0] * ui_scale — set in setup() */
+unsigned int ui_borderpx    = 1;    /* borderpx * ui_scale — set in setup() */
+unsigned int ui_snap        = 32;   /* snap     * ui_scale — set in setup() */
+unsigned int ui_iconsize    = 16;   /* iconsize * ui_scale — set in setup() */
+unsigned int ui_gappx       = 5;    /* gappx[0] * ui_scale — set in setup() */
 unsigned int numlockmask    = 0;
 static guint xsource_id     = 0; /* GLib source ID for the X11 event source */
 #ifdef STATUSNOTIFIER
@@ -133,20 +133,15 @@ _Static_assert(ColBorder == 2,
 void
 cleanup(void)
 {
-	Arg      a   = { .ui = ~0 };
-	Layout   foo = { "", NULL };
-	Monitor *m;
-	size_t   i;
+	Arg    a   = { .ui = ~0 };
+	Layout foo = { "", NULL };
+	size_t i;
 
 	view(&a);
 	g_awm_selmon->lt[g_awm_selmon->sellt] = &foo;
-	FOR_EACH_MON(m)
 	while (g_awm.stack_head)
 		unmanage(g_awm.stack_head, 0);
-	{
-
-		xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
-	}
+	xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
 	while (g_awm.n_monitors)
 		cleanupmon(&g_awm.monitors[0]);
 
@@ -1487,7 +1482,7 @@ main(int argc, char *argv[])
 	else if (argc != 1)
 		die("usage: awm [-v] [-s]");
 	if (!setlocale(LC_CTYPE, ""))
-		fputs("warning: no locale support\n", stderr);
+		awm_warn("no locale support");
 	xc = xcb_connect(NULL, &screen);
 	if (!xc || xcb_connection_has_error(xc))
 		die("awm: cannot open X display");
