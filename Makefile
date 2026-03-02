@@ -101,4 +101,19 @@ uninstall:
 
 compile_flags: compile_flags.txt
 
-.PHONY: all clean dist install uninstall compile_flags compdb
+# Test suite — no XCB/GTK linking; only pure-C modules.
+TEST_CC    = clang
+TEST_CFLAGS = -std=c11 -pedantic -Werror -Wall -I. -Isrc -Itests
+TEST_SRCS  = src/status_util.c src/log.c
+TEST_BINS  = build/test_status_util
+
+build/test_status_util: tests/test_status_util.c $(TEST_SRCS) tests/minunit.h | $(BUILDDIR)
+	$(TEST_CC) $(TEST_CFLAGS) -o $@ tests/test_status_util.c $(TEST_SRCS)
+
+test: $(TEST_BINS)
+	@for t in $(TEST_BINS); do \
+		echo "Running $$t ..."; \
+		$$t || exit 1; \
+	done
+
+.PHONY: all clean dist install uninstall compile_flags compdb test
