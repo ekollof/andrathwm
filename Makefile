@@ -102,16 +102,44 @@ uninstall:
 compile_flags: compile_flags.txt
 
 # Test suite — no XCB/GTK linking; only pure-C modules.
-TEST_CC    = clang
+TEST_CC     = clang
 TEST_CFLAGS = -std=c11 -pedantic -Werror -Wall -I. -Isrc -Itests
-TEST_SRCS  = src/status_util.c src/log.c
-TEST_BINS  = build/test_status_util
+TEST_SRCS   = src/status_util.c src/log.c
+TEST_BINS   = build/test_status_util
+
+# Full-flags test suite: tests that include a .c file directly and need
+# all XCB/GLib/Cairo/GTK/D-Bus type definitions available, but do NOT
+# actually open an X connection at runtime.
+TEST_FULL_CFLAGS = -std=c11 -pedantic -Werror -Wall -I. -Isrc -Itests \
+	$(shell pkg-config --cflags xcb xcb-icccm xcb-randr xcb-keysyms \
+	    xcb-xinerama xcb-cursor xcb-renderutil pangocairo glib-2.0 \
+	    cairo gtk+-3.0 dbus-1) \
+	-DXINERAMA -DXRANDR -DCOMPOSITOR -DSTATUSNOTIFIER -DXSS \
+	-DVERSION=\"$(VERSION)\" -D_DEFAULT_SOURCE -D_BSD_SOURCE \
+	-D_XOPEN_SOURCE=700L
+TEST_FULL_LIBS = $(shell pkg-config --libs xcb xcb-icccm xcb-randr \
+	xcb-keysyms xcb-xinerama xcb-cursor xcb-renderutil pangocairo \
+	glib-2.0 cairo)
+TEST_FULL_BINS = build/test_xrdb build/test_monitor build/test_client \
+	build/test_sizehints
 
 build/test_status_util: tests/test_status_util.c $(TEST_SRCS) tests/greatest.h | $(BUILDDIR)
 	$(TEST_CC) $(TEST_CFLAGS) -o $@ tests/test_status_util.c $(TEST_SRCS)
 
-test: $(TEST_BINS)
-	@for t in $(TEST_BINS); do \
+build/test_xrdb: tests/test_xrdb.c tests/greatest.h config.h | $(BUILDDIR)
+	$(TEST_CC) $(TEST_FULL_CFLAGS) -o $@ tests/test_xrdb.c $(TEST_FULL_LIBS)
+
+build/test_monitor: tests/test_monitor.c tests/greatest.h config.h | $(BUILDDIR)
+	$(TEST_CC) $(TEST_FULL_CFLAGS) -o $@ tests/test_monitor.c $(TEST_FULL_LIBS)
+
+build/test_client: tests/test_client.c tests/greatest.h config.h | $(BUILDDIR)
+	$(TEST_CC) $(TEST_FULL_CFLAGS) -o $@ tests/test_client.c $(TEST_FULL_LIBS)
+
+build/test_sizehints: tests/test_sizehints.c tests/greatest.h config.h | $(BUILDDIR)
+	$(TEST_CC) $(TEST_FULL_CFLAGS) -o $@ tests/test_sizehints.c $(TEST_FULL_LIBS)
+
+test: $(TEST_BINS) $(TEST_FULL_BINS)
+	@for t in $(TEST_BINS) $(TEST_FULL_BINS); do \
 		echo "Running $$t ..."; \
 		$$t || exit 1; \
 	done
