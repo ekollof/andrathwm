@@ -144,7 +144,7 @@ static const char *frag_src =
  * ---------------------------------------------------------------------- */
 
 /* Build a column-major orthographic projection mapping pixel (x,y) to NDC,
- * with Y flipped so that pixel (0,0) is the top-left of the screen.
+ * with Y flipped so that pixel (0,0) is the top-left of the g_plat.screen.
  * Result is written into out[16] in column-major order (OpenGL convention).
  *
  *   out = { 2/W, 0,  0, 0,
@@ -499,10 +499,10 @@ egl_init(void)
 	glBindVertexArray(0);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-	/* Upload the initial projection matrix now that sw/sh are known */
+	/* Upload the initial projection matrix now that g_plat.sw/sh are known */
 	{
 		float proj[16];
-		make_proj(proj, sw, sh);
+		make_proj(proj, g_plat.sw, g_plat.sh);
 		glUseProgram(egl.prog);
 		glUniformMatrix4fv(egl.u_proj, 1, GL_FALSE, proj);
 		glUseProgram(0);
@@ -512,7 +512,7 @@ egl_init(void)
 	glDisable(GL_SCISSOR_TEST);
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glViewport(0, 0, sw, sh);
+	glViewport(0, 0, g_plat.sw, g_plat.sh);
 
 	egl.has_buffer_age =
 	    (egl_exts && strstr(egl_exts, "EGL_EXT_buffer_age") != NULL);
@@ -527,8 +527,8 @@ egl_init(void)
 		for (i = 0; i < DAMAGE_RING_SIZE; i++) {
 			egl.damage_ring[i].x      = 0;
 			egl.damage_ring[i].y      = 0;
-			egl.damage_ring[i].width  = (unsigned short) sw;
-			egl.damage_ring[i].height = (unsigned short) sh;
+			egl.damage_ring[i].width  = (unsigned short) g_plat.sw;
+			egl.damage_ring[i].height = (unsigned short) g_plat.sh;
 		}
 	}
 	egl.ring_idx = 0;
@@ -686,7 +686,7 @@ egl_update_wallpaper(void)
 static void
 egl_notify_resize(void)
 {
-	/* The overlay window has been resized to sw×sh by the caller.
+	/* The overlay window has been resized to g_plat.sw×sh by the caller.
 	 * Destroy and recreate the EGL window surface — EGL surfaces are
 	 * bound to the window at creation time and do not auto-resize. */
 	eglMakeCurrent(
@@ -713,11 +713,11 @@ egl_notify_resize(void)
 		comp.active = 0;
 		return;
 	}
-	glViewport(0, 0, sw, sh);
+	glViewport(0, 0, g_plat.sw, g_plat.sh);
 	/* Re-upload projection matrix for the new screen dimensions */
 	{
 		float proj[16];
-		make_proj(proj, sw, sh);
+		make_proj(proj, g_plat.sw, g_plat.sh);
 		glUseProgram(egl.prog);
 		glUniformMatrix4fv(egl.u_proj, 1, GL_FALSE, proj);
 		glUseProgram(0);
@@ -730,8 +730,8 @@ egl_notify_resize(void)
 		for (i = 0; i < DAMAGE_RING_SIZE; i++) {
 			egl.damage_ring[i].x      = 0;
 			egl.damage_ring[i].y      = 0;
-			egl.damage_ring[i].width  = (unsigned short) sw;
-			egl.damage_ring[i].height = (unsigned short) sh;
+			egl.damage_ring[i].width  = (unsigned short) g_plat.sw;
+			egl.damage_ring[i].height = (unsigned short) g_plat.sh;
 		}
 	}
 	egl.ring_idx = 0;
@@ -767,8 +767,8 @@ egl_repaint(void)
 				cur.height = (unsigned short) (comp.dirty_y2 - comp.dirty_y1);
 			} else {
 				cur.x = cur.y = 0;
-				cur.width     = (unsigned short) sw;
-				cur.height    = (unsigned short) sh;
+				cur.width     = (unsigned short) g_plat.sw;
+				cur.height    = (unsigned short) g_plat.sh;
 			}
 
 			int x1 = cur.x, y1 = cur.y;
@@ -798,10 +798,10 @@ egl_repaint(void)
 				x1 = 0;
 			if (y1 < 0)
 				y1 = 0;
-			if (x2 > sw)
-				x2 = sw;
-			if (y2 > sh)
-				y2 = sh;
+			if (x2 > g_plat.sw)
+				x2 = g_plat.sw;
+			if (y2 > g_plat.sh)
+				y2 = g_plat.sh;
 
 			scissor.x      = (short) x1;
 			scissor.y      = (short) y1;
@@ -813,15 +813,15 @@ egl_repaint(void)
 		} else {
 			egl.damage_ring[egl.ring_idx].x      = 0;
 			egl.damage_ring[egl.ring_idx].y      = 0;
-			egl.damage_ring[egl.ring_idx].width  = (unsigned short) sw;
-			egl.damage_ring[egl.ring_idx].height = (unsigned short) sh;
+			egl.damage_ring[egl.ring_idx].width  = (unsigned short) g_plat.sw;
+			egl.damage_ring[egl.ring_idx].height = (unsigned short) g_plat.sh;
 			egl.ring_idx = (egl.ring_idx + 1) % DAMAGE_RING_SIZE;
 		}
 	}
 
 	if (use_scissor) {
 		glEnable(GL_SCISSOR_TEST);
-		glScissor(scissor.x, sh - scissor.y - scissor.height, scissor.width,
+		glScissor(scissor.x, g_plat.sh - scissor.y - scissor.height, scissor.width,
 		    scissor.height);
 	}
 
@@ -834,7 +834,7 @@ egl_repaint(void)
 
 	if (egl.wallpaper_texture) {
 		glBindTexture(GL_TEXTURE_2D, egl.wallpaper_texture);
-		glUniform4f(egl.u_rect, 0.0f, 0.0f, (float) sw, (float) sh);
+		glUniform4f(egl.u_rect, 0.0f, 0.0f, (float) g_plat.sw, (float) g_plat.sh);
 		glUniform4f(egl.u_tint, 1.0f, 1.0f, 1.0f, 1.0f);
 		glUniform1i(egl.u_solid, 0);
 		glBindVertexArray(egl.vao);
@@ -1035,10 +1035,10 @@ egl_capture_thumb(CompWin *cw, int max_w, int max_h)
 out:
 	/* Restore normal render target, viewport, and projection matrix */
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-	glViewport(0, 0, sw, sh);
+	glViewport(0, 0, g_plat.sw, g_plat.sh);
 	{
 		float proj[16];
-		make_proj(proj, sw, sh);
+		make_proj(proj, g_plat.sw, g_plat.sh);
 		glUseProgram(egl.prog);
 		glUniformMatrix4fv(egl.u_proj, 1, GL_FALSE, proj);
 		glUseProgram(0);

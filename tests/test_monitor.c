@@ -27,43 +27,38 @@
 
 /* -------------------------------------------------------------------------
  * Globals required by extern declarations in awm.h / wmstate.h.
+ * Globals that moved into PlatformCtx are provided via g_plat below.
  * ---------------------------------------------------------------------- */
-xcb_connection_t  *xc             = NULL;
-xcb_window_t       root           = 0;
-xcb_window_t       wmcheckwin     = 0;
-int                screen         = 0;
-int                sw             = 1920;
-int                sh             = 1080;
-int                bh             = 20;
-int                lrpad          = 0;
-int                awm_tagslength = 9;
-double             ui_dpi         = 96.0;
-double             ui_scale       = 1.0;
-Drw               *drw            = NULL;
-Clr              **scheme         = NULL;
-Cur               *cursor[CurLast];
-Systray           *systray = NULL;
-xcb_atom_t         wmatom[WMLast];
-xcb_atom_t         netatom[NetLast];
-xcb_atom_t         xatom[XLast];
-xcb_atom_t         utf8string_atom = 0;
-char               stext[STATUS_TEXT_LEN];
-int                restart          = 0;
-int                barsdirty        = 0;
-int                launcher_visible = 0;
-xcb_window_t       launcher_xwin    = 0;
-unsigned int       numlockmask      = 0;
-xcb_timestamp_t    last_event_time  = 0;
-xcb_key_symbols_t *keysyms          = NULL;
-unsigned int       ui_borderpx      = 1;
-unsigned int       ui_snap          = 32;
-unsigned int       ui_iconsize      = 16;
-unsigned int       ui_gappx         = 0;
-#ifdef XRANDR
-int randrbase = 0;
-int rrerrbase = 0;
-#endif
+int             awm_tagslength = 9;
+Drw            *drw            = NULL;
+Clr           **scheme         = NULL;
+Cur            *cursor[CurLast];
+Systray        *systray = NULL;
+char            stext[STATUS_TEXT_LEN];
+int             restart          = 0;
+int             barsdirty        = 0;
+int             launcher_visible = 0;
+xcb_window_t    launcher_xwin    = 0;
+xcb_timestamp_t last_event_time  = 0;
 void (*handler[LASTEvent])(xcb_generic_event_t *);
+
+/* Platform context — zero-initialised; tests do not open an X connection. */
+PlatformCtx g_plat = {
+	.xc          = NULL,
+	.root        = 0,
+	.wmcheckwin  = 0,
+	.screen      = 0,
+	.sw          = 1920,
+	.sh          = 1080,
+	.bh          = 20,
+	.lrpad       = 0,
+	.ui_dpi      = 96.0,
+	.ui_scale    = 1.0,
+	.ui_borderpx = 1,
+	.ui_snap     = 32,
+	.ui_iconsize = 16,
+	.ui_gappx    = 0,
+};
 
 AWMState g_awm;
 
@@ -413,7 +408,7 @@ setup_monitors(unsigned int n)
 	unsigned int i;
 
 	memset(&g_awm, 0, sizeof g_awm);
-	bh               = 20;
+	g_plat.bh        = 20;
 	g_awm.n_monitors = n;
 	g_awm.selmon_num = 0;
 	for (i = 0; i < n; i++) {
@@ -440,7 +435,7 @@ updatebarpos_topbar_showbar(void)
 {
 	Monitor m;
 	memset(&m, 0, sizeof m);
-	bh        = 20;
+	g_plat.bh = 20;
 	m.my      = 0;
 	m.mh      = 800;
 	m.showbar = 1;
@@ -460,7 +455,7 @@ updatebarpos_bottombar_showbar(void)
 {
 	Monitor m;
 	memset(&m, 0, sizeof m);
-	bh        = 20;
+	g_plat.bh = 20;
 	m.my      = 0;
 	m.mh      = 800;
 	m.showbar = 1;
@@ -480,7 +475,7 @@ updatebarpos_nobar(void)
 {
 	Monitor m;
 	memset(&m, 0, sizeof m);
-	bh        = 20;
+	g_plat.bh = 20;
 	m.my      = 0;
 	m.mh      = 800;
 	m.showbar = 0;
@@ -500,7 +495,7 @@ updatebarpos_nonzero_my(void)
 {
 	Monitor m;
 	memset(&m, 0, sizeof m);
-	bh        = 24;
+	g_plat.bh = 24;
 	m.my      = 100;
 	m.mh      = 600;
 	m.showbar = 1;
@@ -520,7 +515,7 @@ updatebarpos_topbar_preserves_mx_mw(void)
 {
 	Monitor m;
 	memset(&m, 0, sizeof m);
-	bh        = 20;
+	g_plat.bh = 20;
 	m.mx      = 50;
 	m.mw      = 1280;
 	m.my      = 0;

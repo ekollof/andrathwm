@@ -43,8 +43,8 @@ applyrules(Client *c)
 	char inst_buf[256] = { 0 };
 	{
 		xcb_get_property_cookie_t pck = xcb_get_property(
-		    xc, 0, c->win, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 0, 512);
-		xcb_get_property_reply_t *pr = xcb_get_property_reply(xc, pck, NULL);
+		    g_plat.xc, 0, c->win, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 0, 512);
+		xcb_get_property_reply_t *pr = xcb_get_property_reply(g_plat.xc, pck, NULL);
 		if (pr && xcb_get_property_value_length(pr) > 0) {
 			const char *val = (const char *) xcb_get_property_value(pr);
 			int         len = xcb_get_property_value_length(pr);
@@ -113,10 +113,10 @@ applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 	*w = MAX(1, *w);
 	*h = MAX(1, *h);
 	if (interact) {
-		if (*x > sw)
-			*x = sw - WIDTH(c);
-		if (*y > sh)
-			*y = sh - HEIGHT(c);
+		if (*x > g_plat.sw)
+			*x = g_plat.sw - WIDTH(c);
+		if (*y > g_plat.sh)
+			*y = g_plat.sh - HEIGHT(c);
 		if (*x + *w + 2 * c->bw < 0)
 			*x = 0;
 		if (*y + *h + 2 * c->bw < 0)
@@ -131,10 +131,10 @@ applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 		if (*y + *h + 2 * c->bw <= m->wy)
 			*y = m->wy;
 	}
-	if (*h < bh)
-		*h = bh;
-	if (*w < bh)
-		*w = bh;
+	if (*h < g_plat.bh)
+		*h = g_plat.bh;
+	if (*w < g_plat.bh)
+		*w = g_plat.bh;
 	if (resizehints || c->isfloating || !c->mon->lt[c->mon->sellt]->arrange) {
 		if (!c->hintsvalid)
 			updatesizehints(c);
@@ -234,7 +234,7 @@ configure(Client *c)
 	ce.override_redirect = 0;
 	ce.pad1              = 0;
 	xcb_send_event(
-	    xc, 0, c->win, XCB_EVENT_MASK_STRUCTURE_NOTIFY, (const char *) &ce);
+	    g_plat.xc, 0, c->win, XCB_EVENT_MASK_STRUCTURE_NOTIFY, (const char *) &ce);
 }
 
 void
@@ -291,23 +291,23 @@ focus(Client *c)
 		{
 			uint32_t pix = scheme[SchemeSel][ColBorder].pixel;
 			xcb_change_window_attributes(
-			    xc, c->win, XCB_CW_BORDER_PIXEL, &pix);
+			    g_plat.xc, c->win, XCB_CW_BORDER_PIXEL, &pix);
 			if (!g_awm_selmon->pertag
 			        .drawwithgaps[g_awm_selmon->pertag.curtag] &&
 			    !c->isfloating) {
 				uint32_t vals[2];
 				vals[0] = (uint32_t) g_awm_selmon->barwin;
 				vals[1] = XCB_STACK_MODE_BELOW;
-				xcb_configure_window(xc, c->win,
+				xcb_configure_window(g_plat.xc, c->win,
 				    XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE,
 				    vals);
 			}
 		}
 		setfocus(c);
 	} else {
-		xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT,
+		xcb_set_input_focus(g_plat.xc, XCB_INPUT_FOCUS_POINTER_ROOT,
 		    g_awm_selmon->barwin, XCB_CURRENT_TIME);
-		xcb_delete_property(xc, root, netatom[NetActiveWindow]);
+		xcb_delete_property(g_plat.xc, g_plat.root, g_plat.netatom[NetActiveWindow]);
 	}
 	g_awm_selmon->sel = c;
 	if (g_awm_selmon->lt[g_awm_selmon->sellt]->arrange == monocle)
@@ -437,10 +437,10 @@ xcb_atom_t
 getatomprop(Client *c, xcb_atom_t prop)
 {
 	xcb_atom_t req =
-	    (prop == xatom[XembedInfo]) ? xatom[XembedInfo] : XCB_ATOM_ATOM;
+	    (prop == g_plat.xatom[XembedInfo]) ? g_plat.xatom[XembedInfo] : XCB_ATOM_ATOM;
 	xcb_get_property_cookie_t ck =
-	    xcb_get_property(xc, 0, c->win, prop, req, 0, 1);
-	xcb_get_property_reply_t *r    = xcb_get_property_reply(xc, ck, NULL);
+	    xcb_get_property(g_plat.xc, 0, c->win, prop, req, 0, 1);
+	xcb_get_property_reply_t *r    = xcb_get_property_reply(g_plat.xc, ck, NULL);
 	xcb_atom_t                atom = XCB_ATOM_NONE;
 
 	if (r && xcb_get_property_value_length(r) >= (int) sizeof(xcb_atom_t)) {
@@ -453,8 +453,8 @@ getatomprop(Client *c, xcb_atom_t prop)
 int
 getrootptr(int *x, int *y)
 {
-	xcb_query_pointer_cookie_t ck = xcb_query_pointer(xc, root);
-	xcb_query_pointer_reply_t *r  = xcb_query_pointer_reply(xc, ck, NULL);
+	xcb_query_pointer_cookie_t ck = xcb_query_pointer(g_plat.xc, g_plat.root);
+	xcb_query_pointer_reply_t *r  = xcb_query_pointer_reply(g_plat.xc, ck, NULL);
 	if (!r)
 		return 0;
 	*x = r->root_x;
@@ -467,8 +467,8 @@ long
 getstate(xcb_window_t w)
 {
 	xcb_get_property_cookie_t ck =
-	    xcb_get_property(xc, 0, w, wmatom[WMState], wmatom[WMState], 0, 2);
-	xcb_get_property_reply_t *r      = xcb_get_property_reply(xc, ck, NULL);
+	    xcb_get_property(g_plat.xc, 0, w, g_plat.wmatom[WMState], g_plat.wmatom[WMState], 0, 2);
+	xcb_get_property_reply_t *r      = xcb_get_property_reply(g_plat.xc, ck, NULL);
 	long                      result = -1;
 
 	if (r && xcb_get_property_value_length(r) > 0) {
@@ -488,8 +488,8 @@ gettextprop(xcb_window_t w, xcb_atom_t atom, char *text, unsigned int size)
 	if (!text || size == 0)
 		return 0;
 	text[0] = '\0';
-	ck      = xcb_icccm_get_text_property(xc, w, atom);
-	if (!xcb_icccm_get_text_property_reply(xc, ck, &prop, NULL))
+	ck      = xcb_icccm_get_text_property(g_plat.xc, w, atom);
+	if (!xcb_icccm_get_text_property_reply(g_plat.xc, ck, &prop, NULL))
 		return 0;
 	if (prop.name_len > 0 && prop.name) {
 		len = prop.name_len < size - 1 ? prop.name_len : size - 1;
@@ -504,8 +504,8 @@ cairo_surface_t *
 getwmicon(xcb_window_t w, int size)
 {
 	xcb_get_property_cookie_t ck = xcb_get_property(
-	    xc, 0, w, netatom[NetWMIcon], XCB_ATOM_ANY, 0, UINT32_MAX / 4);
-	xcb_get_property_reply_t *r       = xcb_get_property_reply(xc, ck, NULL);
+	    g_plat.xc, 0, w, g_plat.netatom[NetWMIcon], XCB_ATOM_ANY, 0, UINT32_MAX / 4);
+	xcb_get_property_reply_t *r       = xcb_get_property_reply(g_plat.xc, ck, NULL);
 	cairo_surface_t          *surface = NULL;
 
 	if (!r || xcb_get_property_value_length(r) == 0) {
@@ -612,19 +612,19 @@ grabbuttons(Client *c, int focused)
 	updatenumlockmask();
 	{
 		unsigned int i, j;
-		unsigned int modifiers[] = { 0, XCB_MOD_MASK_LOCK, numlockmask,
-			numlockmask | XCB_MOD_MASK_LOCK };
+		unsigned int modifiers[] = { 0, XCB_MOD_MASK_LOCK, g_plat.numlockmask,
+			g_plat.numlockmask | XCB_MOD_MASK_LOCK };
 
-		xcb_ungrab_button(xc, XCB_BUTTON_INDEX_ANY, c->win, XCB_MOD_MASK_ANY);
+		xcb_ungrab_button(g_plat.xc, XCB_BUTTON_INDEX_ANY, c->win, XCB_MOD_MASK_ANY);
 		if (!focused)
-			xcb_grab_button(xc, 0 /*owner_events*/, c->win,
+			xcb_grab_button(g_plat.xc, 0 /*owner_events*/, c->win,
 			    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE,
 			    XCB_GRAB_MODE_SYNC, XCB_GRAB_MODE_SYNC, XCB_WINDOW_NONE,
 			    XCB_CURSOR_NONE, XCB_BUTTON_INDEX_ANY, XCB_MOD_MASK_ANY);
 		for (i = 0; i < LENGTH(buttons); i++)
 			if (buttons[i].click == ClkClientWin)
 				for (j = 0; j < LENGTH(modifiers); j++)
-					xcb_grab_button(xc, 0 /*owner_events*/, c->win,
+					xcb_grab_button(g_plat.xc, 0 /*owner_events*/, c->win,
 					    XCB_EVENT_MASK_BUTTON_PRESS |
 					        XCB_EVENT_MASK_BUTTON_RELEASE,
 					    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_SYNC,
@@ -642,16 +642,16 @@ hide(Client *c)
 
 	xcb_window_t w = c->win;
 
-	xcb_grab_server(xc);
+	xcb_grab_server(g_plat.xc);
 	{
 		xcb_get_window_attributes_cookie_t rck =
-		    xcb_get_window_attributes(xc, root);
+		    xcb_get_window_attributes(g_plat.xc, g_plat.root);
 		xcb_get_window_attributes_cookie_t cck =
-		    xcb_get_window_attributes(xc, w);
+		    xcb_get_window_attributes(g_plat.xc, w);
 		xcb_get_window_attributes_reply_t *rr =
-		    xcb_get_window_attributes_reply(xc, rck, NULL);
+		    xcb_get_window_attributes_reply(g_plat.xc, rck, NULL);
 		xcb_get_window_attributes_reply_t *cr =
-		    xcb_get_window_attributes_reply(xc, cck, NULL);
+		    xcb_get_window_attributes_reply(g_plat.xc, cck, NULL);
 
 		uint32_t root_em = rr ? rr->your_event_mask : 0;
 		uint32_t win_em  = cr ? cr->your_event_mask : 0;
@@ -660,17 +660,17 @@ hide(Client *c)
 
 		uint32_t mask;
 		mask = root_em & ~(uint32_t) XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
-		xcb_change_window_attributes(xc, root, XCB_CW_EVENT_MASK, &mask);
+		xcb_change_window_attributes(g_plat.xc, g_plat.root, XCB_CW_EVENT_MASK, &mask);
 		mask = win_em & ~(uint32_t) XCB_EVENT_MASK_STRUCTURE_NOTIFY;
-		xcb_change_window_attributes(xc, w, XCB_CW_EVENT_MASK, &mask);
-		xcb_unmap_window(xc, w);
+		xcb_change_window_attributes(g_plat.xc, w, XCB_CW_EVENT_MASK, &mask);
+		xcb_unmap_window(g_plat.xc, w);
 		setclientstate(c, XCB_ICCCM_WM_STATE_ICONIC);
 		mask = root_em;
-		xcb_change_window_attributes(xc, root, XCB_CW_EVENT_MASK, &mask);
+		xcb_change_window_attributes(g_plat.xc, g_plat.root, XCB_CW_EVENT_MASK, &mask);
 		mask = win_em;
-		xcb_change_window_attributes(xc, w, XCB_CW_EVENT_MASK, &mask);
+		xcb_change_window_attributes(g_plat.xc, w, XCB_CW_EVENT_MASK, &mask);
 	}
-	xcb_ungrab_server(xc);
+	xcb_ungrab_server(g_plat.xc);
 
 	c->ishidden = 1;
 	focus(NULL);
@@ -696,7 +696,7 @@ show(Client *c)
 	if (!c || !c->ishidden)
 		return;
 
-	xcb_map_window(xc, c->win);
+	xcb_map_window(g_plat.xc, c->win);
 	setclientstate(c, XCB_ICCCM_WM_STATE_NORMAL);
 	c->ishidden = 0;
 	focus(c);
@@ -743,13 +743,13 @@ killclient(const Arg *arg)
 	if (!g_awm_selmon->sel)
 		return;
 
-	if (!sendevent(g_awm_selmon->sel->win, wmatom[WMDelete], 0,
-	        wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
+	if (!sendevent(g_awm_selmon->sel->win, g_plat.wmatom[WMDelete], 0,
+	        g_plat.wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
 
-		xcb_grab_server(xc);
-		xcb_set_close_down_mode(xc, XCB_CLOSE_DOWN_DESTROY_ALL);
-		xcb_kill_client(xc, g_awm_selmon->sel->win);
-		xcb_ungrab_server(xc);
+		xcb_grab_server(g_plat.xc);
+		xcb_set_close_down_mode(g_plat.xc, XCB_CLOSE_DOWN_DESTROY_ALL);
+		xcb_kill_client(g_plat.xc, g_awm_selmon->sel->win);
+		xcb_ungrab_server(g_plat.xc);
 		xflush();
 	}
 }
@@ -771,9 +771,9 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 	c->bypass_compositor = 0;
 
 	updatetitle(c);
-	c->icon = getwmicon(w, (int) ui_iconsize);
+	c->icon = getwmicon(w, (int) g_plat.ui_iconsize);
 	if (xcb_icccm_get_wm_transient_for_reply(
-	        xc, xcb_icccm_get_wm_transient_for(xc, w), &trans, NULL) &&
+	        g_plat.xc, xcb_icccm_get_wm_transient_for(g_plat.xc, w), &trans, NULL) &&
 	    (t = wintoclient(trans))) {
 		c->mon  = t->mon;
 		c->tags = t->tags;
@@ -788,7 +788,7 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 	 * the window always wins over the rule default. */
 	{
 		unsigned long raw =
-		    (unsigned long) getatomprop(c, netatom[NetWMWindowOpacity]);
+		    (unsigned long) getatomprop(c, g_plat.netatom[NetWMWindowOpacity]);
 		if (raw != 0)
 			c->opacity = (double) raw / (double) 0xFFFFFFFFUL;
 	}
@@ -800,13 +800,13 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 		c->y = c->mon->wy + c->mon->wh - HEIGHT(c);
 	c->x  = MAX(c->x, c->mon->wx);
 	c->y  = MAX(c->y, c->mon->wy);
-	c->bw = (int) ui_borderpx;
+	c->bw = (int) g_plat.ui_borderpx;
 
 	{
 		uint32_t bw = (uint32_t) c->bw;
-		xcb_configure_window(xc, w, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
+		xcb_configure_window(g_plat.xc, w, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
 		uint32_t pix = scheme[SchemeNorm][ColBorder].pixel;
-		xcb_change_window_attributes(xc, w, XCB_CW_BORDER_PIXEL, &pix);
+		xcb_change_window_attributes(g_plat.xc, w, XCB_CW_BORDER_PIXEL, &pix);
 	}
 	configure(c);
 	updatewindowtype(c);
@@ -820,21 +820,21 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 		uint32_t mask = XCB_EVENT_MASK_ENTER_WINDOW |
 		    XCB_EVENT_MASK_FOCUS_CHANGE | XCB_EVENT_MASK_PROPERTY_CHANGE |
 		    XCB_EVENT_MASK_STRUCTURE_NOTIFY;
-		xcb_change_window_attributes(xc, w, XCB_CW_EVENT_MASK, &mask);
+		xcb_change_window_attributes(g_plat.xc, w, XCB_CW_EVENT_MASK, &mask);
 	}
 	grabbuttons(c, 0);
 	if (!c->isfloating)
 		c->isfloating = c->oldstate = t != NULL || c->isfixed;
 	if (c->isfloating) {
 		uint32_t stack = XCB_STACK_MODE_ABOVE;
-		xcb_configure_window(xc, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		xcb_configure_window(g_plat.xc, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 	}
 	attach(c);
 	attachstack(c);
 	{
 		uint32_t winxid = (uint32_t) c->win;
-		xcb_change_property(xc, XCB_PROP_MODE_APPEND, root,
-		    netatom[NetClientList], XCB_ATOM_WINDOW, 32, 1, &winxid);
+		xcb_change_property(g_plat.xc, XCB_PROP_MODE_APPEND, g_plat.root,
+		    g_plat.netatom[NetClientList], XCB_ATOM_WINDOW, 32, 1, &winxid);
 	}
 
 	setewmhdesktop(c);
@@ -843,14 +843,14 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 	{
 		uint32_t extents[4] = { (uint32_t) c->bw, (uint32_t) c->bw,
 			(uint32_t) c->bw, (uint32_t) c->bw };
-		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, c->win,
-		    netatom[NetFrameExtents], XCB_ATOM_CARDINAL, 32, 4, extents);
+		xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, c->win,
+		    g_plat.netatom[NetFrameExtents], XCB_ATOM_CARDINAL, 32, 4, extents);
 	}
 
 	{
-		uint32_t vals[4] = { (uint32_t) (c->x + 2 * sw), (uint32_t) c->y,
+		uint32_t vals[4] = { (uint32_t) (c->x + 2 * g_plat.sw), (uint32_t) c->y,
 			(uint32_t) c->w, (uint32_t) c->h };
-		xcb_configure_window(xc, c->win,
+		xcb_configure_window(g_plat.xc, c->win,
 		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
 		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
 		    vals);
@@ -862,7 +862,7 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 	if (!c->scratchkey)
 		c->mon->sel = c;
 	arrange(c->mon);
-	xcb_map_window(xc, c->win);
+	xcb_map_window(g_plat.xc, c->win);
 #ifdef COMPOSITOR
 	compositor_add_window(c);
 	/* Force-sync the CompWin geometry to the client struct.  During a
@@ -872,7 +872,7 @@ manage(xcb_window_t w, xcb_get_geometry_reply_t *gr)
 	 * this call corrects it. */
 	compositor_configure_window(c, c->bw);
 	c->bypass_compositor =
-	    (int) getatomprop(c, netatom[NetWMBypassCompositor]);
+	    (int) getatomprop(c, g_plat.netatom[NetWMBypassCompositor]);
 	if (c->bypass_compositor == 1)
 		compositor_bypass_window(c, 1);
 #endif
@@ -898,10 +898,10 @@ movemouse(const Arg *arg)
 	ocy = c->y;
 	{
 		xcb_grab_pointer_cookie_t gck =
-		    xcb_grab_pointer(xc, 0, root, MOUSEMASK, XCB_GRAB_MODE_ASYNC,
+		    xcb_grab_pointer(g_plat.xc, 0, g_plat.root, MOUSEMASK, XCB_GRAB_MODE_ASYNC,
 		        XCB_GRAB_MODE_ASYNC, XCB_WINDOW_NONE,
 		        (xcb_cursor_t) cursor[CurMove]->cursor, XCB_CURRENT_TIME);
-		xcb_grab_pointer_reply_t *gr = xcb_grab_pointer_reply(xc, gck, NULL);
+		xcb_grab_pointer_reply_t *gr = xcb_grab_pointer_reply(g_plat.xc, gck, NULL);
 		if (!gr || gr->status != XCB_GRAB_STATUS_SUCCESS) {
 			free(gr);
 			return;
@@ -909,12 +909,12 @@ movemouse(const Arg *arg)
 		free(gr);
 	}
 	if (!getrootptr(&x, &y)) {
-		xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
+		xcb_ungrab_pointer(g_plat.xc, XCB_CURRENT_TIME);
 		return;
 	}
-	xcb_flush(xc);
+	xcb_flush(g_plat.xc);
 	for (;;) {
-		while (!(xe = xcb_wait_for_event(xc)))
+		while (!(xe = xcb_wait_for_event(g_plat.xc)))
 			;
 		{
 			uint8_t type = xe->response_type & ~0x80;
@@ -940,20 +940,20 @@ movemouse(const Arg *arg)
 
 				nx = ocx + (me->root_x - x);
 				ny = ocy + (me->root_y - y);
-				if (abs(g_awm_selmon->wx - nx) < (int) ui_snap)
+				if (abs(g_awm_selmon->wx - nx) < (int) g_plat.ui_snap)
 					nx = g_awm_selmon->wx;
 				else if (abs((g_awm_selmon->wx + g_awm_selmon->ww) -
-				             (nx + WIDTH(c))) < (int) ui_snap)
+				             (nx + WIDTH(c))) < (int) g_plat.ui_snap)
 					nx = g_awm_selmon->wx + g_awm_selmon->ww - WIDTH(c);
-				if (abs(g_awm_selmon->wy - ny) < (int) ui_snap)
+				if (abs(g_awm_selmon->wy - ny) < (int) g_plat.ui_snap)
 					ny = g_awm_selmon->wy;
 				else if (abs((g_awm_selmon->wy + g_awm_selmon->wh) -
-				             (ny + HEIGHT(c))) < (int) ui_snap)
+				             (ny + HEIGHT(c))) < (int) g_plat.ui_snap)
 					ny = g_awm_selmon->wy + g_awm_selmon->wh - HEIGHT(c);
 				if (!c->isfloating &&
 				    g_awm_selmon->lt[g_awm_selmon->sellt]->arrange &&
-				    (abs(nx - c->x) > (int) ui_snap ||
-				        abs(ny - c->y) > (int) ui_snap))
+				    (abs(nx - c->x) > (int) g_plat.ui_snap ||
+				        abs(ny - c->y) > (int) g_plat.ui_snap))
 					togglefloating(NULL);
 				if (!g_awm_selmon->lt[g_awm_selmon->sellt]->arrange ||
 				    c->isfloating)
@@ -979,7 +979,7 @@ movemouse(const Arg *arg)
 		}
 		free(xe);
 	}
-	xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
+	xcb_ungrab_pointer(g_plat.xc, XCB_CURRENT_TIME);
 	if ((m = recttomon(c->x, c->y, c->w, c->h)) != g_awm_selmon) {
 		sendmon(c, m);
 		g_awm_set_selmon(m);
@@ -1043,7 +1043,7 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	{
 		uint32_t vals[5] = { (uint32_t) x, (uint32_t) y, (uint32_t) w,
 			(uint32_t) h, (uint32_t) bw };
-		xcb_configure_window(xc, c->win,
+		xcb_configure_window(g_plat.xc, c->win,
 		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
 		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
 		        XCB_CONFIG_WINDOW_BORDER_WIDTH,
@@ -1074,21 +1074,21 @@ resizemouse(const Arg *arg)
 	ocy = c->y;
 	{
 		xcb_grab_pointer_cookie_t gck =
-		    xcb_grab_pointer(xc, 0, root, MOUSEMASK, XCB_GRAB_MODE_ASYNC,
+		    xcb_grab_pointer(g_plat.xc, 0, g_plat.root, MOUSEMASK, XCB_GRAB_MODE_ASYNC,
 		        XCB_GRAB_MODE_ASYNC, XCB_WINDOW_NONE,
 		        (xcb_cursor_t) cursor[CurResize]->cursor, XCB_CURRENT_TIME);
-		xcb_grab_pointer_reply_t *gr = xcb_grab_pointer_reply(xc, gck, NULL);
+		xcb_grab_pointer_reply_t *gr = xcb_grab_pointer_reply(g_plat.xc, gck, NULL);
 		if (!gr || gr->status != XCB_GRAB_STATUS_SUCCESS) {
 			free(gr);
 			return;
 		}
 		free(gr);
 	}
-	xcb_warp_pointer(xc, XCB_WINDOW_NONE, c->win, 0, 0, 0, 0,
+	xcb_warp_pointer(g_plat.xc, XCB_WINDOW_NONE, c->win, 0, 0, 0, 0,
 	    (int16_t) (c->w + c->bw - 1), (int16_t) (c->h + c->bw - 1));
-	xcb_flush(xc);
+	xcb_flush(g_plat.xc);
 	for (;;) {
-		while (!(xe = xcb_wait_for_event(xc)))
+		while (!(xe = xcb_wait_for_event(g_plat.xc)))
 			;
 		{
 			uint8_t type = xe->response_type & ~0x80;
@@ -1120,8 +1120,8 @@ resizemouse(const Arg *arg)
 				    c->mon->wy + nh <= g_awm_selmon->wy + g_awm_selmon->wh) {
 					if (!c->isfloating &&
 					    g_awm_selmon->lt[g_awm_selmon->sellt]->arrange &&
-					    (abs(nw - c->w) > (int) ui_snap ||
-					        abs(nh - c->h) > (int) ui_snap))
+					    (abs(nw - c->w) > (int) g_plat.ui_snap ||
+					        abs(nh - c->h) > (int) g_plat.ui_snap))
 						togglefloating(NULL);
 				}
 				if (!g_awm_selmon->lt[g_awm_selmon->sellt]->arrange ||
@@ -1148,14 +1148,14 @@ resizemouse(const Arg *arg)
 		}
 		free(xe);
 	}
-	xcb_warp_pointer(xc, XCB_WINDOW_NONE, c->win, 0, 0, 0, 0,
+	xcb_warp_pointer(g_plat.xc, XCB_WINDOW_NONE, c->win, 0, 0, 0, 0,
 	    (int16_t) (c->w + c->bw - 1), (int16_t) (c->h + c->bw - 1));
-	xcb_ungrab_pointer(xc, XCB_CURRENT_TIME);
+	xcb_ungrab_pointer(g_plat.xc, XCB_CURRENT_TIME);
 	/* Discard stale EnterNotify events accumulated during the grab so
 	 * we don't spuriously change focus after a resize.  Non-EnterNotify
 	 * events are dispatched through the normal handler. */
-	xcb_flush(xc);
-	while ((xe = xcb_poll_for_event(xc))) {
+	xcb_flush(g_plat.xc);
+	while ((xe = xcb_poll_for_event(g_plat.xc))) {
 		uint8_t type = xe->response_type & ~0x80;
 		if (type != XCB_ENTER_NOTIFY && type < LASTEvent && handler[type])
 			handler[type](xe);
@@ -1192,8 +1192,8 @@ setclientstate(Client *c, long state)
 {
 	uint32_t data[2] = { (uint32_t) state, XCB_ATOM_NONE };
 
-	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, c->win, wmatom[WMState],
-	    wmatom[WMState], 32, 2, data);
+	xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, c->win, g_plat.wmatom[WMState],
+	    g_plat.wmatom[WMState], 32, 2, data);
 }
 
 void
@@ -1250,9 +1250,9 @@ setgaps(const Arg *arg)
 		break;
 	case GAP_RESET:
 		if (g_awm_selmon->pertag.curtag > 0)
-			g_awm_selmon->pertag.gappx[g_awm_selmon->pertag.curtag] = ui_gappx;
+			g_awm_selmon->pertag.gappx[g_awm_selmon->pertag.curtag] = g_plat.ui_gappx;
 		else
-			g_awm_selmon->pertag.gappx[0] = ui_gappx;
+			g_awm_selmon->pertag.gappx[0] = g_plat.ui_gappx;
 		break;
 	default:
 		if (g_awm_selmon->pertag.gappx[g_awm_selmon->pertag.curtag] + arg->i <
@@ -1304,14 +1304,14 @@ seturgent(Client *c, int urg)
 {
 	c->isurgent = urg;
 	{
-		xcb_get_property_cookie_t ck = xcb_icccm_get_wm_hints(xc, c->win);
+		xcb_get_property_cookie_t ck = xcb_icccm_get_wm_hints(g_plat.xc, c->win);
 		xcb_icccm_wm_hints_t      wmh;
-		if (xcb_icccm_get_wm_hints_reply(xc, ck, &wmh, NULL)) {
+		if (xcb_icccm_get_wm_hints_reply(g_plat.xc, ck, &wmh, NULL)) {
 			if (urg)
 				wmh.flags |= XCB_ICCCM_WM_HINT_X_URGENCY;
 			else
 				wmh.flags &= ~XCB_ICCCM_WM_HINT_X_URGENCY;
-			xcb_icccm_set_wm_hints(xc, c->win, &wmh);
+			xcb_icccm_set_wm_hints(g_plat.xc, c->win, &wmh);
 		}
 	}
 	setwmstate(c);
@@ -1340,7 +1340,7 @@ showhide(Client *c)
 				compositor_set_hidden(c, 0);
 			{
 				uint32_t vals[2] = { (uint32_t) c->x, (uint32_t) c->y };
-				xcb_configure_window(xc, c->win,
+				xcb_configure_window(g_plat.xc, c->win,
 				    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
 			}
 			if ((!c->mon->lt[c->mon->sellt]->arrange || c->isfloating) &&
@@ -1361,7 +1361,7 @@ showhide(Client *c)
 			uint32_t vals[2] = { (uint32_t) (int32_t) (WIDTH(c) * -2),
 				(uint32_t) c->y };
 			xcb_configure_window(
-			    xc, c->win, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
+			    g_plat.xc, c->win, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
 		}
 	}
 }
@@ -1629,15 +1629,15 @@ unfocus(Client *c, int setfocus)
 	grabbuttons(c, 0);
 	{
 		uint32_t pix = scheme[SchemeNorm][ColBorder].pixel;
-		xcb_change_window_attributes(xc, c->win, XCB_CW_BORDER_PIXEL, &pix);
+		xcb_change_window_attributes(g_plat.xc, c->win, XCB_CW_BORDER_PIXEL, &pix);
 	}
 #ifdef COMPOSITOR
 	compositor_focus_window(c);
 #endif
 	if (setfocus) {
 		xcb_set_input_focus(
-		    xc, XCB_INPUT_FOCUS_POINTER_ROOT, root, XCB_CURRENT_TIME);
-		xcb_delete_property(xc, root, netatom[NetActiveWindow]);
+		    g_plat.xc, XCB_INPUT_FOCUS_POINTER_ROOT, g_plat.root, XCB_CURRENT_TIME);
+		xcb_delete_property(g_plat.xc, g_plat.root, g_plat.netatom[NetActiveWindow]);
 	}
 }
 
@@ -1650,20 +1650,20 @@ unmanage(Client *c, int destroyed)
 	detachstack(c);
 	if (!destroyed) {
 
-		xcb_grab_server(xc);
+		xcb_grab_server(g_plat.xc);
 		{
 			uint32_t no_events = XCB_EVENT_MASK_NO_EVENT;
 			xcb_change_window_attributes(
-			    xc, c->win, XCB_CW_EVENT_MASK, &no_events);
+			    g_plat.xc, c->win, XCB_CW_EVENT_MASK, &no_events);
 		}
 		{
 			uint32_t bw = (uint32_t) c->oldbw;
 			xcb_configure_window(
-			    xc, c->win, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
+			    g_plat.xc, c->win, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
 		}
-		xcb_ungrab_button(xc, XCB_BUTTON_INDEX_ANY, c->win, XCB_MOD_MASK_ANY);
+		xcb_ungrab_button(g_plat.xc, XCB_BUTTON_INDEX_ANY, c->win, XCB_MOD_MASK_ANY);
 		setclientstate(c, XCB_ICCCM_WM_STATE_WITHDRAWN);
-		xcb_ungrab_server(xc);
+		xcb_ungrab_server(g_plat.xc);
 		xflush();
 	}
 	freeicon(c);
@@ -1686,10 +1686,10 @@ unmanage(Client *c, int destroyed)
 void
 updatesizehints(Client *c)
 {
-	xcb_get_property_cookie_t ck = xcb_icccm_get_wm_normal_hints(xc, c->win);
+	xcb_get_property_cookie_t ck = xcb_icccm_get_wm_normal_hints(g_plat.xc, c->win);
 	xcb_size_hints_t          size;
 
-	if (!xcb_icccm_get_wm_normal_hints_reply(xc, ck, &size, NULL))
+	if (!xcb_icccm_get_wm_normal_hints_reply(g_plat.xc, ck, &size, NULL))
 		size.flags = XCB_ICCCM_SIZE_HINT_P_SIZE;
 	if (size.flags & XCB_ICCCM_SIZE_HINT_BASE_SIZE) {
 		c->basew = size.base_width;
@@ -1734,7 +1734,7 @@ updatesizehints(Client *c)
 void
 updatetitle(Client *c)
 {
-	if (!gettextprop(c->win, netatom[NetWMName], c->name, sizeof c->name))
+	if (!gettextprop(c->win, g_plat.netatom[NetWMName], c->name, sizeof c->name))
 		gettextprop(c->win, XCB_ATOM_WM_NAME, c->name, sizeof c->name);
 	if (c->name[0] == '\0')
 		strcpy(c->name, broken);
@@ -1743,33 +1743,33 @@ updatetitle(Client *c)
 void
 updatewindowtype(Client *c)
 {
-	xcb_atom_t state = getatomprop(c, netatom[NetWMState]);
-	xcb_atom_t wtype = getatomprop(c, netatom[NetWMWindowType]);
+	xcb_atom_t state = getatomprop(c, g_plat.netatom[NetWMState]);
+	xcb_atom_t wtype = getatomprop(c, g_plat.netatom[NetWMWindowType]);
 
-	if (state == netatom[NetWMFullscreen])
+	if (state == g_plat.netatom[NetWMFullscreen])
 		setfullscreen(c, 1);
-	if (wtype == netatom[NetWMWindowTypeDialog]) {
+	if (wtype == g_plat.netatom[NetWMWindowTypeDialog]) {
 		c->iscentered = 1;
 		c->isfloating = 1;
 	}
-	if (wtype == netatom[NetWMWindowTypeDock] ||
-	    wtype == netatom[NetWMWindowTypeToolbar] ||
-	    wtype == netatom[NetWMWindowTypeUtility] ||
-	    wtype == netatom[NetWMWindowTypeSplash])
+	if (wtype == g_plat.netatom[NetWMWindowTypeDock] ||
+	    wtype == g_plat.netatom[NetWMWindowTypeToolbar] ||
+	    wtype == g_plat.netatom[NetWMWindowTypeUtility] ||
+	    wtype == g_plat.netatom[NetWMWindowTypeSplash])
 		c->isfloating = 1;
 }
 
 void
 updatewmhints(Client *c)
 {
-	xcb_get_property_cookie_t ck = xcb_icccm_get_wm_hints(xc, c->win);
+	xcb_get_property_cookie_t ck = xcb_icccm_get_wm_hints(g_plat.xc, c->win);
 	xcb_icccm_wm_hints_t      wmh;
 
-	if (xcb_icccm_get_wm_hints_reply(xc, ck, &wmh, NULL)) {
+	if (xcb_icccm_get_wm_hints_reply(g_plat.xc, ck, &wmh, NULL)) {
 		if (c == g_awm_selmon->sel &&
 		    (wmh.flags & XCB_ICCCM_WM_HINT_X_URGENCY)) {
 			wmh.flags &= ~XCB_ICCCM_WM_HINT_X_URGENCY;
-			xcb_icccm_set_wm_hints(xc, c->win, &wmh);
+			xcb_icccm_set_wm_hints(g_plat.xc, c->win, &wmh);
 		} else
 			c->isurgent = (wmh.flags & XCB_ICCCM_WM_HINT_X_URGENCY) ? 1 : 0;
 		if (wmh.flags & XCB_ICCCM_WM_HINT_INPUT)
@@ -1937,7 +1937,7 @@ warp(const Client *c)
 	int x, y;
 
 	if (!c) {
-		xcb_warp_pointer(xc, XCB_WINDOW_NONE, root, 0, 0, 0, 0,
+		xcb_warp_pointer(g_plat.xc, XCB_WINDOW_NONE, g_plat.root, 0, 0, 0, 0,
 		    (int16_t) (g_awm_selmon->wx + g_awm_selmon->ww / 2),
 		    (int16_t) (g_awm_selmon->wy + g_awm_selmon->wh / 2));
 		return;
@@ -1946,10 +1946,10 @@ warp(const Client *c)
 	if (!getrootptr(&x, &y) ||
 	    (x > c->x - c->bw && y > c->y - c->bw && x < c->x + c->w + c->bw * 2 &&
 	        y < c->y + c->h + c->bw * 2) ||
-	    (y > c->mon->by && y < c->mon->by + bh) || (c->mon->topbar && !y))
+	    (y > c->mon->by && y < c->mon->by + g_plat.bh) || (c->mon->topbar && !y))
 		return;
 
-	xcb_warp_pointer(xc, XCB_WINDOW_NONE, c->win, 0, 0, 0, 0,
+	xcb_warp_pointer(g_plat.xc, XCB_WINDOW_NONE, c->win, 0, 0, 0, 0,
 	    (int16_t) (c->w / 2), (int16_t) (c->h / 2));
 }
 

@@ -16,7 +16,7 @@ else
 DRW_SRC = drw_cairo.c
 endif
 
-SRC = $(DRW_SRC) awm.c util.c menu.c dbus.c icon.c sni.c log.c \
+SRC = $(DRW_SRC) platform_x11.c awm.c util.c menu.c dbus.c icon.c sni.c log.c \
 	client.c monitor.c events.c ewmh.c systray.c spawn.c xrdb.c \
 	status.c status_util.c status_components.c xsource.c \
 	compositor.c compositor_egl.c compositor_xrender.c switcher.c \
@@ -25,7 +25,7 @@ SRCS = $(addprefix $(SRCDIR)/,$(SRC))
 OBJ = $(addprefix $(BUILDDIR)/,$(SRC:.c=.o))
 
 # awm-ui: separate GTK helper process (launcher + SNI menus)
-UI_SRC  = $(DRW_SRC) awm_ui.c launcher.c icon.c log.c util.c notif.c preview.c
+UI_SRC  = $(DRW_SRC) platform_x11.c awm_ui.c launcher.c icon.c log.c util.c notif.c preview.c
 UI_SRCS = $(addprefix $(SRCDIR)/,$(UI_SRC))
 UI_OBJ  = $(addprefix $(BUILDDIR)/ui_,$(UI_SRC:.c=.o))
 
@@ -115,6 +115,7 @@ TEST_FULL_CFLAGS = -std=c11 -pedantic -Werror -Wall -I. -Isrc -Itests \
 	    xcb-xinerama xcb-cursor xcb-renderutil pangocairo glib-2.0 \
 	    cairo gtk+-3.0 dbus-1) \
 	-DXINERAMA -DXRANDR -DCOMPOSITOR -DSTATUSNOTIFIER -DXSS \
+	-DBACKEND_X11 \
 	-DVERSION=\"$(VERSION)\" -D_DEFAULT_SOURCE -D_BSD_SOURCE \
 	-D_XOPEN_SOURCE=700L
 TEST_FULL_LIBS = $(shell pkg-config --libs xcb xcb-icccm xcb-randr \

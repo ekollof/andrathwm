@@ -67,8 +67,8 @@ arrange(Monitor *m)
 		 * (ConfigureNotify, MapNotify, DamageNotify, etc.). */
 		{
 			xcb_generic_event_t *xe;
-			xcb_flush(xc);
-			while ((xe = xcb_poll_for_event(xc))) {
+			xcb_flush(g_plat.xc);
+			while ((xe = xcb_poll_for_event(g_plat.xc))) {
 				uint8_t type = xe->response_type & ~0x80;
 #ifdef COMPOSITOR
 				if (xe->response_type != 0)
@@ -107,8 +107,8 @@ cleanupmon(Monitor *mon)
 	/* Find index of the monitor being removed. */
 	idx = (int) (mon - g_awm.monitors);
 
-	xcb_unmap_window(xc, mon->barwin);
-	xcb_destroy_window(xc, mon->barwin);
+	xcb_unmap_window(g_plat.xc, mon->barwin);
+	xcb_destroy_window(g_plat.xc, mon->barwin);
 
 	/* Compact the array: shift entries left over the removed slot. */
 	for (i = idx; i < (int) g_awm.n_monitors - 1; i++)
@@ -192,7 +192,7 @@ createmon(void)
 
 		m->pertag.showbars[i]     = m->showbar;
 		m->pertag.drawwithgaps[i] = startwithgaps[0];
-		m->pertag.gappx[i]        = ui_gappx;
+		m->pertag.gappx[i]        = g_plat.ui_gappx;
 	}
 
 	g_awm.n_monitors++;
@@ -245,9 +245,9 @@ drawbar(Monitor *m)
 		/* Pre-clear the status region with SchemeNorm bg so there is no
 		 * stale content visible between or around the s2d widgets.      */
 		drw_rect(drw, m->ww - stw - tw, 0, (unsigned int) tw,
-		    (unsigned int) bh, 1, 1);
+		    (unsigned int) g_plat.bh, 1, 1);
 		drw_draw_statusd(drw, m->ww - stw - tw, 0, (unsigned int) tw,
-		    (unsigned int) bh, stext);
+		    (unsigned int) g_plat.bh, stext);
 	}
 
 	resizebarwin(m);
@@ -268,7 +268,8 @@ drawbar(Monitor *m)
 		w = TEXTW(tags[i]);
 		drw_setscheme(drw,
 		    scheme[m->tagset[m->seltags] & 1 << i ? SchemeSel : SchemeNorm]);
-		drw_text(drw, x, 0, w, bh, lrpad / 2, tags[i], urg & 1 << i);
+		drw_text(
+		    drw, x, 0, w, g_plat.bh, g_plat.lrpad / 2, tags[i], urg & 1 << i);
 		if (occ & 1 << i)
 			drw_rect(drw, x + boxs, boxs, boxw, boxw,
 			    m == g_awm_selmon && g_awm_selmon->sel &&
@@ -278,10 +279,10 @@ drawbar(Monitor *m)
 	}
 	w = TEXTW(m->ltsymbol);
 	drw_setscheme(drw, scheme[SchemeNorm]);
-	x = drw_text(drw, x, 0, w, bh, lrpad / 2, m->ltsymbol, 0);
+	x = drw_text(drw, x, 0, w, g_plat.bh, g_plat.lrpad / 2, m->ltsymbol, 0);
 
 	/* Draw window titles with icons (awesomebar) */
-	if ((w = m->ww - tw - stw - x) > bh && n > 0) {
+	if ((w = m->ww - tw - stw - x) > g_plat.bh && n > 0) {
 		int remainder = w;
 		int tabw      = remainder / n;
 
@@ -290,7 +291,7 @@ drawbar(Monitor *m)
 			if (!(c->tags & m->tagset[m->seltags]))
 				continue;
 
-			if (remainder - tabw < lrpad / 2)
+			if (remainder - tabw < g_plat.lrpad / 2)
 				tabw = remainder;
 
 			/* Use different scheme for hidden windows */
@@ -306,16 +307,22 @@ drawbar(Monitor *m)
 				/* Draw background rectangle for icon area first to avoid
 				 * garbage. Use invert=1 to use the background color (ColBg).
 				 */
-				drw_rect(drw, x, 0, (int) ui_iconsize + lrpad / 2, bh, 1, 1);
+				drw_rect(drw, x, 0,
+				    (int) g_plat.ui_iconsize + g_plat.lrpad / 2, g_plat.bh, 1,
+				    1);
 
 				/* Render icon using drw */
-				drw_pic(drw, x + lrpad / 4, (bh - (int) ui_iconsize) / 2,
-				    (int) ui_iconsize, (int) ui_iconsize, c->icon);
-				textx = x + (int) ui_iconsize + lrpad / 2;
-				drw_text(drw, textx, 0, tabw - ((int) ui_iconsize + lrpad / 2),
-				    bh, 0, c->name, 0);
+				drw_pic(drw, x + g_plat.lrpad / 4,
+				    (g_plat.bh - (int) g_plat.ui_iconsize) / 2,
+				    (int) g_plat.ui_iconsize, (int) g_plat.ui_iconsize,
+				    c->icon);
+				textx = x + (int) g_plat.ui_iconsize + g_plat.lrpad / 2;
+				drw_text(drw, textx, 0,
+				    tabw - ((int) g_plat.ui_iconsize + g_plat.lrpad / 2),
+				    g_plat.bh, 0, c->name, 0);
 			} else {
-				drw_text(drw, x, 0, tabw, bh, lrpad / 2, c->name, 0);
+				drw_text(
+				    drw, x, 0, tabw, g_plat.bh, g_plat.lrpad / 2, c->name, 0);
 			}
 
 			/* Draw rectangle indicator for hidden windows */
@@ -329,9 +336,9 @@ drawbar(Monitor *m)
 		}
 	} else {
 		drw_setscheme(drw, scheme[SchemeNorm]);
-		drw_rect(drw, x, 0, w, bh, 1, 1);
+		drw_rect(drw, x, 0, w, g_plat.bh, 1, 1);
 	}
-	drw_map(drw, m->barwin, 0, 0, m->ww - stw, bh);
+	drw_map(drw, m->barwin, 0, 0, m->ww - stw, g_plat.bh);
 }
 
 void
@@ -395,8 +402,8 @@ monocle(Monitor *m)
 			compositor_set_hidden(c, 1);
 			uint32_t xy[2] = { (uint32_t) (int32_t) (WIDTH(c) * -2),
 				(uint32_t) (int32_t) c->y };
-			xcb_configure_window(
-			    xc, c->win, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, xy);
+			xcb_configure_window(g_plat.xc, c->win,
+			    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, xy);
 		}
 }
 
@@ -421,8 +428,8 @@ resizebarwin(Monitor *m)
 	if (showsystray && m == systraytomon(m) && !systrayonleft)
 		w -= getsystraywidth();
 	uint32_t xywh[4] = { (uint32_t) (int32_t) m->wx,
-		(uint32_t) (int32_t) m->by, w, (uint32_t) bh };
-	xcb_configure_window(xc, m->barwin,
+		(uint32_t) (int32_t) m->by, w, (uint32_t) g_plat.bh };
+	xcb_configure_window(g_plat.xc, m->barwin,
 	    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_WIDTH |
 	        XCB_CONFIG_WINDOW_HEIGHT,
 	    xywh);
@@ -439,14 +446,14 @@ restack(Monitor *m)
 	if (m->sel->isfloating || !m->lt[m->sellt]->arrange) {
 		uint32_t stack = XCB_STACK_MODE_ABOVE;
 		xcb_configure_window(
-		    xc, m->sel->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		    g_plat.xc, m->sel->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 	}
 	if (m->lt[m->sellt]->arrange) {
 		uint32_t sibling = (uint32_t) m->barwin;
 		for (c = g_awm.stack_head; c; c = c->snext)
 			if (!c->isfloating && ISVISIBLE(c, m)) {
 				uint32_t vals[2] = { sibling, XCB_STACK_MODE_BELOW };
-				xcb_configure_window(xc, c->win,
+				xcb_configure_window(g_plat.xc, c->win,
 				    XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE,
 				    vals);
 				sibling = (uint32_t) c->win;
@@ -458,8 +465,8 @@ restack(Monitor *m)
 	/* Same EnterNotify drain as arrange() — see comment there. */
 	{
 		xcb_generic_event_t *xe;
-		xcb_flush(xc);
-		while ((xe = xcb_poll_for_event(xc))) {
+		xcb_flush(g_plat.xc);
+		while ((xe = xcb_poll_for_event(g_plat.xc))) {
 			uint8_t type = xe->response_type & ~0x80;
 #ifdef COMPOSITOR
 			if (xe->response_type != 0)
@@ -570,14 +577,14 @@ togglebar(const Arg *arg)
 		int32_t  newy;
 		uint32_t y;
 		if (!g_awm_selmon->showbar)
-			newy = -bh;
+			newy = -g_plat.bh;
 		else {
 			newy = 0;
 			if (!g_awm_selmon->topbar)
-				newy = g_awm_selmon->mh - bh;
+				newy = g_awm_selmon->mh - g_plat.bh;
 		}
 		y = (uint32_t) newy;
-		xcb_configure_window(xc, systray->win, XCB_CONFIG_WINDOW_Y, &y);
+		xcb_configure_window(g_plat.xc, systray->win, XCB_CONFIG_WINDOW_Y, &y);
 	}
 	updateworkarea(g_awm_selmon);
 	arrange(g_awm_selmon);
@@ -589,7 +596,7 @@ updatebars(void)
 {
 	unsigned int w;
 	Monitor     *m;
-	int          depth = xcb_screen_root_depth(xc, screen);
+	int          depth = xcb_screen_root_depth(g_plat.xc, g_plat.screen);
 
 	/* WM_CLASS value: "awm\0awm" (instance NUL class) */
 	static const char wm_class[] = "awm\0awm";
@@ -611,10 +618,11 @@ updatebars(void)
 				    XCB_EVENT_MASK_ENTER_WINDOW |
 				    XCB_EVENT_MASK_LEAVE_WINDOW, /* event_mask */
 			};
-			m->barwin = xcb_generate_id(xc);
-			xcb_create_window(xc, (uint8_t) depth, m->barwin, root,
-			    (int16_t) m->wx, (int16_t) m->by, (uint16_t) w, (uint16_t) bh,
-			    0, XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT,
+			m->barwin = xcb_generate_id(g_plat.xc);
+			xcb_create_window(g_plat.xc, (uint8_t) depth, m->barwin,
+			    g_plat.root, (int16_t) m->wx, (int16_t) m->by, (uint16_t) w,
+			    (uint16_t) g_plat.bh, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+			    XCB_COPY_FROM_PARENT,
 			    XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT |
 			        XCB_CW_EVENT_MASK,
 			    vals);
@@ -629,10 +637,11 @@ updatebars(void)
 				    XCB_EVENT_MASK_ENTER_WINDOW |
 				    XCB_EVENT_MASK_LEAVE_WINDOW, /* event_mask */
 			};
-			m->barwin = xcb_generate_id(xc);
-			xcb_create_window(xc, (uint8_t) depth, m->barwin, root,
-			    (int16_t) m->wx, (int16_t) m->by, (uint16_t) w, (uint16_t) bh,
-			    0, XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT,
+			m->barwin = xcb_generate_id(g_plat.xc);
+			xcb_create_window(g_plat.xc, (uint8_t) depth, m->barwin,
+			    g_plat.root, (int16_t) m->wx, (int16_t) m->by, (uint16_t) w,
+			    (uint16_t) g_plat.bh, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+			    XCB_COPY_FROM_PARENT,
 			    XCB_CW_BACK_PIXMAP | XCB_CW_OVERRIDE_REDIRECT |
 			        XCB_CW_EVENT_MASK,
 			    vals);
@@ -640,22 +649,23 @@ updatebars(void)
 #endif
 		{
 			uint32_t cur = (uint32_t) cursor[CurNormal]->cursor;
-			xcb_change_window_attributes(xc, m->barwin, XCB_CW_CURSOR, &cur);
+			xcb_change_window_attributes(
+			    g_plat.xc, m->barwin, XCB_CW_CURSOR, &cur);
 		}
 		if (showsystray && m == systraytomon(m)) {
 			uint32_t stack = XCB_STACK_MODE_ABOVE;
-			xcb_map_window(xc, systray->win);
+			xcb_map_window(g_plat.xc, systray->win);
 			xcb_configure_window(
-			    xc, systray->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+			    g_plat.xc, systray->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 		}
 		{
 			uint32_t stack = XCB_STACK_MODE_ABOVE;
-			xcb_map_window(xc, m->barwin);
+			xcb_map_window(g_plat.xc, m->barwin);
 			xcb_configure_window(
-			    xc, m->barwin, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+			    g_plat.xc, m->barwin, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 		}
 		/* WM_CLASS: instance + class both "awm", separated by NUL */
-		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, m->barwin,
+		xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, m->barwin,
 		    XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, sizeof(wm_class), wm_class);
 	}
 }
@@ -666,11 +676,11 @@ updatebarpos(Monitor *m)
 	m->wy = m->my;
 	m->wh = m->mh;
 	if (m->showbar) {
-		m->wh -= bh;
+		m->wh -= g_plat.bh;
 		m->by = m->topbar ? m->wy : m->wy + m->wh;
-		m->wy = m->topbar ? m->wy + bh : m->wy;
+		m->wy = m->topbar ? m->wy + g_plat.bh : m->wy;
 	} else
-		m->by = -bh;
+		m->by = -g_plat.bh;
 }
 
 int
@@ -681,7 +691,7 @@ updategeom(void)
 #ifdef XRANDR
 	{
 		const xcb_query_extension_reply_t *ext =
-		    xcb_get_extension_data(xc, &xcb_randr_id);
+		    xcb_get_extension_data(g_plat.xc, &xcb_randr_id);
 		if (ext && ext->present) {
 			int                                             i, n, nn;
 			Client                                         *c;
@@ -694,8 +704,10 @@ updategeom(void)
 			ScreenGeom *unique = NULL;
 			int         j;
 
-			src = xcb_randr_get_screen_resources_current(xc, root);
-			sr  = xcb_randr_get_screen_resources_current_reply(xc, src, NULL);
+			src =
+			    xcb_randr_get_screen_resources_current(g_plat.xc, g_plat.root);
+			sr = xcb_randr_get_screen_resources_current_reply(
+			    g_plat.xc, src, NULL);
 			if (!sr)
 				goto xinerama_fallback;
 
@@ -704,10 +716,10 @@ updategeom(void)
 			unique = ecalloc(sr->num_crtcs, sizeof(ScreenGeom));
 			/* Get active CRTC geometries */
 			for (i = 0; i < (int) sr->num_crtcs; i++) {
-				xcb_randr_get_crtc_info_cookie_t cic =
-				    xcb_randr_get_crtc_info(xc, crtcs[i], XCB_CURRENT_TIME);
+				xcb_randr_get_crtc_info_cookie_t cic = xcb_randr_get_crtc_info(
+				    g_plat.xc, crtcs[i], XCB_CURRENT_TIME);
 				xcb_randr_get_crtc_info_reply_t *ci =
-				    xcb_randr_get_crtc_info_reply(xc, cic, NULL);
+				    xcb_randr_get_crtc_info_reply(g_plat.xc, cic, NULL);
 				if (!ci || ci->num_outputs == 0 || ci->width == 0) {
 					free(ci);
 					continue;
@@ -779,8 +791,8 @@ xinerama_fallback:
 #endif /* XRANDR */
 #ifdef XINERAMA
 {
-	xcb_xinerama_is_active_reply_t *ia =
-	    xcb_xinerama_is_active_reply(xc, xcb_xinerama_is_active(xc), NULL);
+	xcb_xinerama_is_active_reply_t *ia = xcb_xinerama_is_active_reply(
+	    g_plat.xc, xcb_xinerama_is_active(g_plat.xc), NULL);
 	int xin_active = ia && ia->state;
 	free(ia);
 	if (xin_active) {
@@ -788,7 +800,7 @@ xinerama_fallback:
 		Client                             *c;
 		xcb_xinerama_query_screens_reply_t *qi =
 		    xcb_xinerama_query_screens_reply(
-		        xc, xcb_xinerama_query_screens(xc), NULL);
+		        g_plat.xc, xcb_xinerama_query_screens(g_plat.xc), NULL);
 		xcb_xinerama_screen_info_t *info =
 		    xcb_xinerama_query_screens_screen_info(qi);
 		nn = xcb_xinerama_query_screens_screen_info_length(qi);
@@ -852,15 +864,16 @@ default_monitor:
 		if (!createmon())
 			die("awm: createmon failed: monitor count exceeds tag count");
 	}
-	if (g_awm.monitors[0].mw != sw || g_awm.monitors[0].mh != sh) {
+	if (g_awm.monitors[0].mw != g_plat.sw ||
+	    g_awm.monitors[0].mh != g_plat.sh) {
 		dirty                = 1;
-		g_awm.monitors[0].mw = g_awm.monitors[0].ww = sw;
-		g_awm.monitors[0].mh = g_awm.monitors[0].wh = sh;
+		g_awm.monitors[0].mw = g_awm.monitors[0].ww = g_plat.sw;
+		g_awm.monitors[0].mh = g_awm.monitors[0].wh = g_plat.sh;
 		updatebarpos(&g_awm.monitors[0]);
 	}
 geom_done:
 	if (dirty) {
-		g_awm_set_selmon(wintomon(root));
+		g_awm_set_selmon(wintomon(g_plat.root));
 	}
 	assert(g_awm.n_monitors >= 0 && g_awm.n_monitors <= WMSTATE_MAX_MONITORS);
 	wmstate_update();
@@ -884,7 +897,7 @@ wintomon(xcb_window_t w)
 	Client  *c;
 	Monitor *m;
 
-	if (w == root && getrootptr(&x, &y))
+	if (w == g_plat.root && getrootptr(&x, &y))
 		return recttomon(x, y, 1, 1);
 	FOR_EACH_MON(m)
 	if (w == m->barwin)

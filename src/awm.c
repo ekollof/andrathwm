@@ -60,25 +60,11 @@ xcb_window_t launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
 static GMainContext *ui_ctx   = NULL; /* GMainContext used by run() — kept for
                                        * the respawn timer callback */
 char         stext[STATUS_TEXT_LEN];
-int          screen;
-int          sw, sh;             /* X display screen geometry width, height */
-int          bh;                 /* bar height */
-int          lrpad;              /* sum of left and right padding for text */
 int          awm_tagslength = 0; /* = TAGSLENGTH; set in setup() */
-double       ui_dpi         = 96.0; /* resolved screen DPI */
-double       ui_scale       = 1.0;  /* ui_dpi / 96.0 */
-unsigned int ui_borderpx    = 1;    /* borderpx * ui_scale — set in setup() */
-unsigned int ui_snap        = 32;   /* snap     * ui_scale — set in setup() */
-unsigned int ui_iconsize    = 16;   /* iconsize * ui_scale — set in setup() */
-unsigned int ui_gappx       = 5;    /* gappx[0] * ui_scale — set in setup() */
-unsigned int numlockmask    = 0;
 static guint xsource_id     = 0; /* GLib source ID for the X11 event source */
 #ifdef STATUSNOTIFIER
 static guint dbus_src_id   = 0; /* GLib source ID for the D-Bus fd source */
 static guint dbus_retry_id = 0; /* GLib source ID for the reconnect timer */
-#endif
-#ifdef XRANDR
-int randrbase, rrerrbase;
 #endif
 void (*handler[LASTEvent])(xcb_generic_event_t *) = {
 	[XCB_BUTTON_PRESS]      = buttonpress,
@@ -99,17 +85,12 @@ void (*handler[LASTEvent])(xcb_generic_event_t *) = {
 	[XCB_RESIZE_REQUEST]    = resizerequest,
 	[XCB_UNMAP_NOTIFY]      = unmapnotify,
 };
-xcb_atom_t         wmatom[WMLast], netatom[NetLast], xatom[XLast];
-xcb_atom_t         utf8string_atom; /* UTF8_STRING — used in setup() */
-int                restart         = 0;
-int                barsdirty       = 0;
-xcb_timestamp_t    last_event_time = XCB_CURRENT_TIME;
-Cur               *cursor[CurLast];
-Clr              **scheme;
-xcb_connection_t  *xc;
-Drw               *drw;
-xcb_window_t       root, wmcheckwin;
-xcb_key_symbols_t *keysyms;
+int             restart         = 0;
+int             barsdirty       = 0;
+xcb_timestamp_t last_event_time = XCB_CURRENT_TIME;
+Cur            *cursor[CurLast];
+Clr           **scheme;
+Drw            *drw;
 
 /* ---- compile-time invariants ---- */
 _Static_assert(LENGTH(tags) <= 31,
@@ -142,7 +123,7 @@ cleanup(void)
 	g_awm_selmon->lt[g_awm_selmon->sellt] = &foo;
 	while (g_awm.stack_head)
 		unmanage(g_awm.stack_head, 0);
-	xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
+	xcb_ungrab_key(g_plat.xc, XCB_GRAB_ANY, g_plat.root, XCB_MOD_MASK_ANY);
 	assert(g_awm.n_monitors >= 0);
 	while (g_awm.n_monitors)
 		cleanupmon(&g_awm.monitors[0]);
@@ -155,9 +136,9 @@ cleanup(void)
 			ic = next;
 		}
 		if (systray->colormap)
-			xcb_free_colormap(xc, systray->colormap);
-		xcb_unmap_window(xc, systray->win);
-		xcb_destroy_window(xc, systray->win);
+			xcb_free_colormap(g_plat.xc, systray->colormap);
+		xcb_unmap_window(g_plat.xc, systray->win);
+		xcb_destroy_window(g_plat.xc, systray->win);
 		free(systray);
 		systray = NULL;
 	}
@@ -183,14 +164,15 @@ cleanup(void)
 	for (i = 0; i < LENGTH(colors); i++)
 		free(scheme[i]);
 	free(scheme);
-	xcb_destroy_window(xc, wmcheckwin);
+	xcb_destroy_window(g_plat.xc, g_plat.wmcheckwin);
 	drw_free(drw);
-	xcb_key_symbols_free(keysyms);
-	keysyms = NULL;
+	xcb_key_symbols_free(g_plat.keysyms);
+	g_plat.keysyms = NULL;
 	xflush();
-	xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT,
+	xcb_set_input_focus(g_plat.xc, XCB_INPUT_FOCUS_POINTER_ROOT,
 	    XCB_INPUT_FOCUS_POINTER_ROOT, XCB_CURRENT_TIME);
-	xcb_delete_property(xc, root, netatom[NetActiveWindow]);
+	xcb_delete_property(
+	    g_plat.xc, g_plat.root, g_plat.netatom[NetActiveWindow]);
 	if (xsource_id > 0) {
 		g_source_remove(xsource_id);
 		xsource_id = 0;
@@ -309,7 +291,7 @@ ui_send_theme(void)
 	if (fonts[0])
 		snprintf(p.font, sizeof(p.font), "%s", fonts[0]);
 
-	p.dpi = ui_dpi;
+	p.dpi = g_plat.ui_dpi;
 
 	ui_send_inline(UI_MSG_THEME, &p, sizeof(p));
 }
@@ -435,7 +417,8 @@ bar_hover_enter(Monitor *m)
 			unsigned int k;
 			for (k = 0; k < count; k++)
 				if (entries[k].pixmap_xid)
-					xcb_free_pixmap(xc, (xcb_pixmap_t) entries[k].pixmap_xid);
+					xcb_free_pixmap(
+					    g_plat.xc, (xcb_pixmap_t) entries[k].pixmap_xid);
 		}
 		free(entries);
 		return;
@@ -443,7 +426,7 @@ bar_hover_enter(Monitor *m)
 
 	/* anchor_x/y: centre of the hovered bar window */
 	hdr.anchor_x = (int32_t) (m->mx + m->ww / 2);
-	hdr.anchor_y = (int32_t) (m->by + bh / 2);
+	hdr.anchor_y = (int32_t) (m->by + g_plat.bh / 2);
 	hdr.count    = count;
 	memcpy(shm_buf, &hdr, sizeof(hdr));
 	memcpy(shm_buf + sizeof(hdr), entries, count * sizeof(UiPreviewEntry));
@@ -455,7 +438,7 @@ bar_hover_enter(Monitor *m)
 		unsigned int    k;
 		for (k = 0; k < count; k++)
 			if (ep[k].pixmap_xid)
-				xcb_free_pixmap(xc, (xcb_pixmap_t) ep[k].pixmap_xid);
+				xcb_free_pixmap(g_plat.xc, (xcb_pixmap_t) ep[k].pixmap_xid);
 	}
 	free(shm_buf);
 #else
@@ -514,8 +497,8 @@ launchermenu(const Arg *arg)
 		int      win_w, win_h, lx, ly;
 		uint32_t pre_vals[2];
 
-		win_w = (int) (420.0 * ui_dpi / 96.0 + 0.5);
-		win_h = (int) (400.0 * ui_dpi / 96.0 + 0.5);
+		win_w = (int) (420.0 * g_plat.ui_dpi / 96.0 + 0.5);
+		win_h = (int) (400.0 * g_plat.ui_dpi / 96.0 + 0.5);
 		lx    = m->wx + (m->ww - win_w) / 2;
 		ly    = m->wy + (m->wh - win_h) / 2;
 		if (lx < m->wx)
@@ -524,20 +507,20 @@ launchermenu(const Arg *arg)
 			ly = m->wy;
 		pre_vals[0] = (uint32_t) lx;
 		pre_vals[1] = (uint32_t) ly;
-		xcb_configure_window(xc, launcher_xwin,
+		xcb_configure_window(g_plat.xc, launcher_xwin,
 		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, pre_vals);
 		/* Synchronous round-trip: ensures the ConfigureWindow is processed
 		 * by the X server before UI_MSG_LAUNCHER_SHOW causes the MapWindow
 		 * to arrive.  xcb_get_input_focus is a cheap no-op for this. */
 		{
-			xcb_get_input_focus_cookie_t fck = xcb_get_input_focus(xc);
+			xcb_get_input_focus_cookie_t fck = xcb_get_input_focus(g_plat.xc);
 			xcb_get_input_focus_reply_t *fr =
-			    xcb_get_input_focus_reply(xc, fck, NULL);
+			    xcb_get_input_focus_reply(g_plat.xc, fck, NULL);
 			free(fr);
 		}
 		awm_debug("launchermenu: pre-positioned xwin=0x%x to %d,%d"
 		          " (win=%dx%d dpi=%.1f)",
-		    (unsigned) launcher_xwin, lx, ly, win_w, win_h, ui_dpi);
+		    (unsigned) launcher_xwin, lx, ly, win_w, win_h, g_plat.ui_dpi);
 	}
 
 	/* Send the monitor workarea; awm-ui computes the centred position using
@@ -571,7 +554,7 @@ x_dispatch_cb(gpointer user_data)
 	xcb_generic_event_t *ev;
 	(void) user_data;
 
-	while ((ev = xcb_poll_for_event(xc))) {
+	while ((ev = xcb_poll_for_event(g_plat.xc))) {
 		uint8_t type = ev->response_type & ~0x80;
 
 		/* XCB delivers async errors as packets with response_type == 0 */
@@ -582,18 +565,19 @@ x_dispatch_cb(gpointer user_data)
 		}
 
 #ifdef XRANDR
-		if (type == (uint8_t) (randrbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY)) {
+		if (type ==
+		    (uint8_t) (g_plat.randrbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY)) {
 			/* Update virtual screen dimensions from the event payload before
 			 * calling updategeom(), mirroring what configurenotify() does
 			 * for the root ConfigureNotify path. */
 			{
 				xcb_randr_screen_change_notify_event_t *rrev =
 				    (xcb_randr_screen_change_notify_event_t *) ev;
-				sw = (int) rrev->width;
-				sh = (int) rrev->height;
+				g_plat.sw = (int) rrev->width;
+				g_plat.sh = (int) rrev->height;
 			}
 			updategeom();
-			drw_resize(drw, sw, bh);
+			drw_resize(drw, g_plat.sw, g_plat.bh);
 			updatebars();
 			{
 				Monitor *m;
@@ -823,9 +807,9 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 		 * UI_MSG_LAUNCHER_SHOW was sent, so no coordinate work is needed
 		 * here — just set input focus. */
 		if (launcher_xwin) {
-			xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT,
+			xcb_set_input_focus(g_plat.xc, XCB_INPUT_FOCUS_POINTER_ROOT,
 			    launcher_xwin, XCB_CURRENT_TIME);
-			xcb_flush(xc);
+			xcb_flush(g_plat.xc);
 		}
 		break;
 	case UI_MSG_PREVIEW_FOCUS: {
@@ -847,9 +831,9 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 					view(&a);
 				}
 				focus(c);
-				xcb_warp_pointer(xc, XCB_WINDOW_NONE, c->win, 0, 0, 0, 0,
-				    (int16_t) (c->w / 2), (int16_t) (c->h / 2));
-				xcb_flush(xc);
+				xcb_warp_pointer(g_plat.xc, XCB_WINDOW_NONE, c->win, 0, 0, 0,
+				    0, (int16_t) (c->w / 2), (int16_t) (c->h / 2));
+				xcb_flush(g_plat.xc);
 			}
 		}
 		break;
@@ -864,9 +848,9 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 			memcpy(&dp, payload, sizeof(dp));
 			for (k = 0; k < dp.count && k < 32; k++) {
 				if (dp.xids[k])
-					xcb_free_pixmap(xc, (xcb_pixmap_t) dp.xids[k]);
+					xcb_free_pixmap(g_plat.xc, (xcb_pixmap_t) dp.xids[k]);
 			}
-			xcb_flush(xc);
+			xcb_flush(g_plat.xc);
 		}
 		break;
 	}
@@ -956,8 +940,8 @@ ui_spawn(GMainContext *ctx)
 
 		/* Close the XCB connection fd so awm's X connection doesn't
 		 * leak into awm-ui.  awm-ui uses GDK's own X connection. */
-		if (xc)
-			close(xcb_get_file_descriptor(xc));
+		if (g_plat.xc)
+			close(xcb_get_file_descriptor(g_plat.xc));
 
 		/* Force GDK to use the X11 backend.  If awm is running inside
 		 * a Wayland session WAYLAND_DISPLAY is set in the environment
@@ -1025,7 +1009,7 @@ run(void)
 	ui_ctx = ctx; /* store for respawn timer callback */
 
 	/* X11 source — wakes the loop whenever X events are pending */
-	xsource_id = xsource_attach(xc, ctx, x_dispatch_cb, NULL);
+	xsource_id = xsource_attach(g_plat.xc, ctx, x_dispatch_cb, NULL);
 
 #ifdef STATUSNOTIFIER
 	/* D-Bus source — use helper so reconnect can re-attach cleanly */
@@ -1048,8 +1032,8 @@ scan(void)
 {
 	unsigned int i;
 
-	xcb_query_tree_cookie_t ck = xcb_query_tree(xc, root);
-	xcb_query_tree_reply_t *tr = xcb_query_tree_reply(xc, ck, NULL);
+	xcb_query_tree_cookie_t ck = xcb_query_tree(g_plat.xc, g_plat.root);
+	xcb_query_tree_reply_t *tr = xcb_query_tree_reply(g_plat.xc, ck, NULL);
 	if (!tr)
 		return;
 
@@ -1059,9 +1043,9 @@ scan(void)
 	/* first pass: non-transients */
 	for (i = 0; i < (unsigned int) num; i++) {
 		xcb_get_window_attributes_cookie_t wck =
-		    xcb_get_window_attributes(xc, wins[i]);
+		    xcb_get_window_attributes(g_plat.xc, wins[i]);
 		xcb_get_window_attributes_reply_t *wr =
-		    xcb_get_window_attributes_reply(xc, wck, NULL);
+		    xcb_get_window_attributes_reply(g_plat.xc, wck, NULL);
 		if (!wr)
 			continue;
 		int override  = wr->override_redirect;
@@ -1069,24 +1053,26 @@ scan(void)
 		free(wr);
 		xcb_window_t trans = XCB_WINDOW_NONE;
 		if (override ||
-		    xcb_icccm_get_wm_transient_for_reply(
-		        xc, xcb_icccm_get_wm_transient_for(xc, wins[i]), &trans, NULL))
+		    xcb_icccm_get_wm_transient_for_reply(g_plat.xc,
+		        xcb_icccm_get_wm_transient_for(g_plat.xc, wins[i]), &trans,
+		        NULL))
 			continue;
 		if (map_state == XCB_MAP_STATE_VIEWABLE ||
 		    getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC) {
 			/* Skip XEMBED clients (systray icons reparented back to
 			 * root when the systray container was destroyed on restart) */
-			xcb_get_property_reply_t *xer       = xcb_get_property_reply(xc,
-			          xcb_get_property(xc, 0, wins[i],
-			              (xcb_atom_t) xatom[XembedInfo], XCB_ATOM_ANY, 0, 2),
-			          NULL);
+			xcb_get_property_reply_t *xer = xcb_get_property_reply(g_plat.xc,
+			    xcb_get_property(g_plat.xc, 0, wins[i],
+			        (xcb_atom_t) g_plat.xatom[XembedInfo], XCB_ATOM_ANY, 0, 2),
+			    NULL);
 			int                       is_xembed = xer && xer->length > 0;
 			free(xer);
 			if (is_xembed)
 				continue;
-			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
+			xcb_get_geometry_cookie_t gck =
+			    xcb_get_geometry(g_plat.xc, wins[i]);
 			xcb_get_geometry_reply_t *gr =
-			    xcb_get_geometry_reply(xc, gck, NULL);
+			    xcb_get_geometry_reply(g_plat.xc, gck, NULL);
 			if (gr) {
 				manage(wins[i], gr);
 				free(gr);
@@ -1096,30 +1082,32 @@ scan(void)
 	/* second pass: transients */
 	for (i = 0; i < (unsigned int) num; i++) {
 		xcb_get_window_attributes_cookie_t wck =
-		    xcb_get_window_attributes(xc, wins[i]);
+		    xcb_get_window_attributes(g_plat.xc, wins[i]);
 		xcb_get_window_attributes_reply_t *wr =
-		    xcb_get_window_attributes_reply(xc, wck, NULL);
+		    xcb_get_window_attributes_reply(g_plat.xc, wck, NULL);
 		if (!wr)
 			continue;
 		int map_state = wr->map_state;
 		free(wr);
 		xcb_window_t trans = XCB_WINDOW_NONE;
-		if (xcb_icccm_get_wm_transient_for_reply(xc,
-		        xcb_icccm_get_wm_transient_for(xc, wins[i]), &trans, NULL) &&
+		if (xcb_icccm_get_wm_transient_for_reply(g_plat.xc,
+		        xcb_icccm_get_wm_transient_for(g_plat.xc, wins[i]), &trans,
+		        NULL) &&
 		    (map_state == XCB_MAP_STATE_VIEWABLE ||
 		        getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC)) {
 			/* Skip XEMBED clients here too */
-			xcb_get_property_reply_t *xer       = xcb_get_property_reply(xc,
-			          xcb_get_property(xc, 0, wins[i],
-			              (xcb_atom_t) xatom[XembedInfo], XCB_ATOM_ANY, 0, 2),
-			          NULL);
+			xcb_get_property_reply_t *xer = xcb_get_property_reply(g_plat.xc,
+			    xcb_get_property(g_plat.xc, 0, wins[i],
+			        (xcb_atom_t) g_plat.xatom[XembedInfo], XCB_ATOM_ANY, 0, 2),
+			    NULL);
 			int                       is_xembed = xer && xer->length > 0;
 			free(xer);
 			if (is_xembed)
 				continue;
-			xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, wins[i]);
+			xcb_get_geometry_cookie_t gck =
+			    xcb_get_geometry(g_plat.xc, wins[i]);
 			xcb_get_geometry_reply_t *gr =
-			    xcb_get_geometry_reply(xc, gck, NULL);
+			    xcb_get_geometry_reply(g_plat.xc, gck, NULL);
 			if (gr) {
 				manage(wins[i], gr);
 				free(gr);
@@ -1143,54 +1131,61 @@ intern_atoms(void)
 		xcb_atom_t *dest;
 		const char *name;
 	} tbl[] = {
-		{ &utf8string_atom, "UTF8_STRING" },
-		{ &wmatom[WMProtocols], "WM_PROTOCOLS" },
-		{ &wmatom[WMDelete], "WM_DELETE_WINDOW" },
-		{ &wmatom[WMState], "WM_STATE" },
-		{ &wmatom[WMTakeFocus], "WM_TAKE_FOCUS" },
-		{ &netatom[NetActiveWindow], "_NET_ACTIVE_WINDOW" },
-		{ &netatom[NetSupported], "_NET_SUPPORTED" },
-		{ &netatom[NetSystemTray], "_NET_SYSTEM_TRAY_S0" },
-		{ &netatom[NetSystemTrayOP], "_NET_SYSTEM_TRAY_OPCODE" },
-		{ &netatom[NetSystemTrayOrientation], "_NET_SYSTEM_TRAY_ORIENTATION" },
-		{ &netatom[NetSystemTrayOrientationHorz],
+		{ &g_plat.utf8string_atom, "UTF8_STRING" },
+		{ &g_plat.wmatom[WMProtocols], "WM_PROTOCOLS" },
+		{ &g_plat.wmatom[WMDelete], "WM_DELETE_WINDOW" },
+		{ &g_plat.wmatom[WMState], "WM_STATE" },
+		{ &g_plat.wmatom[WMTakeFocus], "WM_TAKE_FOCUS" },
+		{ &g_plat.netatom[NetActiveWindow], "_NET_ACTIVE_WINDOW" },
+		{ &g_plat.netatom[NetSupported], "_NET_SUPPORTED" },
+		{ &g_plat.netatom[NetSystemTray], "_NET_SYSTEM_TRAY_S0" },
+		{ &g_plat.netatom[NetSystemTrayOP], "_NET_SYSTEM_TRAY_OPCODE" },
+		{ &g_plat.netatom[NetSystemTrayOrientation],
+		    "_NET_SYSTEM_TRAY_ORIENTATION" },
+		{ &g_plat.netatom[NetSystemTrayOrientationHorz],
 		    "_NET_SYSTEM_TRAY_ORIENTATION_HORZ" },
-		{ &netatom[NetSystemTrayColors], "_NET_SYSTEM_TRAY_COLORS" },
-		{ &netatom[NetSystemTrayVisual], "_NET_SYSTEM_TRAY_VISUAL" },
-		{ &netatom[NetWMName], "_NET_WM_NAME" },
-		{ &netatom[NetWMIcon], "_NET_WM_ICON" },
-		{ &netatom[NetWMState], "_NET_WM_STATE" },
-		{ &netatom[NetWMCheck], "_NET_SUPPORTING_WM_CHECK" },
-		{ &netatom[NetWMFullscreen], "_NET_WM_STATE_FULLSCREEN" },
-		{ &netatom[NetWMStateDemandsAttention],
+		{ &g_plat.netatom[NetSystemTrayColors], "_NET_SYSTEM_TRAY_COLORS" },
+		{ &g_plat.netatom[NetSystemTrayVisual], "_NET_SYSTEM_TRAY_VISUAL" },
+		{ &g_plat.netatom[NetWMName], "_NET_WM_NAME" },
+		{ &g_plat.netatom[NetWMIcon], "_NET_WM_ICON" },
+		{ &g_plat.netatom[NetWMState], "_NET_WM_STATE" },
+		{ &g_plat.netatom[NetWMCheck], "_NET_SUPPORTING_WM_CHECK" },
+		{ &g_plat.netatom[NetWMFullscreen], "_NET_WM_STATE_FULLSCREEN" },
+		{ &g_plat.netatom[NetWMStateDemandsAttention],
 		    "_NET_WM_STATE_DEMANDS_ATTENTION" },
-		{ &netatom[NetWMStateSticky], "_NET_WM_STATE_STICKY" },
-		{ &netatom[NetWMStateAbove], "_NET_WM_STATE_ABOVE" },
-		{ &netatom[NetWMStateBelow], "_NET_WM_STATE_BELOW" },
-		{ &netatom[NetWMStateHidden], "_NET_WM_STATE_HIDDEN" },
-		{ &netatom[NetWMWindowType], "_NET_WM_WINDOW_TYPE" },
-		{ &netatom[NetWMWindowTypeDialog], "_NET_WM_WINDOW_TYPE_DIALOG" },
-		{ &netatom[NetWMWindowTypeDock], "_NET_WM_WINDOW_TYPE_DOCK" },
-		{ &netatom[NetWMWindowTypeToolbar], "_NET_WM_WINDOW_TYPE_TOOLBAR" },
-		{ &netatom[NetWMWindowTypeUtility], "_NET_WM_WINDOW_TYPE_UTILITY" },
-		{ &netatom[NetWMWindowTypeSplash], "_NET_WM_WINDOW_TYPE_SPLASH" },
-		{ &netatom[NetClientList], "_NET_CLIENT_LIST" },
-		{ &netatom[NetClientListStacking], "_NET_CLIENT_LIST_STACKING" },
-		{ &netatom[NetWMDesktop], "_NET_WM_DESKTOP" },
-		{ &netatom[NetWMPid], "_NET_WM_PID" },
-		{ &netatom[NetDesktopViewport], "_NET_DESKTOP_VIEWPORT" },
-		{ &netatom[NetNumberOfDesktops], "_NET_NUMBER_OF_DESKTOPS" },
-		{ &netatom[NetCurrentDesktop], "_NET_CURRENT_DESKTOP" },
-		{ &netatom[NetDesktopNames], "_NET_DESKTOP_NAMES" },
-		{ &netatom[NetWorkarea], "_NET_WORKAREA" },
-		{ &netatom[NetCloseWindow], "_NET_CLOSE_WINDOW" },
-		{ &netatom[NetMoveResizeWindow], "_NET_MOVERESIZE_WINDOW" },
-		{ &netatom[NetFrameExtents], "_NET_FRAME_EXTENTS" },
-		{ &netatom[NetWMWindowOpacity], "_NET_WM_WINDOW_OPACITY" },
-		{ &netatom[NetWMBypassCompositor], "_NET_WM_BYPASS_COMPOSITOR" },
-		{ &xatom[Manager], "MANAGER" },
-		{ &xatom[Xembed], "_XEMBED" },
-		{ &xatom[XembedInfo], "_XEMBED_INFO" },
+		{ &g_plat.netatom[NetWMStateSticky], "_NET_WM_STATE_STICKY" },
+		{ &g_plat.netatom[NetWMStateAbove], "_NET_WM_STATE_ABOVE" },
+		{ &g_plat.netatom[NetWMStateBelow], "_NET_WM_STATE_BELOW" },
+		{ &g_plat.netatom[NetWMStateHidden], "_NET_WM_STATE_HIDDEN" },
+		{ &g_plat.netatom[NetWMWindowType], "_NET_WM_WINDOW_TYPE" },
+		{ &g_plat.netatom[NetWMWindowTypeDialog],
+		    "_NET_WM_WINDOW_TYPE_DIALOG" },
+		{ &g_plat.netatom[NetWMWindowTypeDock], "_NET_WM_WINDOW_TYPE_DOCK" },
+		{ &g_plat.netatom[NetWMWindowTypeToolbar],
+		    "_NET_WM_WINDOW_TYPE_TOOLBAR" },
+		{ &g_plat.netatom[NetWMWindowTypeUtility],
+		    "_NET_WM_WINDOW_TYPE_UTILITY" },
+		{ &g_plat.netatom[NetWMWindowTypeSplash],
+		    "_NET_WM_WINDOW_TYPE_SPLASH" },
+		{ &g_plat.netatom[NetClientList], "_NET_CLIENT_LIST" },
+		{ &g_plat.netatom[NetClientListStacking],
+		    "_NET_CLIENT_LIST_STACKING" },
+		{ &g_plat.netatom[NetWMDesktop], "_NET_WM_DESKTOP" },
+		{ &g_plat.netatom[NetWMPid], "_NET_WM_PID" },
+		{ &g_plat.netatom[NetDesktopViewport], "_NET_DESKTOP_VIEWPORT" },
+		{ &g_plat.netatom[NetNumberOfDesktops], "_NET_NUMBER_OF_DESKTOPS" },
+		{ &g_plat.netatom[NetCurrentDesktop], "_NET_CURRENT_DESKTOP" },
+		{ &g_plat.netatom[NetDesktopNames], "_NET_DESKTOP_NAMES" },
+		{ &g_plat.netatom[NetWorkarea], "_NET_WORKAREA" },
+		{ &g_plat.netatom[NetCloseWindow], "_NET_CLOSE_WINDOW" },
+		{ &g_plat.netatom[NetMoveResizeWindow], "_NET_MOVERESIZE_WINDOW" },
+		{ &g_plat.netatom[NetFrameExtents], "_NET_FRAME_EXTENTS" },
+		{ &g_plat.netatom[NetWMWindowOpacity], "_NET_WM_WINDOW_OPACITY" },
+		{ &g_plat.netatom[NetWMBypassCompositor],
+		    "_NET_WM_BYPASS_COMPOSITOR" },
+		{ &g_plat.xatom[Manager], "MANAGER" },
+		{ &g_plat.xatom[Xembed], "_XEMBED" },
+		{ &g_plat.xatom[XembedInfo], "_XEMBED_INFO" },
 	};
 	static const int N = (int) (sizeof tbl / sizeof tbl[0]);
 
@@ -1203,12 +1198,12 @@ intern_atoms(void)
 	/* Fire all requests — no round-trip yet. */
 	for (i = 0; i < N; i++) {
 		uint16_t nlen = (uint16_t) strlen(tbl[i].name);
-		cookies[i]    = xcb_intern_atom(xc, 0, nlen, tbl[i].name);
+		cookies[i]    = xcb_intern_atom(g_plat.xc, 0, nlen, tbl[i].name);
 	}
 
 	/* Collect replies — one round-trip covers all. */
 	for (i = 0; i < N; i++) {
-		reply = xcb_intern_atom_reply(xc, cookies[i], NULL);
+		reply = xcb_intern_atom_reply(g_plat.xc, cookies[i], NULL);
 		if (reply) {
 			*tbl[i].dest = reply->atom;
 			free(reply);
@@ -1237,51 +1232,52 @@ setup(void)
 	/* init screen — screen number comes from xcb_connect() second arg */
 	{
 		xcb_screen_iterator_t sit =
-		    xcb_setup_roots_iterator(xcb_get_setup(xc));
+		    xcb_setup_roots_iterator(xcb_get_setup(g_plat.xc));
 		int i;
-		for (i = 0; i < screen; i++)
+		for (i = 0; i < g_plat.screen; i++)
 			xcb_screen_next(&sit);
-		sw   = (int) sit.data->width_in_pixels;
-		sh   = (int) sit.data->height_in_pixels;
-		root = sit.data->root;
+		g_plat.sw   = (int) sit.data->width_in_pixels;
+		g_plat.sh   = (int) sit.data->height_in_pixels;
+		g_plat.root = sit.data->root;
 	}
 	/* clients_head and stack_head are inline zero-initialised in g_awm */
 	/* drw uses a dedicated bare xcb_connection_t (opened inside drw_create)
 	 * for all cairo rendering, keeping its XCB traffic off xc. */
-	drw = drw_create(xc, screen, root, sw, sh);
+	drw = drw_create(
+	    g_plat.xc, g_plat.screen, g_plat.root, g_plat.sw, g_plat.sh);
 	assert(drw != NULL);
 	if (!drw_fontset_create(drw, fonts, LENGTH(fonts)))
 		die("no fonts could be loaded.");
 	assert(drw->fonts != NULL);
-	lrpad = drw->fonts->h;
-	bh    = drw->fonts->h + 2;
+	g_plat.lrpad = drw->fonts->h;
+	g_plat.bh    = drw->fonts->h + 2;
 	/* Scale pixel geometry constants by the resolved DPI factor */
-	ui_borderpx = (unsigned int) (borderpx * ui_scale + 0.5);
-	ui_snap     = (unsigned int) (snap * ui_scale + 0.5);
-	ui_iconsize = (unsigned int) (iconsize * ui_scale + 0.5);
-	ui_gappx    = (unsigned int) (gappx[0] * ui_scale + 0.5);
-	if (ui_borderpx < 1 && borderpx > 0)
-		ui_borderpx = 1;
-	if (ui_gappx < 1 && gappx[0] > 0)
-		ui_gappx = 1;
+	g_plat.ui_borderpx = (unsigned int) (borderpx * g_plat.ui_scale + 0.5);
+	g_plat.ui_snap     = (unsigned int) (snap * g_plat.ui_scale + 0.5);
+	g_plat.ui_iconsize = (unsigned int) (iconsize * g_plat.ui_scale + 0.5);
+	g_plat.ui_gappx    = (unsigned int) (gappx[0] * g_plat.ui_scale + 0.5);
+	if (g_plat.ui_borderpx < 1 && borderpx > 0)
+		g_plat.ui_borderpx = 1;
+	if (g_plat.ui_gappx < 1 && gappx[0] > 0)
+		g_plat.ui_gappx = 1;
 	updategeom();
 	/* Enable RandR screen change notifications */
 #ifdef XRANDR
 	{
 		const xcb_query_extension_reply_t *ext =
-		    xcb_get_extension_data(xc, &xcb_randr_id);
+		    xcb_get_extension_data(g_plat.xc, &xcb_randr_id);
 		if (ext && ext->present) {
-			randrbase = ext->first_event;
-			rrerrbase = ext->first_error;
+			g_plat.randrbase = ext->first_event;
+			g_plat.rrerrbase = ext->first_error;
 			xcb_randr_select_input(
-			    xc, root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE);
+			    g_plat.xc, g_plat.root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE);
 		}
 	}
 #endif
 	/* init atoms — all interned in a single async XCB batch */
 	intern_atoms();
 	/* init key symbols table */
-	keysyms = xcb_key_symbols_alloc(xc);
+	g_plat.keysyms = xcb_key_symbols_alloc(g_plat.xc);
 	/* init cursors */
 	cursor[CurNormal] = drw_cur_create(drw, 68);  /* XC_left_ptr */
 	cursor[CurResize] = drw_cur_create(drw, 120); /* XC_sizing */
@@ -1298,20 +1294,22 @@ setup(void)
 	updatestatus();
 	/* supporting window for NetWMCheck */
 	{
-		wmcheckwin = xcb_generate_id(xc);
-		xcb_create_window(xc, XCB_COPY_FROM_PARENT, wmcheckwin, root, 0, 0, 1,
-		    1, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, 0,
-		    NULL);
+		g_plat.wmcheckwin = xcb_generate_id(g_plat.xc);
+		xcb_create_window(g_plat.xc, XCB_COPY_FROM_PARENT, g_plat.wmcheckwin,
+		    g_plat.root, 0, 0, 1, 1, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+		    XCB_COPY_FROM_PARENT, 0, NULL);
 	}
 	{
-		uint32_t win32 = (uint32_t) wmcheckwin;
+		uint32_t win32 = (uint32_t) g_plat.wmcheckwin;
 
-		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, wmcheckwin,
-		    netatom[NetWMCheck], XCB_ATOM_WINDOW, 32, 1, &win32);
-		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, wmcheckwin,
-		    netatom[NetWMName], utf8string_atom, 8, 3, "awm");
-		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
-		    netatom[NetWMCheck], XCB_ATOM_WINDOW, 32, 1, &win32);
+		xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE,
+		    g_plat.wmcheckwin, g_plat.netatom[NetWMCheck], XCB_ATOM_WINDOW, 32,
+		    1, &win32);
+		xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE,
+		    g_plat.wmcheckwin, g_plat.netatom[NetWMName],
+		    g_plat.utf8string_atom, 8, 3, "awm");
+		xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, g_plat.root,
+		    g_plat.netatom[NetWMCheck], XCB_ATOM_WINDOW, 32, 1, &win32);
 
 		/* EWMH support per view — netatom[] is Atom=unsigned long, need
 		 * uint32_t array for XCB format-32 */
@@ -1319,12 +1317,14 @@ setup(void)
 			xcb_atom_t supported[NetLast];
 			int        k;
 			for (k = 0; k < NetLast; k++)
-				supported[k] = (xcb_atom_t) netatom[k];
-			xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
-			    netatom[NetSupported], XCB_ATOM_ATOM, 32, NetLast, supported);
+				supported[k] = (xcb_atom_t) g_plat.netatom[k];
+			xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, g_plat.root,
+			    g_plat.netatom[NetSupported], XCB_ATOM_ATOM, 32, NetLast,
+			    supported);
 		}
 
-		xcb_delete_property(xc, root, netatom[NetClientList]);
+		xcb_delete_property(
+		    g_plat.xc, g_plat.root, g_plat.netatom[NetClientList]);
 	}
 	setnumdesktops();
 	setcurrentdesktop();
@@ -1344,9 +1344,11 @@ setup(void)
 		    XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_ENTER_WINDOW |
 		    XCB_EVENT_MASK_LEAVE_WINDOW | XCB_EVENT_MASK_STRUCTURE_NOTIFY |
 		    XCB_EVENT_MASK_PROPERTY_CHANGE;
-		xcb_change_window_attributes(xc, root, XCB_CW_EVENT_MASK, &evmask);
+		xcb_change_window_attributes(
+		    g_plat.xc, g_plat.root, XCB_CW_EVENT_MASK, &evmask);
 		uint32_t cur = (uint32_t) cursor[CurNormal]->cursor;
-		xcb_change_window_attributes(xc, root, XCB_CW_CURSOR, &cur);
+		xcb_change_window_attributes(
+		    g_plat.xc, g_plat.root, XCB_CW_CURSOR, &cur);
 	}
 	grabkeys();
 	focus(NULL);
@@ -1354,8 +1356,8 @@ setup(void)
 	icon_init();
 #ifdef STATUSNOTIFIER
 	/* Initialize StatusNotifier support */
-	if (!sni_init(xc, xc, drw->xcb_visual, root, drw, scheme,
-	        (unsigned int) (sniconsize * ui_scale + 0.5)))
+	if (!sni_init(g_plat.xc, g_plat.xc, drw->xcb_visual, g_plat.root, drw,
+	        scheme, (unsigned int) (sniconsize * g_plat.ui_scale + 0.5)))
 		awm_warn("Failed to initialize StatusNotifier support");
 #endif
 #ifdef COMPOSITOR
@@ -1455,7 +1457,7 @@ resolve_dpi(void)
 #ifdef XRANDR
 	/* Level 2: RandR physical size */
 	if (d <= 0.0) {
-		d = randr_probe_dpi(xc, screen);
+		d = randr_probe_dpi(g_plat.xc, g_plat.screen);
 		if (d > 0.0)
 			awm_info("DPI: using RandR physical size = %.1f", d);
 	}
@@ -1467,8 +1469,8 @@ resolve_dpi(void)
 		awm_info("DPI: falling back to 96");
 	}
 
-	ui_dpi   = d;
-	ui_scale = d / 96.0;
+	g_plat.ui_dpi   = d;
+	g_plat.ui_scale = d / 96.0;
 }
 
 int
@@ -1487,8 +1489,8 @@ main(int argc, char *argv[])
 		die("usage: awm [-v] [-s]");
 	if (!setlocale(LC_CTYPE, ""))
 		awm_warn("no locale support");
-	xc = xcb_connect(NULL, &screen);
-	if (!xc || xcb_connection_has_error(xc))
+	g_plat.xc = xcb_connect(NULL, &g_plat.screen);
+	if (!g_plat.xc || xcb_connection_has_error(g_plat.xc))
 		die("awm: cannot open X display");
 	/* Initialise GTK on the same X display.  GTK uses the DISPLAY env var
 	 * which must already be set (awm opens xc successfully just above).
@@ -1502,7 +1504,8 @@ main(int argc, char *argv[])
 	resolve_dpi();
 	{
 		char dpi_scale_str[32];
-		snprintf(dpi_scale_str, sizeof(dpi_scale_str), "%.6g", ui_dpi / 96.0);
+		snprintf(dpi_scale_str, sizeof(dpi_scale_str), "%.6g",
+		    g_plat.ui_dpi / 96.0);
 		setenv("GDK_DPI_SCALE", dpi_scale_str, 1);
 	}
 	gtk_init(&argc, &argv);
@@ -1552,6 +1555,6 @@ main(int argc, char *argv[])
 	}
 	cleanup();
 	log_cleanup();
-	xcb_disconnect(xc);
+	xcb_disconnect(g_plat.xc);
 	return EXIT_SUCCESS;
 }

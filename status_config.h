@@ -12,9 +12,7 @@
 #include "status_components.h"
 #include "status_util.h"
 
-/* bh is defined in awm.c; forward-declare so the s2d helpers can use the
- * real bar height instead of a hardcoded constant. */
-extern int bh;
+/* bh accessed via g_plat.bh (PlatformCtx, platform_x11.c) */
 
 struct status_arg {
 	const char *(*func)(const char *);
@@ -88,7 +86,7 @@ vbar_s2d(char *buf, size_t sz, int percent, int w, int h, const char *bg_col,
     const char *fg_col)
 {
 	int bar_h  = (percent * h) / 100;
-	int y_top  = (bh - h) / 2; /* centre bar vertically within bh */
+	int y_top  = (g_plat.bh - h) / 2; /* centre bar vertically within bh */
 	int y_fill = y_top + (h - bar_h);
 
 	if (bar_h < 0)
@@ -123,7 +121,7 @@ hbar_bordered_s2d(char *buf, size_t sz, int percent, int w, int h,
 	int fill_w  = (percent * inner_w) / 100;
 	int empty_w = inner_w - fill_w;
 	int y_border =
-	    (bh - h - 2) / 2; /* centre vertically, extra 2 for border */
+	    (g_plat.bh - h - 2) / 2; /* centre vertically, extra 2 for border */
 	int y_inner = y_border + 1;
 	/* nub: 3px wide, 4px tall, centred vertically */
 	int nub_h   = (h > 4) ? 4 : h;
@@ -184,7 +182,7 @@ s2d_cpu(const char *unused)
 {
 	int  cores[64];
 	int  n, i;
-	int  h   = bh - S2D_VBAR_PAD * 2;
+	int  h   = g_plat.bh - S2D_VBAR_PAD * 2;
 	int  pos = 0;
 	char fg_col[8];
 	int  ret;

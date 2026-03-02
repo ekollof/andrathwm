@@ -61,15 +61,15 @@ make_alpha_picture(double a)
 
 	fi = xcb_render_util_find_standard_format(
 	    comp.render_formats, XCB_PICT_STANDARD_A_8);
-	pix = xcb_generate_id(xc);
-	xcb_create_pixmap(xc, 8, pix, (xcb_drawable_t) root, 1, 1);
-	pic = xcb_generate_id(xc);
+	pix = xcb_generate_id(g_plat.xc);
+	xcb_create_pixmap(g_plat.xc, 8, pix, (xcb_drawable_t) g_plat.root, 1, 1);
+	pic = xcb_generate_id(g_plat.xc);
 	xcb_render_create_picture(
-	    xc, pic, (xcb_drawable_t) pix, fi ? fi->id : 0, mask, &val);
+	    g_plat.xc, pic, (xcb_drawable_t) pix, fi ? fi->id : 0, mask, &val);
 	col.alpha = (uint16_t) (a * 0xffff);
 	col.red = col.green = col.blue = 0;
-	xcb_render_fill_rectangles(xc, XCB_RENDER_PICT_OP_SRC, pic, col, 1, &r);
-	xcb_free_pixmap(xc, pix);
+	xcb_render_fill_rectangles(g_plat.xc, XCB_RENDER_PICT_OP_SRC, pic, col, 1, &r);
+	xcb_free_pixmap(g_plat.xc, pix);
 	return pic;
 }
 
@@ -87,7 +87,7 @@ xrender_init(void)
 	uint32_t                       pict_val;
 
 	pv = xcb_render_util_find_visual_format(
-	    comp.render_formats, xcb_screen_root_visual(xc, screen));
+	    comp.render_formats, xcb_screen_root_visual(g_plat.xc, g_plat.screen));
 	fmt = pv ? pv->format : 0;
 	if (!fmt) {
 		awm_warn("compositor/xrender: could not find picture format for "
@@ -99,8 +99,8 @@ xrender_init(void)
 	pict_val  = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;
 
 	/* Overlay target picture */
-	xr.target = xcb_generate_id(xc);
-	xcb_render_create_picture(xc, xr.target, (xcb_drawable_t) comp.overlay,
+	xr.target = xcb_generate_id(g_plat.xc);
+	xcb_render_create_picture(g_plat.xc, xr.target, (xcb_drawable_t) comp.overlay,
 	    fmt, pict_mask, &pict_val);
 
 	/* Back-buffer pixmap + picture */
@@ -108,12 +108,12 @@ xrender_init(void)
 		xcb_void_cookie_t    ck;
 		xcb_generic_error_t *perr;
 
-		xr.back_pixmap = xcb_generate_id(xc);
-		ck = xcb_create_pixmap_checked(xc, xcb_screen_root_depth(xc, screen),
-		    xr.back_pixmap, (xcb_drawable_t) root, (uint16_t) sw,
-		    (uint16_t) sh);
-		xcb_flush(xc);
-		perr = xcb_request_check(xc, ck);
+		xr.back_pixmap = xcb_generate_id(g_plat.xc);
+		ck = xcb_create_pixmap_checked(g_plat.xc, xcb_screen_root_depth(g_plat.xc, g_plat.screen),
+		    xr.back_pixmap, (xcb_drawable_t) g_plat.root, (uint16_t) g_plat.sw,
+		    (uint16_t) g_plat.sh);
+		xcb_flush(g_plat.xc);
+		perr = xcb_request_check(g_plat.xc, ck);
 		if (perr) {
 			awm_warn("compositor/xrender: back-buffer pixmap creation "
 			         "failed (error %d)",
@@ -124,8 +124,8 @@ xrender_init(void)
 		}
 	}
 
-	xr.back = xcb_generate_id(xc);
-	xcb_render_create_picture(xc, xr.back, (xcb_drawable_t) xr.back_pixmap,
+	xr.back = xcb_generate_id(g_plat.xc);
+	xcb_render_create_picture(g_plat.xc, xr.back, (xcb_drawable_t) xr.back_pixmap,
 	    fmt, pict_mask, &pict_val);
 
 	/* Alpha picture cache */
@@ -151,23 +151,23 @@ xrender_cleanup(void)
 	 * is called from compositor_cleanup().  The check below is a safety net
 	 * only; in normal operation xr.wallpaper_pict is already 0 here. */
 	if (xr.wallpaper_pict) {
-		xcb_render_free_picture(xc, xr.wallpaper_pict);
+		xcb_render_free_picture(g_plat.xc, xr.wallpaper_pict);
 		xr.wallpaper_pict = 0;
 	}
 	for (i = 0; i < 256; i++) {
 		if (xr.alpha_pict[i])
-			xcb_render_free_picture(xc, xr.alpha_pict[i]);
+			xcb_render_free_picture(g_plat.xc, xr.alpha_pict[i]);
 	}
 	if (xr.back) {
-		xcb_render_free_picture(xc, xr.back);
+		xcb_render_free_picture(g_plat.xc, xr.back);
 		xr.back = 0;
 	}
 	if (xr.back_pixmap) {
-		xcb_free_pixmap(xc, xr.back_pixmap);
+		xcb_free_pixmap(g_plat.xc, xr.back_pixmap);
 		xr.back_pixmap = 0;
 	}
 	if (xr.target) {
-		xcb_render_free_picture(xc, xr.target);
+		xcb_render_free_picture(g_plat.xc, xr.target);
 		xr.target = 0;
 	}
 }
@@ -185,7 +185,7 @@ xrender_apply_shape(CompWin *cw)
 		return;
 
 	if (!comp.has_xshape) {
-		xcb_xfixes_set_picture_clip_region(xc, cw->picture, XCB_NONE, 0, 0);
+		xcb_xfixes_set_picture_clip_region(g_plat.xc, cw->picture, XCB_NONE, 0, 0);
 		return;
 	}
 
@@ -196,23 +196,23 @@ xrender_apply_shape(CompWin *cw)
 		int                               nrects;
 
 		sck = xcb_shape_get_rectangles(
-		    xc, (xcb_window_t) cw->win, XCB_SHAPE_SK_BOUNDING);
-		sr     = xcb_shape_get_rectangles_reply(xc, sck, NULL);
+		    g_plat.xc, (xcb_window_t) cw->win, XCB_SHAPE_SK_BOUNDING);
+		sr     = xcb_shape_get_rectangles_reply(g_plat.xc, sck, NULL);
 		rects  = sr ? xcb_shape_get_rectangles_rectangles(sr) : NULL;
 		nrects = sr ? xcb_shape_get_rectangles_rectangles_length(sr) : 0;
 
 		if (!rects || nrects == 0) {
 			free(sr);
 			xcb_xfixes_set_picture_clip_region(
-			    xc, cw->picture, XCB_NONE, 0, 0);
+			    g_plat.xc, cw->picture, XCB_NONE, 0, 0);
 			return;
 		}
 
 		{
-			xcb_xfixes_region_t region = xcb_generate_id(xc);
-			xcb_xfixes_create_region(xc, region, (uint32_t) nrects, rects);
-			xcb_xfixes_set_picture_clip_region(xc, cw->picture, region, 0, 0);
-			xcb_xfixes_destroy_region(xc, region);
+			xcb_xfixes_region_t region = xcb_generate_id(g_plat.xc);
+			xcb_xfixes_create_region(g_plat.xc, region, (uint32_t) nrects, rects);
+			xcb_xfixes_set_picture_clip_region(g_plat.xc, cw->picture, region, 0, 0);
+			xcb_xfixes_destroy_region(g_plat.xc, region);
 		}
 		free(sr);
 	}
@@ -231,7 +231,7 @@ xrender_bind_pixmap(CompWin *cw)
 	assert(cw != NULL);
 
 	pv = xcb_render_util_find_visual_format(
-	    comp.render_formats, xcb_screen_root_visual(xc, screen));
+	    comp.render_formats, xcb_screen_root_visual(g_plat.xc, g_plat.screen));
 	fmt = pv ? pv->format : 0;
 	if (cw->argb) {
 		const xcb_render_pictforminfo_t *fi =
@@ -241,11 +241,11 @@ xrender_bind_pixmap(CompWin *cw)
 	}
 	pmask       = XCB_RENDER_CP_SUBWINDOW_MODE;
 	pval        = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;
-	cw->picture = xcb_generate_id(xc);
+	cw->picture = xcb_generate_id(g_plat.xc);
 	ck          = xcb_render_create_picture_checked(
-        xc, cw->picture, (xcb_drawable_t) cw->pixmap, fmt, pmask, &pval);
-	xcb_flush(xc);
-	err = xcb_request_check(xc, ck);
+        g_plat.xc, cw->picture, (xcb_drawable_t) cw->pixmap, fmt, pmask, &pval);
+	xcb_flush(g_plat.xc);
+	err = xcb_request_check(g_plat.xc, ck);
 	if (err) {
 		/* Picture creation failed — pixmap was likely destroyed between
 		 * comp_refresh_pixmap and here.  Free the unused XID and bail out
@@ -254,7 +254,7 @@ xrender_bind_pixmap(CompWin *cw)
 		         "(error %d) — window will not be painted",
 		    (unsigned) cw->win, (int) err->error_code);
 		free(err);
-		xcb_render_free_picture(xc, cw->picture);
+		xcb_render_free_picture(g_plat.xc, cw->picture);
 		cw->picture = 0;
 		return;
 	}
@@ -266,7 +266,7 @@ xrender_release_pixmap(CompWin *cw)
 {
 	assert(cw != NULL);
 	if (cw->picture) {
-		xcb_render_free_picture(xc, cw->picture);
+		xcb_render_free_picture(g_plat.xc, cw->picture);
 		cw->picture = 0;
 	}
 }
@@ -279,7 +279,7 @@ static void
 xrender_release_wallpaper(void)
 {
 	if (xr.wallpaper_pict) {
-		xcb_render_free_picture(xc, xr.wallpaper_pict);
+		xcb_render_free_picture(g_plat.xc, xr.wallpaper_pict);
 		xr.wallpaper_pict = 0;
 	}
 }
@@ -295,21 +295,21 @@ xrender_update_wallpaper(void)
 	xcb_generic_error_t           *err;
 
 	pv = xcb_render_util_find_visual_format(
-	    comp.render_formats, xcb_screen_root_visual(xc, screen));
+	    comp.render_formats, xcb_screen_root_visual(g_plat.xc, g_plat.screen));
 	fmt   = pv ? pv->format : 0;
 	pmask = XCB_RENDER_CP_REPEAT;
 	pval  = XCB_RENDER_REPEAT_NORMAL;
 
-	xr.wallpaper_pict = xcb_generate_id(xc);
-	ck = xcb_render_create_picture_checked(xc, xr.wallpaper_pict,
+	xr.wallpaper_pict = xcb_generate_id(g_plat.xc);
+	ck = xcb_render_create_picture_checked(g_plat.xc, xr.wallpaper_pict,
 	    (xcb_drawable_t) comp.wallpaper_pixmap, fmt, pmask, &pval);
-	xcb_flush(xc);
-	err = xcb_request_check(xc, ck);
+	xcb_flush(g_plat.xc);
+	err = xcb_request_check(g_plat.xc, ck);
 	if (err) {
 		awm_warn("compositor/xrender: wallpaper picture creation failed "
 		         "(error %d); background will be black",
 		    (int) err->error_code);
-		xcb_render_free_picture(xc, xr.wallpaper_pict);
+		xcb_render_free_picture(g_plat.xc, xr.wallpaper_pict);
 		xr.wallpaper_pict = 0;
 		free(err);
 	}
@@ -323,11 +323,11 @@ static void
 xrender_notify_resize(void)
 {
 	if (xr.back) {
-		xcb_render_free_picture(xc, xr.back);
+		xcb_render_free_picture(g_plat.xc, xr.back);
 		xr.back = 0;
 	}
 	if (xr.back_pixmap) {
-		xcb_free_pixmap(xc, xr.back_pixmap);
+		xcb_free_pixmap(g_plat.xc, xr.back_pixmap);
 		xr.back_pixmap = 0;
 	}
 
@@ -339,12 +339,12 @@ xrender_notify_resize(void)
 		uint32_t                       pmask2;
 		uint32_t                       pval2;
 
-		xr.back_pixmap = xcb_generate_id(xc);
-		ck = xcb_create_pixmap_checked(xc, xcb_screen_root_depth(xc, screen),
-		    xr.back_pixmap, (xcb_drawable_t) root, (uint16_t) sw,
-		    (uint16_t) sh);
-		xcb_flush(xc);
-		perr = xcb_request_check(xc, ck);
+		xr.back_pixmap = xcb_generate_id(g_plat.xc);
+		ck = xcb_create_pixmap_checked(g_plat.xc, xcb_screen_root_depth(g_plat.xc, g_plat.screen),
+		    xr.back_pixmap, (xcb_drawable_t) g_plat.root, (uint16_t) g_plat.sw,
+		    (uint16_t) g_plat.sh);
+		xcb_flush(g_plat.xc);
+		perr = xcb_request_check(g_plat.xc, ck);
 		if (perr) {
 			awm_warn("compositor/xrender: back-buffer resize pixmap "
 			         "failed (error %d)",
@@ -355,12 +355,12 @@ xrender_notify_resize(void)
 		}
 
 		pv2 = xcb_render_util_find_visual_format(
-		    comp.render_formats, xcb_screen_root_visual(xc, screen));
+		    comp.render_formats, xcb_screen_root_visual(g_plat.xc, g_plat.screen));
 		fmt2    = pv2 ? pv2->format : 0;
 		pmask2  = XCB_RENDER_CP_SUBWINDOW_MODE;
 		pval2   = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;
-		xr.back = xcb_generate_id(xc);
-		xcb_render_create_picture(xc, xr.back, (xcb_drawable_t) xr.back_pixmap,
+		xr.back = xcb_generate_id(g_plat.xc);
+		xcb_render_create_picture(g_plat.xc, xr.back, (xcb_drawable_t) xr.back_pixmap,
 		    fmt2, pmask2, &pval2);
 	}
 }
@@ -378,15 +378,15 @@ xrender_repaint(void)
 	if (!xr.back)
 		return;
 
-	xcb_xfixes_set_picture_clip_region(xc, xr.back, comp.dirty, 0, 0);
+	xcb_xfixes_set_picture_clip_region(g_plat.xc, xr.back, comp.dirty, 0, 0);
 
 	if (xr.wallpaper_pict) {
-		xcb_render_composite(xc, XCB_RENDER_PICT_OP_SRC, xr.wallpaper_pict,
-		    XCB_NONE, xr.back, 0, 0, 0, 0, 0, 0, (uint16_t) sw, (uint16_t) sh);
+		xcb_render_composite(g_plat.xc, XCB_RENDER_PICT_OP_SRC, xr.wallpaper_pict,
+		    XCB_NONE, xr.back, 0, 0, 0, 0, 0, 0, (uint16_t) g_plat.sw, (uint16_t) g_plat.sh);
 	} else {
-		xcb_rectangle_t bg_rect = { 0, 0, (uint16_t) sw, (uint16_t) sh };
+		xcb_rectangle_t bg_rect = { 0, 0, (uint16_t) g_plat.sw, (uint16_t) g_plat.sh };
 		xcb_render_fill_rectangles(
-		    xc, XCB_RENDER_PICT_OP_SRC, xr.back, bg_color, 1, &bg_rect);
+		    g_plat.xc, XCB_RENDER_PICT_OP_SRC, xr.back, bg_color, 1, &bg_rect);
 	}
 
 	for (cw = comp.windows; cw; cw = cw->next) {
@@ -405,12 +405,12 @@ xrender_repaint(void)
 
 		if (cw->argb || alpha_idx < 255) {
 			mask = xr.alpha_pict[alpha_idx];
-			xcb_render_composite(xc, XCB_RENDER_PICT_OP_OVER, cw->picture,
+			xcb_render_composite(g_plat.xc, XCB_RENDER_PICT_OP_OVER, cw->picture,
 			    mask, xr.back, 0, 0, 0, 0, (int16_t) (cw->x + cw->bw),
 			    (int16_t) (cw->y + cw->bw), (uint16_t) cw->w,
 			    (uint16_t) cw->h);
 		} else {
-			xcb_render_composite(xc, XCB_RENDER_PICT_OP_SRC, cw->picture,
+			xcb_render_composite(g_plat.xc, XCB_RENDER_PICT_OP_SRC, cw->picture,
 			    XCB_NONE, xr.back, 0, 0, 0, 0, (int16_t) (cw->x + cw->bw),
 			    (int16_t) (cw->y + cw->bw), (uint16_t) cw->w,
 			    (uint16_t) cw->h);
@@ -434,21 +434,21 @@ xrender_repaint(void)
 				       (int16_t) (cw->y + (int) bw), bw, (uint16_t) cw->h },
 			};
 			xcb_render_fill_rectangles(
-			    xc, XCB_RENDER_PICT_OP_SRC, xr.back, bc, 4, borders);
+			    g_plat.xc, XCB_RENDER_PICT_OP_SRC, xr.back, bc, 4, borders);
 		}
 	}
 
 	/* Blit back-buffer to overlay — unconditional, no clip */
-	xcb_xfixes_set_picture_clip_region(xc, xr.target, XCB_NONE, 0, 0);
-	xcb_render_composite(xc, XCB_RENDER_PICT_OP_SRC, xr.back, XCB_NONE,
-	    xr.target, 0, 0, 0, 0, 0, 0, (uint16_t) sw, (uint16_t) sh);
+	xcb_xfixes_set_picture_clip_region(g_plat.xc, xr.target, XCB_NONE, 0, 0);
+	xcb_render_composite(g_plat.xc, XCB_RENDER_PICT_OP_SRC, xr.back, XCB_NONE,
+	    xr.target, 0, 0, 0, 0, 0, 0, (uint16_t) g_plat.sw, (uint16_t) g_plat.sh);
 
 	/* Only clear dirty state if we are not paused.  If a fullscreen bypass
 	 * raced in during rendering, leave dirty intact so the repaint loop
 	 * restarts correctly when compositing resumes. */
 	if (!comp.paused)
 		comp_dirty_clear();
-	xcb_xfixes_set_picture_clip_region(xc, xr.back, XCB_NONE, 0, 0);
+	xcb_xfixes_set_picture_clip_region(g_plat.xc, xr.back, XCB_NONE, 0, 0);
 	xflush();
 }
 
@@ -488,7 +488,7 @@ xr_find_format_for_depth(int depth)
 		if (fi)
 			return fi->id;
 	}
-	return xr_find_visual_format(xcb_screen_root_visual(xc, screen));
+	return xr_find_visual_format(xcb_screen_root_visual(g_plat.xc, g_plat.screen));
 }
 
 /* Capture a scaled thumbnail from a window via XRender + xcb_get_image. */
@@ -528,13 +528,13 @@ xrender_capture_thumb(CompWin *cw, int max_w, int max_h)
 	/* Source pixmap: prefer cw->pixmap, fall back to a fresh acquire */
 	src_pixmap = cw->pixmap;
 	if (!src_pixmap) {
-		xcb_pixmap_t         pix = xcb_generate_id(xc);
+		xcb_pixmap_t         pix = xcb_generate_id(g_plat.xc);
 		xcb_void_cookie_t    nck;
 		xcb_generic_error_t *nerr;
 		nck = xcb_composite_name_window_pixmap_checked(
-		    xc, (xcb_window_t) cw->win, pix);
-		xcb_flush(xc);
-		nerr = xcb_request_check(xc, nck);
+		    g_plat.xc, (xcb_window_t) cw->win, pix);
+		xcb_flush(g_plat.xc);
+		nerr = xcb_request_check(g_plat.xc, nck);
 		if (nerr) {
 			free(nerr);
 			return NULL;
@@ -548,11 +548,11 @@ xrender_capture_thumb(CompWin *cw, int max_w, int max_h)
 	if (!src_fmt)
 		goto out;
 
-	src_pict = xcb_generate_id(xc);
+	src_pict = xcb_generate_id(g_plat.xc);
 	{
 		uint32_t pmask = 0, pval = 0;
 		xcb_render_create_picture(
-		    xc, src_pict, (xcb_drawable_t) src_pixmap, src_fmt, pmask, &pval);
+		    g_plat.xc, src_pict, (xcb_drawable_t) src_pixmap, src_fmt, pmask, &pval);
 	}
 
 	{
@@ -570,27 +570,27 @@ xrender_capture_thumb(CompWin *cw, int max_w, int max_h)
 		xform.matrix32 = 0;
 		xform.matrix33 = fp_one;
 	}
-	xcb_render_set_picture_transform(xc, src_pict, xform);
+	xcb_render_set_picture_transform(g_plat.xc, src_pict, xform);
 	{
 		static const char filter[] = "good";
 		xcb_render_set_picture_filter(
-		    xc, src_pict, (uint16_t) (sizeof(filter) - 1), filter, 0, NULL);
+		    g_plat.xc, src_pict, (uint16_t) (sizeof(filter) - 1), filter, 0, NULL);
 	}
 
 	/* Destination pixmap at thumbnail size (root depth) */
-	dst_fmt = xr_find_visual_format(xcb_screen_root_visual(xc, screen));
+	dst_fmt = xr_find_visual_format(xcb_screen_root_visual(g_plat.xc, g_plat.screen));
 	if (!dst_fmt)
 		goto out;
 
-	dst_pixmap = xcb_generate_id(xc);
+	dst_pixmap = xcb_generate_id(g_plat.xc);
 	{
-		uint8_t dst_depth = (uint8_t) xcb_screen_root_depth(xc, screen);
+		uint8_t dst_depth = (uint8_t) xcb_screen_root_depth(g_plat.xc, g_plat.screen);
 		xcb_void_cookie_t    ck;
 		xcb_generic_error_t *err;
-		ck = xcb_create_pixmap_checked(xc, dst_depth, dst_pixmap,
-		    (xcb_drawable_t) root, (uint16_t) tw, (uint16_t) th);
-		xcb_flush(xc);
-		err = xcb_request_check(xc, ck);
+		ck = xcb_create_pixmap_checked(g_plat.xc, dst_depth, dst_pixmap,
+		    (xcb_drawable_t) g_plat.root, (uint16_t) tw, (uint16_t) th);
+		xcb_flush(g_plat.xc);
+		err = xcb_request_check(g_plat.xc, ck);
 		if (err) {
 			free(err);
 			dst_pixmap = 0;
@@ -598,24 +598,24 @@ xrender_capture_thumb(CompWin *cw, int max_w, int max_h)
 		}
 	}
 
-	dst_pict = xcb_generate_id(xc);
+	dst_pict = xcb_generate_id(g_plat.xc);
 	{
 		uint32_t pmask = 0, pval = 0;
 		xcb_render_create_picture(
-		    xc, dst_pict, (xcb_drawable_t) dst_pixmap, dst_fmt, pmask, &pval);
+		    g_plat.xc, dst_pict, (xcb_drawable_t) dst_pixmap, dst_fmt, pmask, &pval);
 	}
 
 	/* Scale-composite source → destination */
-	xcb_render_composite(xc, XCB_RENDER_PICT_OP_SRC, src_pict,
+	xcb_render_composite(g_plat.xc, XCB_RENDER_PICT_OP_SRC, src_pict,
 	    XCB_RENDER_PICTURE_NONE, dst_pict, 0, 0, 0, 0, 0, 0, (uint16_t) tw,
 	    (uint16_t) th);
-	xcb_flush(xc);
+	xcb_flush(g_plat.xc);
 
 	/* Read the pixels back */
-	gck = xcb_get_image(xc, XCB_IMAGE_FORMAT_Z_PIXMAP,
+	gck = xcb_get_image(g_plat.xc, XCB_IMAGE_FORMAT_Z_PIXMAP,
 	    (xcb_drawable_t) dst_pixmap, 0, 0, (uint16_t) tw, (uint16_t) th,
 	    0xffffffff);
-	gr  = xcb_get_image_reply(xc, gck, NULL);
+	gr  = xcb_get_image_reply(g_plat.xc, gck, NULL);
 	if (!gr)
 		goto out;
 
@@ -651,13 +651,13 @@ xrender_capture_thumb(CompWin *cw, int max_w, int max_h)
 
 out:
 	if (src_pict)
-		xcb_render_free_picture(xc, src_pict);
+		xcb_render_free_picture(g_plat.xc, src_pict);
 	if (dst_pict)
-		xcb_render_free_picture(xc, dst_pict);
+		xcb_render_free_picture(g_plat.xc, dst_pict);
 	if (dst_pixmap)
-		xcb_free_pixmap(xc, dst_pixmap);
+		xcb_free_pixmap(g_plat.xc, dst_pixmap);
 	if (own_pixmap)
-		xcb_free_pixmap(xc, own_pixmap);
+		xcb_free_pixmap(g_plat.xc, own_pixmap);
 	free(gr);
 	free(img_data);
 	return surf;

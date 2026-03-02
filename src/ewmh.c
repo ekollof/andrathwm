@@ -17,8 +17,8 @@ void
 setcurrentdesktop(void)
 {
 	uint32_t data[] = { 0 };
-	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
-	    netatom[NetCurrentDesktop], XCB_ATOM_CARDINAL, 32, 1, data);
+	xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, g_plat.root,
+	    g_plat.netatom[NetCurrentDesktop], XCB_ATOM_CARDINAL, 32, 1, data);
 }
 
 void
@@ -37,8 +37,8 @@ setdesktopnames(void)
 		off += len;
 		buf[off++] = '\0';
 	}
-	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
-	    netatom[NetDesktopNames], utf8string_atom, 8, (uint32_t) off, buf);
+	xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, g_plat.root,
+	    g_plat.netatom[NetDesktopNames], g_plat.utf8string_atom, 8, (uint32_t) off, buf);
 }
 
 int
@@ -48,12 +48,12 @@ sendevent(xcb_window_t w, xcb_atom_t proto, int mask, long d0, long d1,
 	xcb_atom_t mt;
 	int        exists = 0;
 
-	if (proto == wmatom[WMTakeFocus] || proto == wmatom[WMDelete]) {
-		mt = wmatom[WMProtocols];
+	if (proto == g_plat.wmatom[WMTakeFocus] || proto == g_plat.wmatom[WMDelete]) {
+		mt = g_plat.wmatom[WMProtocols];
 		{
 			xcb_get_property_cookie_t ck = xcb_get_property(
-			    xc, 0, w, wmatom[WMProtocols], XCB_ATOM_ATOM, 0, 1024);
-			xcb_get_property_reply_t *r = xcb_get_property_reply(xc, ck, NULL);
+			    g_plat.xc, 0, w, g_plat.wmatom[WMProtocols], XCB_ATOM_ATOM, 0, 1024);
+			xcb_get_property_reply_t *r = xcb_get_property_reply(g_plat.xc, ck, NULL);
 			if (r) {
 				int np = xcb_get_property_value_length(r) /
 				    (int) sizeof(xcb_atom_t);
@@ -80,7 +80,7 @@ sendevent(xcb_window_t w, xcb_atom_t proto, int mask, long d0, long d1,
 		ev.data.data32[2] = (uint32_t) d2;
 		ev.data.data32[3] = (uint32_t) d3;
 		ev.data.data32[4] = (uint32_t) d4;
-		xcb_send_event(xc, 0, w, (uint32_t) mask, (const char *) &ev);
+		xcb_send_event(g_plat.xc, 0, w, (uint32_t) mask, (const char *) &ev);
 	}
 	return exists;
 }
@@ -89,8 +89,8 @@ void
 setnumdesktops(void)
 {
 	uint32_t data[] = { TAGSLENGTH };
-	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
-	    netatom[NetNumberOfDesktops], XCB_ATOM_CARDINAL, 32, 1, data);
+	xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, g_plat.root,
+	    g_plat.netatom[NetNumberOfDesktops], XCB_ATOM_CARDINAL, 32, 1, data);
 }
 
 void
@@ -98,13 +98,13 @@ setfocus(Client *c)
 {
 	assert(c != NULL);
 	if (!c->neverfocus) {
-		xcb_set_input_focus(xc, XCB_INPUT_FOCUS_POINTER_ROOT,
+		xcb_set_input_focus(g_plat.xc, XCB_INPUT_FOCUS_POINTER_ROOT,
 		    (xcb_window_t) c->win, XCB_CURRENT_TIME);
 		uint32_t win32 = (uint32_t) c->win;
-		xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
-		    netatom[NetActiveWindow], XCB_ATOM_WINDOW, 32, 1, &win32);
+		xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, g_plat.root,
+		    g_plat.netatom[NetActiveWindow], XCB_ATOM_WINDOW, 32, 1, &win32);
 	}
-	sendevent(c->win, wmatom[WMTakeFocus], 0, wmatom[WMTakeFocus],
+	sendevent(c->win, g_plat.wmatom[WMTakeFocus], 0, g_plat.wmatom[WMTakeFocus],
 	    XCB_CURRENT_TIME, 0, 0, 0);
 }
 
@@ -112,8 +112,8 @@ void
 setviewport(void)
 {
 	uint32_t data[] = { 0, 0 };
-	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
-	    netatom[NetDesktopViewport], XCB_ATOM_CARDINAL, 32, 2, data);
+	xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, g_plat.root,
+	    g_plat.netatom[NetDesktopViewport], XCB_ATOM_CARDINAL, 32, 2, data);
 }
 
 void
@@ -121,19 +121,19 @@ updateclientlist(void)
 {
 	Client *c;
 
-	xcb_delete_property(xc, root, netatom[NetClientList]);
+	xcb_delete_property(g_plat.xc, g_plat.root, g_plat.netatom[NetClientList]);
 	for (c = g_awm.clients_head; c; c = c->next) {
 		uint32_t win32 = (uint32_t) c->win;
-		xcb_change_property(xc, XCB_PROP_MODE_APPEND, root,
-		    netatom[NetClientList], XCB_ATOM_WINDOW, 32, 1, &win32);
+		xcb_change_property(g_plat.xc, XCB_PROP_MODE_APPEND, g_plat.root,
+		    g_plat.netatom[NetClientList], XCB_ATOM_WINDOW, 32, 1, &win32);
 	}
 
 	/* Update _NET_CLIENT_LIST_STACKING in bottom-to-top order */
-	xcb_delete_property(xc, root, netatom[NetClientListStacking]);
+	xcb_delete_property(g_plat.xc, g_plat.root, g_plat.netatom[NetClientListStacking]);
 	for (c = g_awm.stack_head; c; c = c->snext) {
 		uint32_t win32 = (uint32_t) c->win;
-		xcb_change_property(xc, XCB_PROP_MODE_APPEND, root,
-		    netatom[NetClientListStacking], XCB_ATOM_WINDOW, 32, 1, &win32);
+		xcb_change_property(g_plat.xc, XCB_PROP_MODE_APPEND, g_plat.root,
+		    g_plat.netatom[NetClientListStacking], XCB_ATOM_WINDOW, 32, 1, &win32);
 	}
 }
 
@@ -147,8 +147,8 @@ updatecurrentdesktop(void)
 	rawdata = g_awm_selmon->tagset[g_awm_selmon->seltags];
 	while (rawdata >> (i + 1))
 		i++;
-	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root,
-	    netatom[NetCurrentDesktop], XCB_ATOM_CARDINAL, 32, 1, &i);
+	xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, g_plat.root,
+	    g_plat.netatom[NetCurrentDesktop], XCB_ATOM_CARDINAL, 32, 1, &i);
 }
 
 void
@@ -160,13 +160,13 @@ setwmstate(Client *c)
 	assert(c != NULL);
 
 	if (c->isfullscreen)
-		state[n++] = netatom[NetWMFullscreen];
+		state[n++] = g_plat.netatom[NetWMFullscreen];
 	if (c->isurgent)
-		state[n++] = netatom[NetWMStateDemandsAttention];
+		state[n++] = g_plat.netatom[NetWMStateDemandsAttention];
 	if (c->ishidden)
-		state[n++] = netatom[NetWMStateHidden];
+		state[n++] = g_plat.netatom[NetWMStateHidden];
 
-	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, c->win, netatom[NetWMState],
+	xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, c->win, g_plat.netatom[NetWMState],
 	    XCB_ATOM_ATOM, 32, n, state);
 }
 
@@ -185,8 +185,8 @@ setewmhdesktop(Client *c)
 	data = (i < LENGTH(tags)) ? (uint32_t) i
 	                          : 0xFFFFFFFFu; /* 0xFFFFFFFF = all desktops */
 
-	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, c->win,
-	    netatom[NetWMDesktop], XCB_ATOM_CARDINAL, 32, 1, &data);
+	xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, c->win,
+	    g_plat.netatom[NetWMDesktop], XCB_ATOM_CARDINAL, 32, 1, &data);
 }
 
 void
@@ -206,7 +206,7 @@ updateworkarea(Monitor *m)
 		data[i * 4 + 3] = (uint32_t) m->wh;
 	}
 
-	xcb_change_property(xc, XCB_PROP_MODE_REPLACE, root, netatom[NetWorkarea],
+	xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, g_plat.root, g_plat.netatom[NetWorkarea],
 	    XCB_ATOM_CARDINAL, 32, 4 * TAGSLENGTH, data);
 }
 
@@ -218,8 +218,8 @@ getembedinfo(Client *c)
 	unsigned long             flags = 0;
 
 	ck = xcb_get_property(
-	    xc, 0, c->win, xatom[XembedInfo], xatom[XembedInfo], 0, 2);
-	rep = xcb_get_property_reply(xc, ck, NULL);
+	    g_plat.xc, 0, c->win, g_plat.xatom[XembedInfo], g_plat.xatom[XembedInfo], 0, 2);
+	rep = xcb_get_property_reply(g_plat.xc, ck, NULL);
 	if (rep) {
 		if (xcb_get_property_value_length(rep) >=
 		    (int) (2 * sizeof(uint32_t))) {

@@ -28,7 +28,7 @@
 #include "ui_proto.h"
 
 /* globals from awm.c needed here */
-extern int screen;
+#include "awm.h"
 static inline uint8_t
 xcb_screen_root_depth_sni(xcb_connection_t *conn, int scr_num)
 {
@@ -75,7 +75,7 @@ static xcb_visualtype_t *sni_xcb_visual =
 static xcb_window_t sni_root   = 0;
 static Drw         *sni_drw    = NULL;
 static Clr        **sni_scheme = NULL;
-static unsigned int sniconsize = 22; /* Set during sni_init() */
+static unsigned int sni_iconsize = 22; /* Set during sni_init() */
 
 /* Permanent 1×1 OR input-only GdkWindow used as the grab_win for
  * gtk_menu_popup_at_pointer().  Created in sni_init(), stays mapped. */
@@ -160,7 +160,7 @@ sni_init(xcb_connection_t *xc_in, xcb_connection_t *cairo_xcb,
 	sni_root       = rootwin;
 	sni_drw        = drw;
 	sni_scheme     = scheme;
-	sniconsize     = icon_size;
+	sni_iconsize     = icon_size;
 
 	/* Disable glycin loaders - they use subprocesses which can deadlock
 	 * with async operations and window manager event loops */
@@ -333,7 +333,7 @@ sni_reconnect(void)
 	xcb_window_t      root       = sni_root;
 	Drw              *drw        = sni_drw;
 	Clr             **scheme     = sni_scheme;
-	unsigned int      sz         = sniconsize;
+	unsigned int      sz         = sni_iconsize;
 
 	if (!xc_saved)
 		return 0; /* never successfully initialised — cannot reconnect */
@@ -1101,8 +1101,8 @@ sni_render_item(SNIItem *item)
 		vals[3] = XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE |
 		    XCB_EVENT_MASK_STRUCTURE_NOTIFY;
 		xcb_create_window(xc, XCB_COPY_FROM_PARENT, win,
-		    (xcb_window_t) sni_root, 0, 0, (uint16_t) sniconsize,
-		    (uint16_t) sniconsize, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+		    (xcb_window_t) sni_root, 0, 0, (uint16_t) sni_iconsize,
+		    (uint16_t) sni_iconsize, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
 		    XCB_COPY_FROM_PARENT, mask, vals);
 		item->win = win;
 
@@ -1113,8 +1113,8 @@ sni_render_item(SNIItem *item)
 
 		awm_debug("SNI: Created window 0x%x for %s", item->win, item->service);
 
-		item->w = sniconsize;
-		item->h = sniconsize;
+		item->w = sni_iconsize;
+		item->h = sni_iconsize;
 
 		/* Add to systray BEFORE rendering so it's in the right parent */
 		awm_debug("SNI: Adding window to systray before rendering");
@@ -1133,16 +1133,17 @@ sni_render_item(SNIItem *item)
 
 	{
 		xcb_pixmap_t xcb_pm = xcb_generate_id(sni_cairo_xcb);
-		uint8_t depth = (uint8_t) xcb_screen_root_depth_sni(sni_xc, screen);
+		uint8_t      depth =
+		    (uint8_t) xcb_screen_root_depth_sni(sni_xc, g_plat.screen);
 		xcb_create_pixmap(sni_cairo_xcb, depth, xcb_pm,
-		    (xcb_drawable_t) item->win, (uint16_t) sniconsize,
-		    (uint16_t) sniconsize);
+		    (xcb_drawable_t) item->win, (uint16_t) sni_iconsize,
+		    (uint16_t) sni_iconsize);
 		pixmap = xcb_pm;
 	}
 
 	pixmap_surface =
 	    cairo_xcb_surface_create(sni_cairo_xcb, (xcb_drawable_t) pixmap,
-	        sni_xcb_visual, (int) sniconsize, (int) sniconsize);
+	        sni_xcb_visual, (int) sni_iconsize, (int) sni_iconsize);
 
 	if (cairo_surface_status(pixmap_surface) != CAIRO_STATUS_SUCCESS) {
 		awm_error(
@@ -1168,7 +1169,7 @@ sni_render_item(SNIItem *item)
 	cairo_set_source_rgba(cr, 0.7, 0.7, 0.7, 0.5);
 	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 	cairo_arc(
-	    cr, sniconsize / 2, sniconsize / 2, sniconsize / 4, 0, 2 * 3.14159);
+	    cr, sni_iconsize / 2, sni_iconsize / 2, sni_iconsize / 4, 0, 2 * 3.14159);
 	cairo_fill(cr);
 
 	cairo_destroy(cr);
@@ -1214,15 +1215,15 @@ sni_icon_render(SNIItem *item, cairo_surface_t *surface)
 	if (!item || !item->win || !surface || !sni_cairo_xcb || !sni_xcb_visual)
 		return;
 
-	depth = (uint8_t) xcb_screen_root_depth_sni(sni_xc, screen);
+	depth = (uint8_t) xcb_screen_root_depth_sni(sni_xc, g_plat.screen);
 
 	pixmap = xcb_generate_id(sni_cairo_xcb);
 	xcb_create_pixmap(sni_cairo_xcb, depth, pixmap, (xcb_drawable_t) item->win,
-	    (uint16_t) sniconsize, (uint16_t) sniconsize);
+	    (uint16_t) sni_iconsize, (uint16_t) sni_iconsize);
 
 	pixmap_surface =
 	    cairo_xcb_surface_create(sni_cairo_xcb, (xcb_drawable_t) pixmap,
-	        sni_xcb_visual, (int) sniconsize, (int) sniconsize);
+	        sni_xcb_visual, (int) sni_iconsize, (int) sni_iconsize);
 
 	if (cairo_surface_status(pixmap_surface) != CAIRO_STATUS_SUCCESS) {
 		awm_error(
@@ -1251,7 +1252,7 @@ sni_icon_render(SNIItem *item, cairo_surface_t *surface)
 		double iw = cairo_image_surface_get_width(surface);
 		double ih = cairo_image_surface_get_height(surface);
 		if (iw > 0 && ih > 0) {
-			cairo_scale(cr, sniconsize / iw, sniconsize / ih);
+			cairo_scale(cr, sni_iconsize / iw, sni_iconsize / ih);
 		}
 	}
 	cairo_set_source_surface(cr, surface, 0, 0);
@@ -1318,7 +1319,7 @@ sni_queue_icon_load(SNIItem *item)
 		/* Inline ARGB pixmap — convert synchronously (fast, no I/O). */
 		cairo_surface_t *surface =
 		    icon_pixmap_to_surface((Icon *) item->icon_pixmap,
-		        item->icon_pixmap_count, (int) sniconsize);
+		        item->icon_pixmap_count, (int) sni_iconsize);
 		if (surface) {
 			sni_icon_render(item, surface);
 			cairo_surface_destroy(surface);
@@ -1332,7 +1333,7 @@ sni_queue_icon_load(SNIItem *item)
 				/* SVG: rasterize synchronously via librsvg (no gdk-pixbuf
 				 * SVG loader required, and it's fast at icon sizes). */
 				cairo_surface_t *surface =
-				    icon_load(item->icon_name, (int) sniconsize);
+				    icon_load(item->icon_name, (int) sni_iconsize);
 				if (surface) {
 					sni_icon_render(item, surface);
 					cairo_surface_destroy(surface);
@@ -1344,13 +1345,13 @@ sni_queue_icon_load(SNIItem *item)
 					return;
 				data->item       = item;
 				data->generation = item->generation;
-				icon_load_async(item->icon_name, (int) sniconsize,
+				icon_load_async(item->icon_name, (int) sni_iconsize,
 				    sni_icon_loaded_cb, data);
 			}
 		} else {
 			/* Theme name — icon_load() handles GTK theme lookup + caching. */
 			cairo_surface_t *surface =
-			    icon_load(item->icon_name, (int) sniconsize);
+			    icon_load(item->icon_name, (int) sni_iconsize);
 			if (surface) {
 				sni_icon_render(item, surface);
 				cairo_surface_destroy(surface);

@@ -29,16 +29,10 @@
 #include <xcb/xcb_cursor.h>
 #include <pango/pangocairo.h>
 
+#include "awm.h"
 #include "drw.h"
 #include "log.h"
 #include "util.h"
-
-/* ui_dpi and lrpad are defined in awm.c; forward-declare here to avoid a
- * circular include (awm.h -> drw.h -> circular).  drw_cairo.c is linked
- * into both the awm binary (strong definition in awm.c overrides) and the
- * awm-ui binary (no awm.c, so weak defaults are used). */
-__attribute__((weak)) double ui_dpi = 96.0;
-__attribute__((weak)) int    lrpad  = 4;
 
 /* ── internal helpers (identical to drw.c) ─────────────────────────────── */
 
@@ -203,11 +197,11 @@ xfont_create(Drw *drw, const char *fontname)
 	}
 	/* Tell Pango the real screen DPI so font point sizes are converted to
 	 * the correct number of device pixels.  Without this call Pango uses
-	 * whatever fontconfig/Xft provides, which may differ from ui_dpi on
+	 * whatever fontconfig/Xft provides, which may differ from g_plat.ui_dpi on
 	 * HiDPI screens.  We must NOT use cairo_surface_set_device_scale()
 	 * here — that would blur glyphs by scaling a low-resolution bitmap. */
-	if (ui_dpi > 0.0)
-		pango_cairo_context_set_resolution(ctx, ui_dpi);
+	if (g_plat.ui_dpi > 0.0)
+		pango_cairo_context_set_resolution(ctx, g_plat.ui_dpi);
 	metrics = pango_context_get_metrics(ctx, desc, NULL);
 	font->h = (unsigned int) ((pango_font_metrics_get_ascent(metrics) +
 	                              pango_font_metrics_get_descent(metrics)) /
@@ -382,10 +376,11 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h,
 	 * pango_cairo_create_layout() creates a fresh PangoContext that does
 	 * not inherit the resolution set in xfont_create(), so we must set it
 	 * here on every draw call.  This is what actually makes Pango convert
-	 * "12pt" → correct pixel height at ui_dpi rather than at 72 or 96. */
-	if (ui_dpi > 0.0)
+	 * "12pt" → correct pixel height at g_plat.ui_dpi rather than at 72 or 96.
+	 */
+	if (g_plat.ui_dpi > 0.0)
 		pango_cairo_context_set_resolution(
-		    pango_layout_get_context(layout), ui_dpi);
+		    pango_layout_get_context(layout), g_plat.ui_dpi);
 	pango_layout_set_font_description(layout, drw->fonts->desc);
 	pango_layout_set_text(layout, text, -1);
 
@@ -558,9 +553,9 @@ drw_draw_statusd(
 				}
 
 				layout = pango_cairo_create_layout(tmp_cr);
-				if (ui_dpi > 0.0)
+				if (g_plat.ui_dpi > 0.0)
 					pango_cairo_context_set_resolution(
-					    pango_layout_get_context(layout), ui_dpi);
+					    pango_layout_get_context(layout), g_plat.ui_dpi);
 				desc = drw->fonts ? drw->fonts->desc : NULL;
 				if (desc)
 					pango_layout_set_font_description(layout, desc);
@@ -571,19 +566,20 @@ drw_draw_statusd(
 					/* Fill only the text's own width — do not blot out rects
 					 * that were drawn earlier in the same widget. */
 					cairo_set_source_rgb(cr, cbg_r, cbg_g, cbg_b);
-					cairo_rectangle(
-					    cr, cx, y, (double) (tw + lrpad / 2), (double) h);
+					cairo_rectangle(cr, cx, y,
+					    (double) (tw + g_plat.lrpad / 2), (double) h);
 					cairo_fill(cr);
 					cairo_set_source_rgb(cr, cfg_r, cfg_g, cfg_b);
-					cairo_move_to(cr, cx + lrpad / 2, y + ((int) h - th) / 2);
+					cairo_move_to(
+					    cr, cx + g_plat.lrpad / 2, y + ((int) h - th) / 2);
 					pango_cairo_show_layout(cr, layout);
 				} else {
 					cairo_destroy(tmp_cr);
 				}
 				g_object_unref(layout);
 
-				cx += tw + lrpad / 2;
-				consumed += tw + lrpad / 2;
+				cx += tw + g_plat.lrpad / 2;
+				consumed += tw + g_plat.lrpad / 2;
 			}
 		}
 
@@ -704,9 +700,9 @@ drw_draw_statusd(
 			}
 
 			layout = pango_cairo_create_layout(tmp_cr);
-			if (ui_dpi > 0.0)
+			if (g_plat.ui_dpi > 0.0)
 				pango_cairo_context_set_resolution(
-				    pango_layout_get_context(layout), ui_dpi);
+				    pango_layout_get_context(layout), g_plat.ui_dpi);
 			desc = drw->fonts ? drw->fonts->desc : NULL;
 			if (desc)
 				pango_layout_set_font_description(layout, desc);
@@ -717,18 +713,19 @@ drw_draw_statusd(
 				/* Same: fill only the text's own width. */
 				cairo_set_source_rgb(cr, cbg_r, cbg_g, cbg_b);
 				cairo_rectangle(
-				    cr, cx, y, (double) (tw + lrpad / 2), (double) h);
+				    cr, cx, y, (double) (tw + g_plat.lrpad / 2), (double) h);
 				cairo_fill(cr);
 				cairo_set_source_rgb(cr, cfg_r, cfg_g, cfg_b);
-				cairo_move_to(cr, cx + lrpad / 2, y + ((int) h - th) / 2);
+				cairo_move_to(
+				    cr, cx + g_plat.lrpad / 2, y + ((int) h - th) / 2);
 				pango_cairo_show_layout(cr, layout);
 			} else {
 				cairo_destroy(tmp_cr);
 			}
 			g_object_unref(layout);
 
-			cx += tw + lrpad / 2;
-			consumed += tw + lrpad / 2;
+			cx += tw + g_plat.lrpad / 2;
+			consumed += tw + g_plat.lrpad / 2;
 		}
 	}
 

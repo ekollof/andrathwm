@@ -100,7 +100,8 @@ buttonpress(xcb_generic_event_t *e)
 	} else if ((c = wintoclient(ev->event))) {
 		focus(c);
 		restack(g_awm_selmon);
-		xcb_allow_events(xc, XCB_ALLOW_REPLAY_POINTER, XCB_CURRENT_TIME);
+		xcb_allow_events(
+		    g_plat.xc, XCB_ALLOW_REPLAY_POINTER, XCB_CURRENT_TIME);
 		xflush();
 		click = ClkClientWin;
 	}
@@ -114,10 +115,11 @@ buttonpress(xcb_generic_event_t *e)
 			 * GTK's subsequent seat-grab (for the popup menu) either fails
 			 * or never releases, killing awm's key bindings.
 			 * Use ASYNC_POINTER (not SYNC_POINTER) so the pointer is freed
-			 * unconditionally without replaying the event back to the root,
-			 * which would cause a grab race with GTK's menu seat-grab. */
-			xcb_allow_events(xc, XCB_ALLOW_ASYNC_POINTER, ev->time);
-			xcb_flush(xc);
+			 * unconditionally without replaying the event back to the
+			 * g_plat.root, which would cause a grab race with GTK's menu
+			 * seat-grab. */
+			xcb_allow_events(g_plat.xc, XCB_ALLOW_ASYNC_POINTER, ev->time);
+			xcb_flush(g_plat.xc);
 			sni_handle_click(
 			    ev->event, ev->detail, ev->root_x, ev->root_y, ev->time);
 			return; /* Don't process further */
@@ -143,21 +145,21 @@ checkotherwm(void)
 
 	/* root is not yet set when this is called (setup() runs after us),
 	 * so derive it directly from the XCB setup data. */
-	if (!root) {
+	if (!g_plat.root) {
 		xcb_screen_iterator_t sit =
-		    xcb_setup_roots_iterator(xcb_get_setup(xc));
+		    xcb_setup_roots_iterator(xcb_get_setup(g_plat.xc));
 		int i;
-		for (i = 0; i < screen; i++)
+		for (i = 0; i < g_plat.screen; i++)
 			xcb_screen_next(&sit);
-		root = sit.data->root;
+		g_plat.root = sit.data->root;
 	}
 
-	/* Probe for another WM by requesting SubstructureRedirect on root.
+	/* Probe for another WM by requesting SubstructureRedirect on g_plat.root.
 	 * Only one client may hold this mask; xcb_request_check returns an
 	 * error synchronously if another WM is already running. */
 	ck = xcb_change_window_attributes_checked(
-	    xc, root, XCB_CW_EVENT_MASK, &mask);
-	err = xcb_request_check(xc, ck);
+	    g_plat.xc, g_plat.root, XCB_CW_EVENT_MASK, &mask);
+	err = xcb_request_check(g_plat.xc, ck);
 	if (err) {
 		free(err);
 		die("awm: another window manager is already running");
@@ -174,7 +176,7 @@ clientmessage(xcb_generic_event_t *e)
 	unsigned int                i;
 
 	if (showsystray && systray && cme->window == systray->win &&
-	    cme->type == netatom[NetSystemTrayOP]) {
+	    cme->type == g_plat.netatom[NetSystemTrayOP]) {
 		/* add systray icons */
 		if (cme->data.data32[1] == SYSTEM_TRAY_REQUEST_DOCK) {
 			if (!(c = (Client *) calloc(1, sizeof(Client))))
@@ -187,17 +189,18 @@ clientmessage(xcb_generic_event_t *e)
 			c->next        = systray->icons;
 			systray->icons = c;
 			{
-				xcb_get_geometry_cookie_t ck = xcb_get_geometry(xc, c->win);
+				xcb_get_geometry_cookie_t ck =
+				    xcb_get_geometry(g_plat.xc, c->win);
 				xcb_get_geometry_reply_t *gr =
-				    xcb_get_geometry_reply(xc, ck, NULL);
+				    xcb_get_geometry_reply(g_plat.xc, ck, NULL);
 				if (gr) {
 					c->w = c->oldw = gr->width;
 					c->h = c->oldh = gr->height;
 					c->oldbw       = gr->border_width;
 					free(gr);
 				} else {
-					c->w = c->oldw = bh;
-					c->h = c->oldh = bh;
+					c->w = c->oldw = g_plat.bh;
+					c->h = c->oldh = g_plat.bh;
 					c->oldbw       = 0;
 				}
 			}
@@ -208,26 +211,26 @@ clientmessage(xcb_generic_event_t *e)
 			c->tags = 1;
 			updatesizehints(c);
 			updatesystrayicongeom(c, c->w, c->h);
-			xcb_change_save_set(xc, XCB_SET_MODE_INSERT, c->win);
+			xcb_change_save_set(g_plat.xc, XCB_SET_MODE_INSERT, c->win);
 			{
 				uint32_t mask = XCB_EVENT_MASK_STRUCTURE_NOTIFY |
 				    XCB_EVENT_MASK_PROPERTY_CHANGE |
 				    XCB_EVENT_MASK_RESIZE_REDIRECT;
 				xcb_change_window_attributes(
-				    xc, c->win, XCB_CW_EVENT_MASK, &mask);
+				    g_plat.xc, c->win, XCB_CW_EVENT_MASK, &mask);
 			}
-			xcb_reparent_window(xc, c->win, systray->win, 0, 0);
+			xcb_reparent_window(g_plat.xc, c->win, systray->win, 0, 0);
 			/* use bar background so icon blends with the bar */
 			{
 				uint32_t bg = clr_to_argb(&scheme[SchemeNorm][ColBg]);
 				xcb_change_window_attributes(
-				    xc, c->win, XCB_CW_BACK_PIXEL, &bg);
+				    g_plat.xc, c->win, XCB_CW_BACK_PIXEL, &bg);
 			}
 			/* Send XEMBED_EMBEDDED_NOTIFY to complete embedding per spec.
 			 * data1 = embedder window, data2 = protocol version */
-			sendevent(c->win, xatom[Xembed], XCB_EVENT_MASK_STRUCTURE_NOTIFY,
-			    XCB_CURRENT_TIME, XEMBED_EMBEDDED_NOTIFY, 0, systray->win,
-			    XEMBED_VERSION);
+			sendevent(c->win, g_plat.xatom[Xembed],
+			    XCB_EVENT_MASK_STRUCTURE_NOTIFY, XCB_CURRENT_TIME,
+			    XEMBED_EMBEDDED_NOTIFY, 0, systray->win, XEMBED_VERSION);
 			xflush();
 			resizebarwin(g_awm_selmon);
 			updatesystray();
@@ -238,14 +241,14 @@ clientmessage(xcb_generic_event_t *e)
 
 	if (!c)
 		return;
-	if (cme->type == netatom[NetWMState]) {
-		if (cme->data.data32[1] == netatom[NetWMFullscreen] ||
-		    cme->data.data32[2] == netatom[NetWMFullscreen])
+	if (cme->type == g_plat.netatom[NetWMState]) {
+		if (cme->data.data32[1] == g_plat.netatom[NetWMFullscreen] ||
+		    cme->data.data32[2] == g_plat.netatom[NetWMFullscreen])
 			setfullscreen(c,
 			    (cme->data.data32[0] == 1 /* _NET_WM_STATE_ADD    */
 			        || (cme->data.data32[0] == 2 /* _NET_WM_STATE_TOGGLE */ &&
 			               !c->isfullscreen)));
-	} else if (cme->type == netatom[NetActiveWindow]) {
+	} else if (cme->type == g_plat.netatom[NetActiveWindow]) {
 		for (i = 0; i < LENGTH(tags) && !((1 << i) & c->tags); i++)
 			;
 		if (i < LENGTH(tags)) {
@@ -255,18 +258,18 @@ clientmessage(xcb_generic_event_t *e)
 			focus(c);
 			restack(g_awm_selmon);
 		}
-	} else if (cme->type == netatom[NetCloseWindow]) {
+	} else if (cme->type == g_plat.netatom[NetCloseWindow]) {
 		/* _NET_CLOSE_WINDOW client message */
-		if (!sendevent(c->win, wmatom[WMDelete], 0, wmatom[WMDelete],
-		        XCB_CURRENT_TIME, 0, 0, 0)) {
+		if (!sendevent(c->win, g_plat.wmatom[WMDelete], 0,
+		        g_plat.wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
 
-			xcb_grab_server(xc);
-			xcb_set_close_down_mode(xc, XCB_CLOSE_DOWN_DESTROY_ALL);
-			xcb_kill_client(xc, c->win);
-			xcb_ungrab_server(xc);
+			xcb_grab_server(g_plat.xc);
+			xcb_set_close_down_mode(g_plat.xc, XCB_CLOSE_DOWN_DESTROY_ALL);
+			xcb_kill_client(g_plat.xc, c->win);
+			xcb_ungrab_server(g_plat.xc);
 		}
 		xflush();
-	} else if (cme->type == netatom[NetMoveResizeWindow]) {
+	} else if (cme->type == g_plat.netatom[NetMoveResizeWindow]) {
 		/* _NET_MOVERESIZE_WINDOW client message */
 		int          x, y, w, h;
 		unsigned int gravity_flags = cme->data.data32[0];
@@ -287,11 +290,11 @@ configurenotify(xcb_generic_event_t *e)
 	Client                       *c;
 	xcb_configure_notify_event_t *ev = (xcb_configure_notify_event_t *) e;
 
-	if (ev->window == root) {
-		sw = ev->width;
-		sh = ev->height;
+	if (ev->window == g_plat.root) {
+		g_plat.sw = ev->width;
+		g_plat.sh = ev->height;
 		if (updategeom()) {
-			drw_resize(drw, sw, bh);
+			drw_resize(drw, g_plat.sw, g_plat.bh);
 			updatebars();
 			FOR_EACH_MON(m)
 			{
@@ -306,7 +309,7 @@ configurenotify(xcb_generic_event_t *e)
 							(uint32_t) m->mw,
 							(uint32_t) m->mh,
 						};
-						xcb_configure_window(xc, c->win,
+						xcb_configure_window(g_plat.xc, c->win,
 						    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
 						        XCB_CONFIG_WINDOW_WIDTH |
 						        XCB_CONFIG_WINDOW_HEIGHT,
@@ -387,7 +390,7 @@ configurerequest(xcb_generic_event_t *e)
 					(uint32_t) c->w,
 					(uint32_t) c->h,
 				};
-				xcb_configure_window(xc, c->win,
+				xcb_configure_window(g_plat.xc, c->win,
 				    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
 				        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
 				    xywh);
@@ -414,7 +417,7 @@ configurerequest(xcb_generic_event_t *e)
 		if (ev->value_mask & XCB_CONFIG_WINDOW_STACK_MODE)
 			vals[n++] = (uint32_t) ev->stack_mode;
 		if (n > 0)
-			xcb_configure_window(xc, ev->window, ev->value_mask, vals);
+			xcb_configure_window(g_plat.xc, ev->window, ev->value_mask, vals);
 	}
 	xflush();
 }
@@ -443,7 +446,7 @@ enternotify(xcb_generic_event_t *e)
 
 	if ((ev->mode != XCB_NOTIFY_MODE_NORMAL ||
 	        ev->detail == XCB_NOTIFY_DETAIL_INFERIOR) &&
-	    ev->event != root)
+	    ev->event != g_plat.root)
 		return;
 
 	/* While the launcher is open it owns keyboard focus; suppress
@@ -514,16 +517,16 @@ expose(xcb_generic_event_t *e)
 }
 
 /* Return 1 if `w` is a descendant of `ancestor` in the X window tree.
- * We walk up via XQueryTree, stopping at the root.  The depth is bounded by
- * the browser's internal widget hierarchy (typically 2–5 hops), so this is
- * cheap in practice. */
+ * We walk up via XQueryTree, stopping at the g_plat.root.  The depth is
+ * bounded by the browser's internal widget hierarchy (typically 2–5 hops), so
+ * this is cheap in practice. */
 static int
 iswindowdescendant(xcb_window_t w, xcb_window_t ancestor)
 {
 
-	while (w && w != ancestor && w != root) {
-		xcb_query_tree_reply_t *r =
-		    xcb_query_tree_reply(xc, xcb_query_tree(xc, w), NULL);
+	while (w && w != ancestor && w != g_plat.root) {
+		xcb_query_tree_reply_t *r = xcb_query_tree_reply(
+		    g_plat.xc, xcb_query_tree(g_plat.xc, w), NULL);
 		if (!r)
 			break;
 		w = r->parent;
@@ -558,9 +561,9 @@ focusin(xcb_generic_event_t *e)
 	 * make them permanently unfocusable. */
 	{
 		xcb_get_window_attributes_cookie_t ck =
-		    xcb_get_window_attributes(xc, ev->event);
+		    xcb_get_window_attributes(g_plat.xc, ev->event);
 		xcb_get_window_attributes_reply_t *r =
-		    xcb_get_window_attributes_reply(xc, ck, NULL);
+		    xcb_get_window_attributes_reply(g_plat.xc, ck, NULL);
 		if (r) {
 			int or = r->override_redirect;
 			free(r);
@@ -577,20 +580,20 @@ grabkeys(void)
 {
 	updatenumlockmask();
 	{
-		unsigned int       i, j, k;
-		unsigned int       modifiers[] = { 0, XCB_MOD_MASK_LOCK, numlockmask,
-			      numlockmask | XCB_MOD_MASK_LOCK };
-		const xcb_setup_t *setup       = xcb_get_setup(xc);
-		xcb_keycode_t      kmin        = setup->min_keycode;
-		xcb_keycode_t      kmax        = setup->max_keycode;
-		int                count       = kmax - kmin + 1;
+		unsigned int i, j, k;
+		unsigned int modifiers[] = { 0, XCB_MOD_MASK_LOCK, g_plat.numlockmask,
+			g_plat.numlockmask | XCB_MOD_MASK_LOCK };
+		const xcb_setup_t *setup = xcb_get_setup(g_plat.xc);
+		xcb_keycode_t      kmin  = setup->min_keycode;
+		xcb_keycode_t      kmax  = setup->max_keycode;
+		int                count = kmax - kmin + 1;
 
-		xcb_ungrab_key(xc, XCB_GRAB_ANY, root, XCB_MOD_MASK_ANY);
+		xcb_ungrab_key(g_plat.xc, XCB_GRAB_ANY, g_plat.root, XCB_MOD_MASK_ANY);
 
 		xcb_get_keyboard_mapping_cookie_t mck =
-		    xcb_get_keyboard_mapping(xc, kmin, (uint8_t) count);
+		    xcb_get_keyboard_mapping(g_plat.xc, kmin, (uint8_t) count);
 		xcb_get_keyboard_mapping_reply_t *mr =
-		    xcb_get_keyboard_mapping_reply(xc, mck, NULL);
+		    xcb_get_keyboard_mapping_reply(g_plat.xc, mck, NULL);
 		if (!mr)
 			return;
 		int           skip = mr->keysyms_per_keycode;
@@ -599,7 +602,7 @@ grabkeys(void)
 			for (i = 0; i < LENGTH(keys); i++)
 				if (keys[i].keysym == (KeySym) syms[(k - kmin) * skip])
 					for (j = 0; j < LENGTH(modifiers); j++)
-						xcb_grab_key(xc, 1, root,
+						xcb_grab_key(g_plat.xc, 1, g_plat.root,
 						    (uint16_t) (keys[i].mod | modifiers[j]),
 						    (xcb_keycode_t) k, XCB_GRAB_MODE_ASYNC,
 						    XCB_GRAB_MODE_ASYNC);
@@ -616,8 +619,8 @@ keypress(xcb_generic_event_t *e)
 
 	ev              = (xcb_key_press_event_t *) e;
 	last_event_time = ev->time;
-	keysym =
-	    xcb_key_symbols_get_keysym(keysyms, (xcb_keycode_t) ev->detail, 0);
+	keysym          = xcb_key_symbols_get_keysym(
+        g_plat.keysyms, (xcb_keycode_t) ev->detail, 0);
 
 	/* While the switcher is open, handle Tab/Escape/Return directly here
 	 * and suppress the normal keybinding dispatch.  The switcher GTK window
@@ -653,9 +656,9 @@ keypress(xcb_generic_event_t *e)
 void
 keyrelease(xcb_generic_event_t *e)
 {
-	xcb_key_release_event_t *ev = (xcb_key_release_event_t *) e;
-	xcb_keysym_t             keysym =
-	    xcb_key_symbols_get_keysym(keysyms, (xcb_keycode_t) ev->detail, 0);
+	xcb_key_release_event_t *ev     = (xcb_key_release_event_t *) e;
+	xcb_keysym_t             keysym = xcb_key_symbols_get_keysym(
+        g_plat.keysyms, (xcb_keycode_t) ev->detail, 0);
 
 	/* Confirm the switcher when the modifier that opened it is released */
 	if (switcher_active()) {
@@ -678,7 +681,7 @@ fake_signal(void)
 	size_t len_fsignal, len_indicator = strlen(indicator);
 
 	/* Get root name property */
-	if (gettextprop(root, XCB_ATOM_WM_NAME, fsignal, sizeof(fsignal))) {
+	if (gettextprop(g_plat.root, XCB_ATOM_WM_NAME, fsignal, sizeof(fsignal))) {
 		len_fsignal = strlen(fsignal);
 
 		/* Check if this is indeed a fake signal */
@@ -718,7 +721,7 @@ mappingnotify(xcb_generic_event_t *e)
 {
 	xcb_mapping_notify_event_t *ev = (xcb_mapping_notify_event_t *) e;
 
-	xcb_refresh_keyboard_mapping(keysyms, ev);
+	xcb_refresh_keyboard_mapping(g_plat.keysyms, ev);
 	if (ev->request == XCB_MAPPING_KEYBOARD)
 		grabkeys();
 }
@@ -738,9 +741,9 @@ maprequest(xcb_generic_event_t *e)
 
 	{
 		xcb_get_window_attributes_cookie_t ck =
-		    xcb_get_window_attributes(xc, ev->window);
+		    xcb_get_window_attributes(g_plat.xc, ev->window);
 		xcb_get_window_attributes_reply_t *r =
-		    xcb_get_window_attributes_reply(xc, ck, NULL);
+		    xcb_get_window_attributes_reply(g_plat.xc, ck, NULL);
 		if (!r)
 			return;
 		int override = r->override_redirect;
@@ -749,8 +752,10 @@ maprequest(xcb_generic_event_t *e)
 			return;
 	}
 	if (!wintoclient(ev->window)) {
-		xcb_get_geometry_cookie_t gck = xcb_get_geometry(xc, ev->window);
-		xcb_get_geometry_reply_t *gr  = xcb_get_geometry_reply(xc, gck, NULL);
+		xcb_get_geometry_cookie_t gck =
+		    xcb_get_geometry(g_plat.xc, ev->window);
+		xcb_get_geometry_reply_t *gr =
+		    xcb_get_geometry_reply(g_plat.xc, gck, NULL);
 		if (gr) {
 			manage(ev->window, gr);
 			free(gr);
@@ -765,7 +770,7 @@ motionnotify(xcb_generic_event_t *e)
 	Monitor                   *m;
 	xcb_motion_notify_event_t *ev = (xcb_motion_notify_event_t *) e;
 
-	if (ev->event != root)
+	if (ev->event != g_plat.root)
 		return;
 	if ((m = recttomon(ev->root_x, ev->root_y, 1, 1)) != mon && mon) {
 		unfocus(g_awm_selmon->sel, 1);
@@ -793,7 +798,7 @@ propertynotify(xcb_generic_event_t *e)
 		updatesystray();
 	}
 
-	if ((ev->window == root) && (ev->atom == XCB_ATOM_WM_NAME)) {
+	if ((ev->window == g_plat.root) && (ev->atom == XCB_ATOM_WM_NAME)) {
 		(void) fake_signal();
 		return;
 	} else if (ev->state == XCB_PROPERTY_DELETE)
@@ -804,8 +809,8 @@ propertynotify(xcb_generic_event_t *e)
 			break;
 		case XCB_ATOM_WM_TRANSIENT_FOR:
 			if (!c->isfloating &&
-			    xcb_icccm_get_wm_transient_for_reply(xc,
-			        xcb_icccm_get_wm_transient_for(xc, c->win), &trans,
+			    xcb_icccm_get_wm_transient_for_reply(g_plat.xc,
+			        xcb_icccm_get_wm_transient_for(g_plat.xc, c->win), &trans,
 			        NULL) &&
 			    (c->isfloating = (wintoclient(trans)) != NULL))
 				arrange(c->mon);
@@ -818,21 +823,23 @@ propertynotify(xcb_generic_event_t *e)
 			barsdirty = 1; /* defer redraw */
 			break;
 		}
-		if (ev->atom == XCB_ATOM_WM_NAME || ev->atom == netatom[NetWMName]) {
+		if (ev->atom == XCB_ATOM_WM_NAME ||
+		    ev->atom == g_plat.netatom[NetWMName]) {
 			updatetitle(c);
 			if (c == c->mon->sel)
 				barsdirty = 1; /* defer redraw */
 		}
-		if (ev->atom == netatom[NetWMWindowType])
+		if (ev->atom == g_plat.netatom[NetWMWindowType])
 			updatewindowtype(c);
 #ifdef COMPOSITOR
-		if (ev->atom == netatom[NetWMWindowOpacity]) {
-			unsigned long raw =
-			    (unsigned long) getatomprop(c, netatom[NetWMWindowOpacity]);
+		if (ev->atom == g_plat.netatom[NetWMWindowOpacity]) {
+			unsigned long raw = (unsigned long) getatomprop(
+			    c, g_plat.netatom[NetWMWindowOpacity]);
 			compositor_set_opacity(c, raw);
 		}
-		if (ev->atom == netatom[NetWMBypassCompositor]) {
-			int hint = (int) getatomprop(c, netatom[NetWMBypassCompositor]);
+		if (ev->atom == g_plat.netatom[NetWMBypassCompositor]) {
+			int hint =
+			    (int) getatomprop(c, g_plat.netatom[NetWMBypassCompositor]);
 			if (hint != c->bypass_compositor) {
 				c->bypass_compositor = hint;
 				compositor_bypass_window(c, hint == 1);
@@ -872,9 +879,9 @@ unmapnotify(xcb_generic_event_t *e)
 		 * _not_ destroy them. We map those windows back */
 		{
 			uint32_t above = XCB_STACK_MODE_ABOVE;
-			xcb_map_window(xc, c->win);
+			xcb_map_window(g_plat.xc, c->win);
 			xcb_configure_window(
-			    xc, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+			    g_plat.xc, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
 		}
 		updatesystray();
 	}
@@ -884,16 +891,16 @@ void
 updatenumlockmask(void)
 {
 	unsigned int                      i, j;
-	xcb_get_modifier_mapping_cookie_t ck = xcb_get_modifier_mapping(xc);
+	xcb_get_modifier_mapping_cookie_t ck = xcb_get_modifier_mapping(g_plat.xc);
 	xcb_get_modifier_mapping_reply_t *mr;
 	xcb_keycode_t                    *nlcodes;
 	xcb_keycode_t                    *modcodes;
 
-	numlockmask = 0;
-	mr          = xcb_get_modifier_mapping_reply(xc, ck, NULL);
+	g_plat.numlockmask = 0;
+	mr                 = xcb_get_modifier_mapping_reply(g_plat.xc, ck, NULL);
 	if (!mr)
 		return;
-	nlcodes  = xcb_key_symbols_get_keycode(keysyms, XKB_KEY_Num_Lock);
+	nlcodes  = xcb_key_symbols_get_keycode(g_plat.keysyms, XKB_KEY_Num_Lock);
 	modcodes = xcb_get_modifier_mapping_keycodes(mr);
 	if (nlcodes) {
 		for (i = 0; i < 8; i++)
@@ -902,7 +909,7 @@ updatenumlockmask(void)
 				xcb_keycode_t *nl;
 				for (nl = nlcodes; *nl != XCB_NO_SYMBOL; nl++)
 					if (kc == *nl)
-						numlockmask |= (1u << i);
+						g_plat.numlockmask |= (1u << i);
 			}
 		free(nlcodes);
 	}

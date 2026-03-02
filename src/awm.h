@@ -46,7 +46,7 @@
 #define BUTTONMASK \
 	(XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE)
 #define CLEANMASK(mask)                                               \
-	(mask & ~(numlockmask | XCB_MOD_MASK_LOCK) &                      \
+	(mask & ~(g_plat.numlockmask | XCB_MOD_MASK_LOCK) &               \
 	    (XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_CONTROL | XCB_MOD_MASK_1 | \
 	        XCB_MOD_MASK_2 | XCB_MOD_MASK_3 | XCB_MOD_MASK_4 |        \
 	        XCB_MOD_MASK_5))
@@ -60,11 +60,11 @@
 #define HEIGHT(X) ((X)->h + 2 * (X)->bw)
 #define TAGMASK ((1 << LENGTH(tags)) - 1)
 #define TAGSLENGTH (LENGTH(tags))
-#define TEXTW(X) (drw_fontset_getwidth(drw, (X)) + lrpad)
+#define TEXTW(X) (drw_fontset_getwidth(drw, (X)) + g_plat.lrpad)
 
 /* Flush the X request buffer without a round-trip.
  * Prefer this over XSync(dpy, False) wherever error-draining is not needed. */
-#define xflush() xcb_flush(xc)
+#define xflush() xcb_flush(g_plat.xc)
 
 /* Large enough for the fully assembled status2d string, including per-core
  * CPU vbar escapes (up to 64 cores × ~44 bytes each) plus all other widgets.
@@ -132,6 +132,8 @@ enum {
 	WMTakeFocus,
 	WMLast
 }; /* default atoms */
+
+#include "platform.h"
 enum {
 	ClkTagBar,
 	ClkLtSymbol,
@@ -271,44 +273,24 @@ struct Systray {
 };
 
 /* extern globals — defined in awm.c */
-extern xcb_connection_t *xc;
-extern xcb_window_t      root, wmcheckwin;
-extern int               screen;
-extern int               sw, sh;
-extern int               bh;
-extern int               lrpad;
-extern int               awm_tagslength; /* = TAGSLENGTH; set in setup() */
-extern double            ui_dpi;   /* resolved screen DPI (96.0 default) */
-extern double            ui_scale; /* ui_dpi / 96.0 */
-extern Drw              *drw;
-extern Clr             **scheme;
-extern Cur              *cursor[CurLast];
-extern Systray          *systray;
-extern xcb_atom_t        wmatom[WMLast], netatom[NetLast], xatom[XLast];
-extern xcb_atom_t        utf8string_atom;
-extern char              stext[STATUS_TEXT_LEN];
-extern int               restart;
-extern int               barsdirty;
-extern int launcher_visible; /* 1 while launcher window is open */
+extern int      awm_tagslength; /* = TAGSLENGTH; set in setup() */
+extern Drw     *drw;
+extern Clr    **scheme;
+extern Cur     *cursor[CurLast];
+extern Systray *systray;
+extern char     stext[STATUS_TEXT_LEN];
+extern int      restart;
+extern int      barsdirty;
+extern int      launcher_visible; /* 1 while launcher window is open */
 extern xcb_window_t
     launcher_xwin; /* X window ID of the launcher (from LAUNCHER_READY) */
-extern unsigned int numlockmask;
 extern xcb_timestamp_t
     last_event_time; /* timestamp of the most recent user event */
-extern xcb_key_symbols_t *keysyms;
 /* config-derived globals referenced by dbus.c / icon.c */
 extern const unsigned int sniconsize;
 extern const unsigned int iconcachesize;
 extern const unsigned int iconcachemaxentries;
 extern const unsigned int dbustimeout;
-/* DPI-scaled runtime pixel constants — set in setup() after resolve_dpi() */
-extern unsigned int ui_borderpx; /* borderpx * ui_scale */
-extern unsigned int ui_snap;     /* snap     * ui_scale */
-extern unsigned int ui_iconsize; /* iconsize * ui_scale */
-extern unsigned int ui_gappx;    /* gappx[0] * ui_scale */
-#ifdef XRANDR
-extern int randrbase, rrerrbase;
-#endif
 extern void (*handler[LASTEvent])(xcb_generic_event_t *);
 
 /* Return the root_visual of screen number scr_num from an XCB connection.

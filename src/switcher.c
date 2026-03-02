@@ -169,16 +169,16 @@ find_format_for_depth(int depth)
 		if (fi)
 			return fi->id;
 	}
-	return find_visual_format(xcb_screen_root_visual(xc, screen));
+	return find_visual_format(xcb_screen_root_visual(g_plat.xc, g_plat.screen));
 }
 
-/* Walk the xcb_screen visuals to find the xcb_visualtype_t for the root
- * visual of our screen. */
+/* Walk the xcb_screen visuals to find the xcb_visualtype_t for the g_plat.root
+ * visual of our g_plat.screen. */
 static xcb_visualtype_t *
 get_root_visualtype(void)
 {
-	xcb_screen_iterator_t sit = xcb_setup_roots_iterator(xcb_get_setup(xc));
-	for (int i = 0; i < screen; i++)
+	xcb_screen_iterator_t sit = xcb_setup_roots_iterator(xcb_get_setup(g_plat.xc));
+	for (int i = 0; i < g_plat.screen; i++)
 		xcb_screen_next(&sit);
 
 	xcb_visualid_t       root_vid = sit.data->root_visual;
@@ -233,13 +233,13 @@ build_thumbnail(SwitcherEntry *e)
 	/* Use cw->pixmap if available; otherwise acquire a fresh snapshot. */
 	xcb_pixmap_t src_pixmap = cw->pixmap;
 	if (!src_pixmap) {
-		xcb_pixmap_t         pix = xcb_generate_id(xc);
+		xcb_pixmap_t         pix = xcb_generate_id(g_plat.xc);
 		xcb_void_cookie_t    nck;
 		xcb_generic_error_t *nerr;
 		nck = xcb_composite_name_window_pixmap_checked(
-		    xc, (xcb_window_t) cw->win, pix);
-		xcb_flush(xc);
-		nerr = xcb_request_check(xc, nck);
+		    g_plat.xc, (xcb_window_t) cw->win, pix);
+		xcb_flush(g_plat.xc);
+		nerr = xcb_request_check(g_plat.xc, nck);
 		if (nerr) {
 			free(nerr);
 			return;
@@ -265,12 +265,12 @@ build_thumbnail(SwitcherEntry *e)
 	src_fmt = find_format_for_depth(cw->depth);
 	if (!src_fmt) {
 		if (own_pixmap)
-			xcb_free_pixmap(xc, own_pixmap);
+			xcb_free_pixmap(g_plat.xc, own_pixmap);
 		return;
 	}
 
-	src_pict = xcb_generate_id(xc);
-	xcb_render_create_picture(xc, src_pict, (xcb_drawable_t) src_pixmap,
+	src_pict = xcb_generate_id(g_plat.xc);
+	xcb_render_create_picture(g_plat.xc, src_pict, (xcb_drawable_t) src_pixmap,
 	    src_fmt, pict_mask, &pict_val);
 
 	/* Set scale transform on the source picture.
@@ -292,43 +292,43 @@ build_thumbnail(SwitcherEntry *e)
 		xform.matrix32 = 0;
 		xform.matrix33 = fp_one;
 	}
-	xcb_render_set_picture_transform(xc, src_pict, xform);
+	xcb_render_set_picture_transform(g_plat.xc, src_pict, xform);
 
 	/* Bilinear filter for nicer downscaling */
 	{
 		static const char filter[] = "good";
 		xcb_render_set_picture_filter(
-		    xc, src_pict, (uint16_t) (sizeof(filter) - 1), filter, 0, NULL);
+		    g_plat.xc, src_pict, (uint16_t) (sizeof(filter) - 1), filter, 0, NULL);
 	}
 
 	/* Destination pixmap at thumbnail size (root depth / visual) */
-	uint8_t dst_depth = (uint8_t) xcb_screen_root_depth(xc, screen);
-	dst_fmt           = find_visual_format(xcb_screen_root_visual(xc, screen));
+	uint8_t dst_depth = (uint8_t) xcb_screen_root_depth(g_plat.xc, g_plat.screen);
+	dst_fmt           = find_visual_format(xcb_screen_root_visual(g_plat.xc, g_plat.screen));
 	if (!dst_fmt) {
-		xcb_render_free_picture(xc, src_pict);
+		xcb_render_free_picture(g_plat.xc, src_pict);
 		if (own_pixmap)
-			xcb_free_pixmap(xc, own_pixmap);
+			xcb_free_pixmap(g_plat.xc, own_pixmap);
 		return;
 	}
 
-	e->thumb_pixmap = xcb_generate_id(xc);
-	ck              = xcb_create_pixmap_checked(xc, dst_depth, e->thumb_pixmap,
-	                 (xcb_drawable_t) root, (uint16_t) tw, (uint16_t) th);
-	xcb_flush(xc);
-	err = xcb_request_check(xc, ck);
+	e->thumb_pixmap = xcb_generate_id(g_plat.xc);
+	ck              = xcb_create_pixmap_checked(g_plat.xc, dst_depth, e->thumb_pixmap,
+	                 (xcb_drawable_t) g_plat.root, (uint16_t) tw, (uint16_t) th);
+	xcb_flush(g_plat.xc);
+	err = xcb_request_check(g_plat.xc, ck);
 	if (err) {
 		awm_warn("switcher: create thumb pixmap failed (error %d)",
 		    (int) err->error_code);
 		free(err);
-		xcb_render_free_picture(xc, src_pict);
+		xcb_render_free_picture(g_plat.xc, src_pict);
 		if (own_pixmap)
-			xcb_free_pixmap(xc, own_pixmap);
+			xcb_free_pixmap(g_plat.xc, own_pixmap);
 		e->thumb_pixmap = 0;
 		return;
 	}
 
-	e->thumb_pict = xcb_generate_id(xc);
-	xcb_render_create_picture(xc, e->thumb_pict,
+	e->thumb_pict = xcb_generate_id(g_plat.xc);
+	xcb_render_create_picture(g_plat.xc, e->thumb_pict,
 	    (xcb_drawable_t) e->thumb_pixmap, dst_fmt, pict_mask, &pict_val);
 
 	/* Pre-fill dst with opaque background so ARGB windows blend cleanly */
@@ -341,46 +341,46 @@ build_thumbnail(SwitcherEntry *e)
 		bc.blue               = bg->b;
 		bc.alpha              = 0xffff;
 		xcb_render_fill_rectangles(
-		    xc, XCB_RENDER_PICT_OP_SRC, e->thumb_pict, bc, 1, &br);
+		    g_plat.xc, XCB_RENDER_PICT_OP_SRC, e->thumb_pict, bc, 1, &br);
 	}
 
 	/* Composite: scale from source into destination.
 	 * ARGB sources need OVER so pre-multiplied alpha blends against
 	 * the background we just filled; opaque sources use SRC directly. */
-	xcb_render_composite(xc,
+	xcb_render_composite(g_plat.xc,
 	    cw->argb ? XCB_RENDER_PICT_OP_OVER : XCB_RENDER_PICT_OP_SRC, src_pict,
 	    XCB_RENDER_PICTURE_NONE, e->thumb_pict, 0, 0, /* src x,y  */
 	    0, 0,                                         /* mask x,y */
 	    0, 0,                                         /* dst x,y  */
 	    (uint16_t) tw, (uint16_t) th);
-	xcb_flush(xc);
+	xcb_flush(g_plat.xc);
 
-	xcb_render_free_picture(xc, src_pict);
+	xcb_render_free_picture(g_plat.xc, src_pict);
 	/* Release snapshot pixmap we acquired ourselves (if any) */
 	if (own_pixmap)
-		xcb_free_pixmap(xc, own_pixmap);
+		xcb_free_pixmap(g_plat.xc, own_pixmap);
 
 	/* Wrap the destination pixmap as a cairo surface */
 	{
 		xcb_visualtype_t *vis = get_root_visualtype();
 		if (!vis) {
-			xcb_render_free_picture(xc, e->thumb_pict);
-			xcb_free_pixmap(xc, e->thumb_pixmap);
+			xcb_render_free_picture(g_plat.xc, e->thumb_pict);
+			xcb_free_pixmap(g_plat.xc, e->thumb_pixmap);
 			e->thumb_pict   = 0;
 			e->thumb_pixmap = 0;
 			return;
 		}
 
 		e->thumb_surf = cairo_xcb_surface_create(
-		    xc, (xcb_drawable_t) e->thumb_pixmap, vis, tw, th);
+		    g_plat.xc, (xcb_drawable_t) e->thumb_pixmap, vis, tw, th);
 		if (!e->thumb_surf ||
 		    cairo_surface_status(e->thumb_surf) != CAIRO_STATUS_SUCCESS) {
 			if (e->thumb_surf) {
 				cairo_surface_destroy(e->thumb_surf);
 				e->thumb_surf = NULL;
 			}
-			xcb_render_free_picture(xc, e->thumb_pict);
-			xcb_free_pixmap(xc, e->thumb_pixmap);
+			xcb_render_free_picture(g_plat.xc, e->thumb_pict);
+			xcb_free_pixmap(g_plat.xc, e->thumb_pixmap);
 			e->thumb_pict   = 0;
 			e->thumb_pixmap = 0;
 			return;
@@ -618,11 +618,11 @@ free_thumbnails(void)
 			e->thumb_surf = NULL;
 		}
 		if (e->thumb_pict) {
-			xcb_render_free_picture(xc, e->thumb_pict);
+			xcb_render_free_picture(g_plat.xc, e->thumb_pict);
 			e->thumb_pict = 0;
 		}
 		if (e->thumb_pixmap) {
-			xcb_free_pixmap(xc, e->thumb_pixmap);
+			xcb_free_pixmap(g_plat.xc, e->thumb_pixmap);
 			e->thumb_pixmap = 0;
 		}
 		e->has_thumb = 0;
@@ -723,12 +723,12 @@ switcher_hide(void)
 	}
 
 	/* Release the keyboard grab we took in switcher_show_internal */
-	xcb_ungrab_keyboard(xc, XCB_CURRENT_TIME);
+	xcb_ungrab_keyboard(g_plat.xc, XCB_CURRENT_TIME);
 
 	sw_active = 0;
 	if (sw_win)
 		gtk_widget_hide(sw_win);
-	xcb_flush(xc);
+	xcb_flush(g_plat.xc);
 }
 
 static void
@@ -757,9 +757,9 @@ switcher_confirm(void)
 	/* Warp the pointer to the centre of the chosen window unconditionally.
 	 * This is required for focus-follows-mouse: without a warp the pointer
 	 * stays where it is and the next mouse-move will steal focus back. */
-	xcb_warp_pointer(xc, XCB_WINDOW_NONE, chosen->win, 0, 0, 0, 0,
+	xcb_warp_pointer(g_plat.xc, XCB_WINDOW_NONE, chosen->win, 0, 0, 0, 0,
 	    (int16_t) (chosen->w / 2), (int16_t) (chosen->h / 2));
-	xcb_flush(xc);
+	xcb_flush(g_plat.xc);
 }
 
 static void
@@ -889,8 +889,8 @@ switcher_show_internal(int all_monitors, int start_prev)
 			if (xwin) {
 				uint32_t stack_above = XCB_STACK_MODE_ABOVE;
 				xcb_configure_window(
-				    xc, xwin, XCB_CONFIG_WINDOW_STACK_MODE, &stack_above);
-				xcb_flush(xc);
+				    g_plat.xc, xwin, XCB_CONFIG_WINDOW_STACK_MODE, &stack_above);
+				xcb_flush(g_plat.xc);
 			}
 		}
 	}
@@ -898,9 +898,9 @@ switcher_show_internal(int all_monitors, int start_prev)
 	/* Grab the keyboard so we receive all key events (including releases of
 	 * Alt/Super) while the switcher is open.  This supplements the passive
 	 * grabs on individual keybindings. */
-	xcb_grab_keyboard(xc, 0, root, XCB_CURRENT_TIME, XCB_GRAB_MODE_ASYNC,
+	xcb_grab_keyboard(g_plat.xc, 0, g_plat.root, XCB_CURRENT_TIME, XCB_GRAB_MODE_ASYNC,
 	    XCB_GRAB_MODE_ASYNC);
-	xcb_flush(xc);
+	xcb_flush(g_plat.xc);
 }
 
 /* -------------------------------------------------------------------------

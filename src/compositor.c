@@ -1,7 +1,7 @@
 /* compositor.c — compositor core for awm
  *
  * Architecture:
- *   - XCompositeRedirectSubwindows(root, CompositeRedirectManual) captures
+ *   - XCompositeRedirectSubwindows(g_plat.root, CompositeRedirectManual) captures
  *     all root children into server-side pixmaps.
  *   - An overlay window (XCompositeGetOverlayWindow) is used as the render
  *     surface.  The active backend (EGL/GL or XRender) draws into it.
@@ -102,10 +102,10 @@ comp_dirty_add_rect(int x, int y, int w, int h)
 	r.y      = (short) y;
 	r.width  = (uint16_t) w;
 	r.height = (uint16_t) h;
-	sr       = xcb_generate_id(xc);
-	xcb_xfixes_create_region(xc, sr, 1, &r);
-	xcb_xfixes_union_region(xc, comp.dirty, sr, comp.dirty);
-	xcb_xfixes_destroy_region(xc, sr);
+	sr       = xcb_generate_id(g_plat.xc);
+	xcb_xfixes_create_region(g_plat.xc, sr, 1, &r);
+	xcb_xfixes_union_region(g_plat.xc, comp.dirty, sr, comp.dirty);
+	xcb_xfixes_destroy_region(g_plat.xc, sr);
 
 	if (!comp.dirty_bbox_valid) {
 		comp.dirty_x1         = x;
@@ -128,12 +128,12 @@ comp_dirty_add_rect(int x, int y, int w, int h)
 static void
 comp_dirty_full(void)
 {
-	xcb_rectangle_t full = { 0, 0, (uint16_t) sw, (uint16_t) sh };
-	xcb_xfixes_set_region(xc, comp.dirty, 1, &full);
+	xcb_rectangle_t full = { 0, 0, (uint16_t) g_plat.sw, (uint16_t) g_plat.sh };
+	xcb_xfixes_set_region(g_plat.xc, comp.dirty, 1, &full);
 	comp.dirty_x1         = 0;
 	comp.dirty_y1         = 0;
-	comp.dirty_x2         = sw;
-	comp.dirty_y2         = sh;
+	comp.dirty_x2         = g_plat.sw;
+	comp.dirty_y2         = g_plat.sh;
 	comp.dirty_bbox_valid = 1;
 }
 
@@ -151,7 +151,7 @@ compositor_init(GMainContext *ctx)
 
 	/* --- Query/cache XRender picture formats (needed for all format lookups)
 	 */
-	comp.render_formats = xcb_render_util_query_formats(xc);
+	comp.render_formats = xcb_render_util_query_formats(g_plat.xc);
 	if (!comp.render_formats) {
 		awm_warn("compositor: xcb_render_util_query_formats failed");
 		return -1;
@@ -169,14 +169,14 @@ compositor_init(GMainContext *ctx)
 	/* --- Check required extensions ----------------------------------------
 	 */
 
-	ext = xcb_get_extension_data(xc, &xcb_composite_id);
+	ext = xcb_get_extension_data(g_plat.xc, &xcb_composite_id);
 	if (!ext || !ext->present)
 		INIT_FAIL("compositor: XComposite extension not available");
 	{
 		xcb_composite_query_version_cookie_t vck;
 		xcb_composite_query_version_reply_t *vr;
-		vck = xcb_composite_query_version(xc, 0, 2);
-		vr  = xcb_composite_query_version_reply(xc, vck, NULL);
+		vck = xcb_composite_query_version(g_plat.xc, 0, 2);
+		vr  = xcb_composite_query_version_reply(g_plat.xc, vck, NULL);
 		if (!vr || (vr->major_version == 0 && vr->minor_version < 2)) {
 			awm_warn("compositor: XComposite >= 0.2 required (got %d.%d)",
 			    vr ? (int) vr->major_version : 0,
@@ -187,7 +187,7 @@ compositor_init(GMainContext *ctx)
 		free(vr);
 	}
 
-	ext = xcb_get_extension_data(xc, &xcb_damage_id);
+	ext = xcb_get_extension_data(g_plat.xc, &xcb_damage_id);
 	if (!ext || !ext->present)
 		INIT_FAIL("compositor: XDamage extension not available");
 	comp.damage_ev_base  = ext->first_event;
@@ -196,12 +196,12 @@ compositor_init(GMainContext *ctx)
 	{
 		xcb_damage_query_version_cookie_t dvck;
 		xcb_damage_query_version_reply_t *dvr;
-		dvck = xcb_damage_query_version(xc, 1, 1);
-		dvr  = xcb_damage_query_version_reply(xc, dvck, NULL);
+		dvck = xcb_damage_query_version(g_plat.xc, 1, 1);
+		dvr  = xcb_damage_query_version_reply(g_plat.xc, dvck, NULL);
 		free(dvr);
 	}
 
-	ext = xcb_get_extension_data(xc, &xcb_xfixes_id);
+	ext = xcb_get_extension_data(g_plat.xc, &xcb_xfixes_id);
 	if (!ext || !ext->present)
 		INIT_FAIL("compositor: XFixes extension not available");
 	comp.xfixes_ev_base  = ext->first_event;
@@ -209,12 +209,12 @@ compositor_init(GMainContext *ctx)
 	{
 		xcb_xfixes_query_version_cookie_t fvck;
 		xcb_xfixes_query_version_reply_t *fvr;
-		fvck = xcb_xfixes_query_version(xc, 2, 0);
-		fvr  = xcb_xfixes_query_version_reply(xc, fvck, NULL);
+		fvck = xcb_xfixes_query_version(g_plat.xc, 2, 0);
+		fvr  = xcb_xfixes_query_version_reply(g_plat.xc, fvck, NULL);
 		free(fvr);
 	}
 
-	ext = xcb_get_extension_data(xc, &xcb_render_id);
+	ext = xcb_get_extension_data(g_plat.xc, &xcb_render_id);
 	if (!ext || !ext->present)
 		INIT_FAIL("compositor: XRender extension not available");
 	comp.render_err_base     = ext->first_error;
@@ -224,7 +224,7 @@ compositor_init(GMainContext *ctx)
 	 * request codes, but the glx_errors stub in compositor.h still exists
 	 * to avoid changing events.c; it will always return -1 after this. */
 
-	ext = xcb_get_extension_data(xc, &xcb_shape_id);
+	ext = xcb_get_extension_data(g_plat.xc, &xcb_shape_id);
 	if (ext && ext->present) {
 		comp.has_xshape     = 1;
 		comp.shape_ev_base  = ext->first_event;
@@ -235,7 +235,7 @@ compositor_init(GMainContext *ctx)
 	 */
 	{
 		const xcb_query_extension_reply_t *pext =
-		    xcb_get_extension_data(xc, &xcb_present_id);
+		    xcb_get_extension_data(g_plat.xc, &xcb_present_id);
 		if (pext && pext->present) {
 			comp.has_present      = 1;
 			comp.present_opcode   = pext->major_opcode;
@@ -251,33 +251,33 @@ compositor_init(GMainContext *ctx)
 	/* --- Redirect all root children ---------------------------------------
 	 */
 	xcb_composite_redirect_subwindows(
-	    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
-	xcb_flush(xc);
+	    g_plat.xc, (xcb_window_t) g_plat.root, XCB_COMPOSITE_REDIRECT_MANUAL);
+	xcb_flush(g_plat.xc);
 
 	/* --- Overlay window ---------------------------------------------------
 	 */
 	{
 		xcb_composite_get_overlay_window_cookie_t owck;
 		xcb_composite_get_overlay_window_reply_t *owr;
-		owck = xcb_composite_get_overlay_window(xc, (xcb_window_t) root);
-		owr  = xcb_composite_get_overlay_window_reply(xc, owck, NULL);
+		owck = xcb_composite_get_overlay_window(g_plat.xc, (xcb_window_t) g_plat.root);
+		owr  = xcb_composite_get_overlay_window_reply(g_plat.xc, owck, NULL);
 		comp.overlay = owr ? owr->overlay_win : 0;
 		free(owr);
 	}
 	if (!comp.overlay) {
 		awm_warn("compositor: failed to get overlay window");
 		xcb_composite_unredirect_subwindows(
-		    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
+		    g_plat.xc, (xcb_window_t) g_plat.root, XCB_COMPOSITE_REDIRECT_MANUAL);
 		return -1;
 	}
 
 	/* Make the overlay click-through */
 	{
-		xcb_xfixes_region_t empty = xcb_generate_id(xc);
-		xcb_xfixes_create_region(xc, empty, 0, NULL);
+		xcb_xfixes_region_t empty = xcb_generate_id(g_plat.xc);
+		xcb_xfixes_create_region(g_plat.xc, empty, 0, NULL);
 		xcb_xfixes_set_window_shape_region(
-		    xc, (xcb_window_t) comp.overlay, XCB_SHAPE_SK_INPUT, 0, 0, empty);
-		xcb_xfixes_destroy_region(xc, empty);
+		    g_plat.xc, (xcb_window_t) comp.overlay, XCB_SHAPE_SK_INPUT, 0, 0, empty);
+		xcb_xfixes_destroy_region(g_plat.xc, empty);
 	}
 
 	/* --- Initialise backend -----------------------------------------------
@@ -291,25 +291,25 @@ compositor_init(GMainContext *ctx)
 		awm_debug("compositor: using XRender fallback backend");
 	} else {
 		awm_warn("compositor: all backends failed — compositor disabled");
-		xcb_composite_release_overlay_window(xc, (xcb_window_t) root);
+		xcb_composite_release_overlay_window(g_plat.xc, (xcb_window_t) g_plat.root);
 		xcb_composite_unredirect_subwindows(
-		    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
+		    g_plat.xc, (xcb_window_t) g_plat.root, XCB_COMPOSITE_REDIRECT_MANUAL);
 		return -1;
 	}
 
-	/* --- Dirty region (starts as full screen) -----------------------------
+	/* --- Dirty region (starts as full g_plat.screen) -----------------------------
 	 */
 	{
-		comp.dirty = xcb_generate_id(xc);
-		xcb_xfixes_create_region(xc, comp.dirty, 0, NULL);
+		comp.dirty = xcb_generate_id(g_plat.xc);
+		xcb_xfixes_create_region(g_plat.xc, comp.dirty, 0, NULL);
 		/* Use comp_dirty_full() so the CPU bbox is also initialised. */
 		comp_dirty_full();
 	}
 
 	/* --- Bypass region (starts empty — no monitors bypassed) ----------- */
 	{
-		comp.bypass_region = xcb_generate_id(xc);
-		xcb_xfixes_create_region(xc, comp.bypass_region, 0, NULL);
+		comp.bypass_region = xcb_generate_id(g_plat.xc);
+		xcb_xfixes_create_region(g_plat.xc, comp.bypass_region, 0, NULL);
 	}
 
 	/* --- Subscribe overlay to Present for vsync vblank notifications -----
@@ -323,11 +323,11 @@ compositor_init(GMainContext *ctx)
 
 		comp.vblank_eid       = 0; /* overlay uses eid=0 */
 		comp.present_eid_next = 1; /* per-window ids start at 1 */
-		pck = xcb_present_select_input_checked(xc, comp.vblank_eid,
+		pck = xcb_present_select_input_checked(g_plat.xc, comp.vblank_eid,
 		    (xcb_window_t) comp.overlay,
 		    XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY);
-		xcb_flush(xc);
-		perr = xcb_request_check(xc, pck);
+		xcb_flush(g_plat.xc);
+		perr = xcb_request_check(g_plat.xc, pck);
 		if (perr) {
 			awm_warn("compositor: xcb_present_select_input failed "
 			         "(error %d) — falling back to idle repaint",
@@ -346,35 +346,35 @@ compositor_init(GMainContext *ctx)
 		char                     sel_name[32];
 		xcb_intern_atom_cookie_t ck;
 		xcb_intern_atom_reply_t *r;
-		snprintf(sel_name, sizeof(sel_name), "_NET_WM_CM_S%d", screen);
-		ck = xcb_intern_atom(xc, 0, (uint16_t) strlen(sel_name), sel_name);
-		r  = xcb_intern_atom_reply(xc, ck, NULL);
+		snprintf(sel_name, sizeof(sel_name), "_NET_WM_CM_S%d", g_plat.screen);
+		ck = xcb_intern_atom(g_plat.xc, 0, (uint16_t) strlen(sel_name), sel_name);
+		r  = xcb_intern_atom_reply(g_plat.xc, ck, NULL);
 		comp.atom_cm_sn = r ? r->atom : XCB_ATOM_NONE;
 		free(r);
 
 		{
-			xcb_window_t win = xcb_generate_id(xc);
-			xcb_create_window(xc, XCB_COPY_FROM_PARENT, win,
-			    (xcb_window_t) root, -1, -1, 1, 1, 0,
+			xcb_window_t win = xcb_generate_id(g_plat.xc);
+			xcb_create_window(g_plat.xc, XCB_COPY_FROM_PARENT, win,
+			    (xcb_window_t) g_plat.root, -1, -1, 1, 1, 0,
 			    XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, 0, NULL);
 			comp.cm_owner_win = win;
 		}
 
-		xcb_set_selection_owner(xc, comp.cm_owner_win,
+		xcb_set_selection_owner(g_plat.xc, comp.cm_owner_win,
 		    (xcb_atom_t) comp.atom_cm_sn, XCB_CURRENT_TIME);
 
 		{
 			xcb_get_selection_owner_cookie_t gck;
 			xcb_get_selection_owner_reply_t *gr;
-			gck = xcb_get_selection_owner(xc, (xcb_atom_t) comp.atom_cm_sn);
-			gr  = xcb_get_selection_owner_reply(xc, gck, NULL);
+			gck = xcb_get_selection_owner(g_plat.xc, (xcb_atom_t) comp.atom_cm_sn);
+			gr  = xcb_get_selection_owner_reply(g_plat.xc, gck, NULL);
 			if (!gr || gr->owner != comp.cm_owner_win) {
 				awm_warn("compositor: could not claim _NET_WM_CM_S%d — "
 				         "another compositor may be running",
-				    screen);
+				    g_plat.screen);
 			} else {
 				awm_debug(
-				    "compositor: claimed _NET_WM_CM_S%d selection", screen);
+				    "compositor: claimed _NET_WM_CM_S%d selection", g_plat.screen);
 			}
 			free(gr);
 		}
@@ -382,7 +382,7 @@ compositor_init(GMainContext *ctx)
 		{
 			uint32_t evmask = XCB_EVENT_MASK_STRUCTURE_NOTIFY;
 			xcb_change_window_attributes(
-			    xc, comp.cm_owner_win, XCB_CW_EVENT_MASK, &evmask);
+			    g_plat.xc, comp.cm_owner_win, XCB_CW_EVENT_MASK, &evmask);
 		}
 	}
 
@@ -393,8 +393,8 @@ compositor_init(GMainContext *ctx)
 		xcb_query_tree_reply_t *qtr;
 		uint32_t                j;
 
-		qtck = xcb_query_tree(xc, root);
-		qtr  = xcb_query_tree_reply(xc, qtck, NULL);
+		qtck = xcb_query_tree(g_plat.xc, g_plat.root);
+		qtr  = xcb_query_tree_reply(g_plat.xc, qtck, NULL);
 		if (qtr) {
 			xcb_window_t *ch = xcb_query_tree_children(qtr);
 			int           nc = xcb_query_tree_children_length(qtr);
@@ -410,14 +410,14 @@ compositor_init(GMainContext *ctx)
 	 */
 	{
 		xcb_intern_atom_cookie_t ck0 =
-		    xcb_intern_atom(xc, 0, 13, "_XROOTPMAP_ID");
+		    xcb_intern_atom(g_plat.xc, 0, 13, "_XROOTPMAP_ID");
 		xcb_intern_atom_cookie_t ck1 =
-		    xcb_intern_atom(xc, 0, 16, "ESETROOT_PMAP_ID");
+		    xcb_intern_atom(g_plat.xc, 0, 16, "ESETROOT_PMAP_ID");
 		xcb_intern_atom_cookie_t ck2 =
-		    xcb_intern_atom(xc, 0, 24, "_NET_WM_WINDOW_OPACITY");
-		xcb_intern_atom_reply_t *r0 = xcb_intern_atom_reply(xc, ck0, NULL);
-		xcb_intern_atom_reply_t *r1 = xcb_intern_atom_reply(xc, ck1, NULL);
-		xcb_intern_atom_reply_t *r2 = xcb_intern_atom_reply(xc, ck2, NULL);
+		    xcb_intern_atom(g_plat.xc, 0, 24, "_NET_WM_WINDOW_OPACITY");
+		xcb_intern_atom_reply_t *r0 = xcb_intern_atom_reply(g_plat.xc, ck0, NULL);
+		xcb_intern_atom_reply_t *r1 = xcb_intern_atom_reply(g_plat.xc, ck1, NULL);
+		xcb_intern_atom_reply_t *r2 = xcb_intern_atom_reply(g_plat.xc, ck2, NULL);
 		comp.atom_rootpmap          = r0 ? r0->atom : XCB_ATOM_NONE;
 		comp.atom_esetroot          = r1 ? r1->atom : XCB_ATOM_NONE;
 		comp.atom_net_wm_opacity    = r2 ? r2->atom : XCB_ATOM_NONE;
@@ -433,8 +433,8 @@ compositor_init(GMainContext *ctx)
 	{
 		uint32_t stack = XCB_STACK_MODE_ABOVE;
 		xcb_configure_window(
-		    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
-		xcb_map_window(xc, comp.overlay);
+		    g_plat.xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		xcb_map_window(g_plat.xc, comp.overlay);
 	}
 
 	schedule_repaint();
@@ -464,7 +464,7 @@ compositor_cleanup(void)
 
 	/* Unsubscribe the overlay from Present vblank notifications */
 	if (comp.has_present && comp.overlay) {
-		xcb_present_select_input(xc, comp.vblank_eid,
+		xcb_present_select_input(g_plat.xc, comp.vblank_eid,
 		    (xcb_window_t) comp.overlay, XCB_PRESENT_EVENT_MASK_NO_EVENT);
 	}
 	comp.vblank_armed    = 0;
@@ -485,23 +485,23 @@ compositor_cleanup(void)
 	comp.backend = NULL;
 
 	if (comp.overlay)
-		xcb_composite_release_overlay_window(xc, (xcb_window_t) root);
+		xcb_composite_release_overlay_window(g_plat.xc, (xcb_window_t) g_plat.root);
 
 	/* Release _NET_WM_CM_Sn selection */
 	if (comp.cm_owner_win) {
-		xcb_destroy_window(xc, comp.cm_owner_win);
+		xcb_destroy_window(g_plat.xc, comp.cm_owner_win);
 		comp.cm_owner_win = 0;
 	}
 
 	if (comp.dirty)
-		xcb_xfixes_destroy_region(xc, comp.dirty);
+		xcb_xfixes_destroy_region(g_plat.xc, comp.dirty);
 	if (comp.bypass_region)
-		xcb_xfixes_destroy_region(xc, comp.bypass_region);
+		xcb_xfixes_destroy_region(g_plat.xc, comp.bypass_region);
 
 	xcb_composite_unredirect_subwindows(
-	    xc, (xcb_window_t) root, XCB_COMPOSITE_REDIRECT_MANUAL);
+	    g_plat.xc, (xcb_window_t) g_plat.root, XCB_COMPOSITE_REDIRECT_MANUAL);
 
-	xcb_render_util_disconnect(xc);
+	xcb_render_util_disconnect(g_plat.xc);
 
 	xflush();
 
@@ -540,9 +540,9 @@ comp_subscribe_present(CompWin *cw)
 	if (comp.present_eid_next == comp.vblank_eid)
 		comp.present_eid_next++;
 
-	xcb_present_select_input(xc, cw->present_eid, (xcb_window_t) cw->win,
+	xcb_present_select_input(g_plat.xc, cw->present_eid, (xcb_window_t) cw->win,
 	    XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY);
-	xcb_flush(xc);
+	xcb_flush(g_plat.xc);
 
 	awm_debug("compositor: subscribed Present CompleteNotify for "
 	          "window 0x%lx (eid=%u)",
@@ -556,9 +556,9 @@ comp_unsubscribe_present(CompWin *cw)
 	if (!comp.has_present || !cw->present_eid)
 		return;
 
-	xcb_present_select_input(xc, cw->present_eid, (xcb_window_t) cw->win,
+	xcb_present_select_input(g_plat.xc, cw->present_eid, (xcb_window_t) cw->win,
 	    XCB_PRESENT_EVENT_MASK_NO_EVENT);
-	xcb_flush(xc);
+	xcb_flush(g_plat.xc);
 	cw->present_eid = 0;
 }
 
@@ -569,9 +569,9 @@ comp_free_win(CompWin *cw)
 		xcb_void_cookie_t    ck;
 		xcb_generic_error_t *err;
 
-		ck = xcb_shape_select_input_checked(xc, (xcb_window_t) cw->win, 0);
-		xcb_flush(xc);
-		err = xcb_request_check(xc, ck);
+		ck = xcb_shape_select_input_checked(g_plat.xc, (xcb_window_t) cw->win, 0);
+		xcb_flush(g_plat.xc);
+		err = xcb_request_check(g_plat.xc, ck);
 		free(err);
 	}
 
@@ -581,9 +581,9 @@ comp_free_win(CompWin *cw)
 		xcb_void_cookie_t    ck;
 		xcb_generic_error_t *err;
 
-		ck = xcb_damage_destroy_checked(xc, cw->damage);
-		xcb_flush(xc);
-		err = xcb_request_check(xc, ck);
+		ck = xcb_damage_destroy_checked(g_plat.xc, cw->damage);
+		xcb_flush(g_plat.xc);
+		err = xcb_request_check(g_plat.xc, ck);
 		free(err);
 		cw->damage = 0;
 	}
@@ -597,11 +597,11 @@ comp_free_win(CompWin *cw)
 		awm_warn("compositor: comp_free_win: cw->picture non-zero without "
 		         "prior release_pixmap — freeing defensively (window 0x%x)",
 		    (unsigned) cw->win);
-		xcb_render_free_picture(xc, cw->picture);
+		xcb_render_free_picture(g_plat.xc, cw->picture);
 		cw->picture = 0;
 	}
 	if (cw->pixmap) {
-		xcb_free_pixmap(xc, cw->pixmap);
+		xcb_free_pixmap(g_plat.xc, cw->pixmap);
 		cw->pixmap = 0;
 	}
 }
@@ -613,7 +613,7 @@ comp_refresh_pixmap(CompWin *cw)
 	comp.backend->release_pixmap(cw);
 
 	if (cw->pixmap) {
-		xcb_free_pixmap(xc, cw->pixmap);
+		xcb_free_pixmap(g_plat.xc, cw->pixmap);
 		cw->pixmap = 0;
 	}
 
@@ -621,14 +621,14 @@ comp_refresh_pixmap(CompWin *cw)
 	cw->ever_damaged = 0;
 
 	{
-		xcb_pixmap_t         pix = xcb_generate_id(xc);
+		xcb_pixmap_t         pix = xcb_generate_id(g_plat.xc);
 		xcb_void_cookie_t    ck;
 		xcb_generic_error_t *err;
 
 		ck = xcb_composite_name_window_pixmap_checked(
-		    xc, (xcb_window_t) cw->win, pix);
-		xcb_flush(xc);
-		err = xcb_request_check(xc, ck);
+		    g_plat.xc, (xcb_window_t) cw->win, pix);
+		xcb_flush(g_plat.xc);
+		err = xcb_request_check(g_plat.xc, ck);
 		if (err) {
 			/* NameWindowPixmap failed (window unmapped/destroyed);
 			 * do not assign pix — it was never created on the server. */
@@ -644,12 +644,12 @@ comp_refresh_pixmap(CompWin *cw)
 	{
 		xcb_get_geometry_cookie_t gck;
 		xcb_get_geometry_reply_t *gr;
-		gck = xcb_get_geometry(xc, (xcb_drawable_t) cw->pixmap);
-		gr  = xcb_get_geometry_reply(xc, gck, NULL);
+		gck = xcb_get_geometry(g_plat.xc, (xcb_drawable_t) cw->pixmap);
+		gr  = xcb_get_geometry_reply(g_plat.xc, gck, NULL);
 		if (!gr) {
 			awm_warn("compositor: pixmap geometry query failed — "
 			         "releasing stale pixmap");
-			xcb_free_pixmap(xc, cw->pixmap);
+			xcb_free_pixmap(g_plat.xc, cw->pixmap);
 			cw->pixmap = 0;
 			return;
 		}
@@ -677,9 +677,9 @@ comp_update_wallpaper(void)
 	atoms[1] = comp.atom_esetroot;
 
 	for (i = 0; i < 2 && pmap == 0; i++) {
-		ck = xcb_get_property(xc, 0, (xcb_window_t) root,
+		ck = xcb_get_property(g_plat.xc, 0, (xcb_window_t) g_plat.root,
 		    (xcb_atom_t) atoms[i], XCB_ATOM_PIXMAP, 0, 1);
-		r  = xcb_get_property_reply(xc, ck, NULL);
+		r  = xcb_get_property_reply(g_plat.xc, ck, NULL);
 		if (r &&
 		    xcb_get_property_value_length(r) >= (int) sizeof(xcb_pixmap_t))
 			pmap = (xcb_pixmap_t) * (xcb_pixmap_t *) xcb_get_property_value(r);
@@ -750,12 +750,12 @@ comp_add_by_xid(xcb_window_t w)
 
 	{
 		xcb_get_window_attributes_cookie_t wac =
-		    xcb_get_window_attributes(xc, (xcb_window_t) w);
+		    xcb_get_window_attributes(g_plat.xc, (xcb_window_t) w);
 		xcb_get_geometry_cookie_t gc =
-		    xcb_get_geometry(xc, (xcb_drawable_t) w);
+		    xcb_get_geometry(g_plat.xc, (xcb_drawable_t) w);
 		xcb_get_window_attributes_reply_t *war =
-		    xcb_get_window_attributes_reply(xc, wac, NULL);
-		xcb_get_geometry_reply_t *gr = xcb_get_geometry_reply(xc, gc, NULL);
+		    xcb_get_window_attributes_reply(g_plat.xc, wac, NULL);
+		xcb_get_geometry_reply_t *gr = xcb_get_geometry_reply(g_plat.xc, gc, NULL);
 
 		if (!war || !gr) {
 			free(war);
@@ -815,11 +815,11 @@ comp_add_by_xid(xcb_window_t w)
 		xcb_void_cookie_t    ck;
 		xcb_generic_error_t *err;
 
-		cw->damage = xcb_generate_id(xc);
-		ck = xcb_damage_create_checked(xc, cw->damage, (xcb_drawable_t) w,
+		cw->damage = xcb_generate_id(g_plat.xc);
+		ck = xcb_damage_create_checked(g_plat.xc, cw->damage, (xcb_drawable_t) w,
 		    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
-		xcb_flush(xc);
-		err = xcb_request_check(xc, ck);
+		xcb_flush(g_plat.xc);
+		err = xcb_request_check(g_plat.xc, ck);
 		if (err) {
 			awm_warn("compositor: xcb_damage_create failed (error %d) "
 			         "for window 0x%08x",
@@ -832,7 +832,7 @@ comp_add_by_xid(xcb_window_t w)
 	comp_subscribe_present(cw);
 
 	if (comp.has_xshape)
-		xcb_shape_select_input(xc, (xcb_window_t) w, 1);
+		xcb_shape_select_input(g_plat.xc, (xcb_window_t) w, 1);
 
 	if (!comp.windows) {
 		cw->next     = NULL;
@@ -960,8 +960,8 @@ compositor_bypass_window(Client *c, int bypass)
 		xcb_generic_error_t *err;
 
 		ck = xcb_composite_unredirect_window_checked(
-		    xc, (xcb_window_t) c->win, XCB_COMPOSITE_REDIRECT_MANUAL);
-		err = xcb_request_check(xc, ck);
+		    g_plat.xc, (xcb_window_t) c->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+		err = xcb_request_check(g_plat.xc, ck);
 		free(err);
 		cw->redirected = 0;
 		comp.backend->release_pixmap(cw);
@@ -971,14 +971,14 @@ compositor_bypass_window(Client *c, int bypass)
 		xcb_generic_error_t *err;
 
 		ck = xcb_composite_redirect_window_checked(
-		    xc, (xcb_window_t) c->win, XCB_COMPOSITE_REDIRECT_MANUAL);
-		err = xcb_request_check(xc, ck);
+		    g_plat.xc, (xcb_window_t) c->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+		err = xcb_request_check(g_plat.xc, ck);
 		free(err);
 		cw->redirected = 1;
 		comp_refresh_pixmap(cw);
 		if (cw->pixmap && !cw->damage) {
-			cw->damage = xcb_generate_id(xc);
-			xcb_damage_create(xc, cw->damage, (xcb_drawable_t) c->win,
+			cw->damage = xcb_generate_id(g_plat.xc);
+			xcb_damage_create(g_plat.xc, cw->damage, (xcb_drawable_t) c->win,
 			    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
 		}
 		comp_subscribe_present(cw);
@@ -1078,13 +1078,13 @@ comp_fullscreen_bypass_cb(gpointer data)
 
 	{
 		uint32_t vals[2] = { (uint32_t) c->mon->barwin, XCB_STACK_MODE_ABOVE };
-		xcb_configure_window(xc, c->win,
+		xcb_configure_window(g_plat.xc, c->win,
 		    XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, vals);
 	}
 
 	compositor_check_unredirect();
-	xcb_clear_area(xc, 1, (xcb_window_t) c->win, 0, 0, 0, 0);
-	xcb_flush(xc);
+	xcb_clear_area(g_plat.xc, 1, (xcb_window_t) c->win, 0, 0, 0, 0);
+	xcb_flush(g_plat.xc);
 
 	return G_SOURCE_REMOVE;
 }
@@ -1179,10 +1179,10 @@ compositor_notify_screen_resize(void)
 	 * This must happen before notify_resize() so the EGL surface and XRender
 	 * back-buffer are recreated against the correct drawable size. */
 	{
-		uint32_t vals[2] = { (uint32_t) sw, (uint32_t) sh };
-		xcb_configure_window(xc, (xcb_window_t) comp.overlay,
+		uint32_t vals[2] = { (uint32_t) g_plat.sw, (uint32_t) g_plat.sh };
+		xcb_configure_window(g_plat.xc, (xcb_window_t) comp.overlay,
 		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, vals);
-		xcb_flush(xc);
+		xcb_flush(g_plat.xc);
 	}
 
 	comp.backend->notify_resize();
@@ -1198,7 +1198,7 @@ compositor_raise_overlay(void)
 	{
 		uint32_t stack = XCB_STACK_MODE_ABOVE;
 		xcb_configure_window(
-		    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		    g_plat.xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 	}
 }
 
@@ -1230,9 +1230,9 @@ comp_update_overlay_shape(void)
 		/* No bypass — restore bounding shape to full screen rectangle */
 		full.x      = 0;
 		full.y      = 0;
-		full.width  = (uint16_t) sw;
-		full.height = (uint16_t) sh;
-		xcb_xfixes_set_window_shape_region(xc, (xcb_window_t) comp.overlay,
+		full.width  = (uint16_t) g_plat.sw;
+		full.height = (uint16_t) g_plat.sh;
+		xcb_xfixes_set_window_shape_region(g_plat.xc, (xcb_window_t) comp.overlay,
 		    XCB_SHAPE_SK_BOUNDING, 0, 0, XCB_NONE);
 		/* XCB_NONE resets to the default (entire window) */
 		return;
@@ -1250,16 +1250,16 @@ comp_update_overlay_shape(void)
 
 		full.x      = 0;
 		full.y      = 0;
-		full.width  = (uint16_t) sw;
-		full.height = (uint16_t) sh;
+		full.width  = (uint16_t) g_plat.sw;
+		full.height = (uint16_t) g_plat.sh;
 
-		full_rgn   = xcb_generate_id(xc);
-		hole_rgn   = xcb_generate_id(xc);
-		result_rgn = xcb_generate_id(xc);
+		full_rgn   = xcb_generate_id(g_plat.xc);
+		hole_rgn   = xcb_generate_id(g_plat.xc);
+		result_rgn = xcb_generate_id(g_plat.xc);
 
-		xcb_xfixes_create_region(xc, full_rgn, 1, &full);
-		xcb_xfixes_create_region(xc, hole_rgn, 0, NULL);
-		xcb_xfixes_create_region(xc, result_rgn, 0, NULL);
+		xcb_xfixes_create_region(g_plat.xc, full_rgn, 1, &full);
+		xcb_xfixes_create_region(g_plat.xc, hole_rgn, 0, NULL);
+		xcb_xfixes_create_region(g_plat.xc, result_rgn, 0, NULL);
 
 		FOR_EACH_MON(m)
 		{
@@ -1271,25 +1271,25 @@ comp_update_overlay_shape(void)
 				xcb_rectangle_t mr = { (int16_t) m->mx, (int16_t) m->my,
 					(uint16_t) m->mw, (uint16_t) m->mh };
 				/* Add this monitor's rect to hole_rgn */
-				xcb_xfixes_set_region(xc, result_rgn, 1, &mr);
-				xcb_xfixes_union_region(xc, hole_rgn, result_rgn, hole_rgn);
+				xcb_xfixes_set_region(g_plat.xc, result_rgn, 1, &mr);
+				xcb_xfixes_union_region(g_plat.xc, hole_rgn, result_rgn, hole_rgn);
 			}
 		}
 
 		/* result = full - holes */
-		xcb_xfixes_subtract_region(xc, full_rgn, hole_rgn, result_rgn);
+		xcb_xfixes_subtract_region(g_plat.xc, full_rgn, hole_rgn, result_rgn);
 
-		xcb_xfixes_set_window_shape_region(xc, (xcb_window_t) comp.overlay,
+		xcb_xfixes_set_window_shape_region(g_plat.xc, (xcb_window_t) comp.overlay,
 		    XCB_SHAPE_SK_BOUNDING, 0, 0, result_rgn);
 
 		/* Also update comp.bypass_region for potential backend use */
-		xcb_xfixes_copy_region(xc, hole_rgn, comp.bypass_region);
+		xcb_xfixes_copy_region(g_plat.xc, hole_rgn, comp.bypass_region);
 
-		xcb_xfixes_destroy_region(xc, full_rgn);
-		xcb_xfixes_destroy_region(xc, hole_rgn);
-		xcb_xfixes_destroy_region(xc, result_rgn);
+		xcb_xfixes_destroy_region(g_plat.xc, full_rgn);
+		xcb_xfixes_destroy_region(g_plat.xc, hole_rgn);
+		xcb_xfixes_destroy_region(g_plat.xc, result_rgn);
 	}
-	xcb_flush(xc);
+	xcb_flush(g_plat.xc);
 }
 
 void
@@ -1379,9 +1379,9 @@ compositor_check_unredirect(void)
 					xcb_void_cookie_t    ck;
 					xcb_generic_error_t *err;
 
-					ck  = xcb_composite_unredirect_window_checked(xc,
+					ck  = xcb_composite_unredirect_window_checked(g_plat.xc,
 					     (xcb_window_t) cw->win, XCB_COMPOSITE_REDIRECT_MANUAL);
-					err = xcb_request_check(xc, ck);
+					err = xcb_request_check(g_plat.xc, ck);
 					free(err);
 					cw->redirected = 0;
 					comp.backend->release_pixmap(cw);
@@ -1394,12 +1394,12 @@ compositor_check_unredirect(void)
 					{
 						uint32_t vals[2] = { (uint32_t) cm->barwin,
 							XCB_STACK_MODE_ABOVE };
-						xcb_configure_window(xc, (xcb_window_t) cw->win,
+						xcb_configure_window(g_plat.xc, (xcb_window_t) cw->win,
 						    XCB_CONFIG_WINDOW_SIBLING |
 						        XCB_CONFIG_WINDOW_STACK_MODE,
 						    vals);
 					}
-					xcb_clear_area(xc, 1, (xcb_window_t) cw->win, 0, 0, 0, 0);
+					xcb_clear_area(g_plat.xc, 1, (xcb_window_t) cw->win, 0, 0, 0, 0);
 				}
 			}
 		}
@@ -1451,14 +1451,14 @@ compositor_check_unredirect(void)
 				xcb_generic_error_t *err;
 
 				ck = xcb_composite_redirect_window_checked(
-				    xc, (xcb_window_t) cw->win, XCB_COMPOSITE_REDIRECT_MANUAL);
-				err = xcb_request_check(xc, ck);
+				    g_plat.xc, (xcb_window_t) cw->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+				err = xcb_request_check(g_plat.xc, ck);
 				free(err);
 				cw->redirected = 1;
 				comp_refresh_pixmap(cw);
 				if (cw->pixmap && !cw->damage) {
-					cw->damage = xcb_generate_id(xc);
-					xcb_damage_create(xc, cw->damage, (xcb_drawable_t) cw->win,
+					cw->damage = xcb_generate_id(g_plat.xc);
+					xcb_damage_create(g_plat.xc, cw->damage, (xcb_drawable_t) cw->win,
 					    XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
 				}
 				comp_subscribe_present(cw);
@@ -1475,7 +1475,7 @@ compositor_check_unredirect(void)
 		 */
 		uint32_t stack = XCB_STACK_MODE_ABOVE;
 		xcb_configure_window(
-		    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		    g_plat.xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 		comp_update_overlay_shape();
 		/* Cancel the watchdog — we resumed completely. */
 		if (comp_pause_watchdog_id) {
@@ -1496,9 +1496,9 @@ compositor_check_unredirect(void)
 		{
 			uint32_t stack = XCB_STACK_MODE_BELOW;
 			xcb_configure_window(
-			    xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+			    g_plat.xc, comp.overlay, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 		}
-		xcb_flush(xc);
+		xcb_flush(g_plat.xc);
 		awm_debug("compositor: fully suspended (all monitors bypassed)");
 		if (!comp_pause_watchdog_id)
 			comp_pause_watchdog_id =
@@ -1508,7 +1508,7 @@ compositor_check_unredirect(void)
 		 * monitors, keep compositing the rest.  Start watchdog if this
 		 * is the first bypass transition. */
 		comp_update_overlay_shape();
-		xcb_flush(xc);
+		xcb_flush(g_plat.xc);
 		if (removed || added) {
 			/* Overlay shape changed — repaint non-bypassed monitors.
 			 * This is needed both when monitors resume (removed) and
@@ -1597,8 +1597,8 @@ compositor_handle_event(xcb_generic_event_t *ev)
 			xcb_generic_error_t *err;
 
 			ck = xcb_damage_subtract_checked(
-			    xc, dev->damage, XCB_NONE, XCB_NONE);
-			err = xcb_request_check(xc, ck);
+			    g_plat.xc, dev->damage, XCB_NONE, XCB_NONE);
+			err = xcb_request_check(g_plat.xc, ck);
 			free(err);
 			schedule_repaint();
 			return;
@@ -1610,29 +1610,29 @@ compositor_handle_event(xcb_generic_event_t *ev)
 
 			dcw->ever_damaged = 1;
 			ck                = xcb_damage_subtract_checked(
-                xc, dev->damage, XCB_NONE, XCB_NONE);
-			err = xcb_request_check(xc, ck);
+                g_plat.xc, dev->damage, XCB_NONE, XCB_NONE);
+			err = xcb_request_check(g_plat.xc, ck);
 			free(err);
 			comp_dirty_add_rect(
 			    dcw->x, dcw->y, dcw->w + 2 * dcw->bw, dcw->h + 2 * dcw->bw);
 		} else {
-			xcb_xfixes_region_t  dmg_region = xcb_generate_id(xc);
+			xcb_xfixes_region_t  dmg_region = xcb_generate_id(g_plat.xc);
 			xcb_void_cookie_t    ck;
 			xcb_generic_error_t *err;
 
-			xcb_xfixes_create_region(xc, dmg_region, 0, NULL);
+			xcb_xfixes_create_region(g_plat.xc, dmg_region, 0, NULL);
 			ck = xcb_damage_subtract_checked(
-			    xc, dev->damage, XCB_NONE, dmg_region);
-			err = xcb_request_check(xc, ck);
+			    g_plat.xc, dev->damage, XCB_NONE, dmg_region);
+			err = xcb_request_check(g_plat.xc, ck);
 			free(err);
 			/* Translate damage region to screen coords and union into
 			 * comp.dirty (server-side).  The CPU bbox will be conservatively
 			 * expanded to the whole window below — precise per-damage bbox
 			 * tracking would require another round-trip. */
 			xcb_xfixes_translate_region(
-			    xc, dmg_region, (int16_t) dcw->x, (int16_t) dcw->y);
-			xcb_xfixes_union_region(xc, comp.dirty, dmg_region, comp.dirty);
-			xcb_xfixes_destroy_region(xc, dmg_region);
+			    g_plat.xc, dmg_region, (int16_t) dcw->x, (int16_t) dcw->y);
+			xcb_xfixes_union_region(g_plat.xc, comp.dirty, dmg_region, comp.dirty);
+			xcb_xfixes_destroy_region(g_plat.xc, dmg_region);
 			/* Extend CPU bbox by the window rect (conservative) */
 			comp_dirty_add_rect(
 			    dcw->x, dcw->y, dcw->w + 2 * dcw->bw, dcw->h + 2 * dcw->bw);
@@ -1652,7 +1652,7 @@ compositor_handle_event(xcb_generic_event_t *ev)
 
 		if (type == XCB_MAP_NOTIFY) {
 			xcb_map_notify_event_t *mev = (xcb_map_notify_event_t *) ev;
-			if (mev->event == root)
+			if (mev->event == g_plat.root)
 				comp_add_by_xid(mev->window);
 			schedule_repaint();
 			return;
@@ -1755,22 +1755,22 @@ compositor_handle_event(xcb_generic_event_t *ev)
 		if (type == XCB_PROPERTY_NOTIFY) {
 			xcb_property_notify_event_t *pev =
 			    (xcb_property_notify_event_t *) ev;
-			if (pev->window == root &&
+			if (pev->window == g_plat.root &&
 			    (pev->atom == comp.atom_rootpmap ||
 			        pev->atom == comp.atom_esetroot)) {
 				comp_update_wallpaper();
 				compositor_damage_all();
 			} else if (pev->atom == comp.atom_net_wm_opacity &&
-			    pev->window != root) {
+			    pev->window != g_plat.root) {
 				CompWin *cw = comp_find_by_xid(pev->window);
 				if (cw && cw->client) {
 					xcb_get_property_cookie_t ck2;
 					xcb_get_property_reply_t *r2;
 
-					ck2 = xcb_get_property(xc, 0, (xcb_window_t) pev->window,
+					ck2 = xcb_get_property(g_plat.xc, 0, (xcb_window_t) pev->window,
 					    (xcb_atom_t) comp.atom_net_wm_opacity,
 					    XCB_ATOM_CARDINAL, 0, 1);
-					r2  = xcb_get_property_reply(xc, ck2, NULL);
+					r2  = xcb_get_property_reply(g_plat.xc, ck2, NULL);
 					if (r2 &&
 					    xcb_get_property_value_length(r2) >=
 					        (int) sizeof(uint32_t)) {
@@ -1814,7 +1814,7 @@ compositor_handle_event(xcb_generic_event_t *ev)
 				awm_warn(
 				    "compositor: lost _NET_WM_CM_S%d selection to another "
 				    "compositor; disabling compositing",
-				    screen);
+				    g_plat.screen);
 				compositor_cleanup();
 			}
 			return;
@@ -1850,7 +1850,7 @@ compositor_handle_event(xcb_generic_event_t *ev)
 					if (cw && cw->redirected && !comp.paused) {
 						comp_refresh_pixmap(cw);
 						/* Dirty only this window's bounding rect, not the
-						 * whole screen.  compositor_damage_all() here would
+						 * whole g_plat.screen.  compositor_damage_all() here would
 						 * force a full-screen repaint on every pixmap refresh
 						 * event (e.g. every frame of a video player). */
 						comp_dirty_add_rect(cw->x, cw->y, cw->w + 2 * cw->bw,
@@ -1888,12 +1888,12 @@ comp_arm_vblank(void)
 		return;
 
 	if (comp.has_present && !comp.vblank_armed) {
-		xcb_present_notify_msc(xc, (xcb_window_t) comp.overlay,
+		xcb_present_notify_msc(g_plat.xc, (xcb_window_t) comp.overlay,
 		    comp.vblank_eid,
 		    /* target_msc */ 0,
 		    /* divisor    */ 0,
 		    /* remainder  */ 0);
-		xcb_flush(xc);
+		xcb_flush(g_plat.xc);
 		comp.vblank_armed = 1;
 		return;
 	}
@@ -2031,9 +2031,9 @@ comp_snapshot_pixmaps(unsigned int *count_out)
 		/* icon_name: use WM_CLASS instance (res_name) if available */
 		{
 			xcb_get_property_cookie_t pck = xcb_get_property(
-			    xc, 0, c->win, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 0, 128);
+			    g_plat.xc, 0, c->win, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 0, 128);
 			xcb_get_property_reply_t *pr =
-			    xcb_get_property_reply(xc, pck, NULL);
+			    xcb_get_property_reply(g_plat.xc, pck, NULL);
 			if (pr && xcb_get_property_value_length(pr) > 0) {
 				const char *val = (const char *) xcb_get_property_value(pr);
 				int         len = xcb_get_property_value_length(pr);
@@ -2060,14 +2060,14 @@ comp_snapshot_pixmaps(unsigned int *count_out)
 		e->depth = cw ? (uint8_t) cw->depth : 24;
 
 		/* Acquire a fresh snapshot pixmap for this window */
-		snap = xcb_generate_id(xc);
+		snap = xcb_generate_id(g_plat.xc);
 		{
 			xcb_void_cookie_t    vck;
 			xcb_generic_error_t *err;
 			vck = xcb_composite_name_window_pixmap_checked(
-			    xc, (xcb_window_t) c->win, snap);
-			xcb_flush(xc);
-			err = xcb_request_check(xc, vck);
+			    g_plat.xc, (xcb_window_t) c->win, snap);
+			xcb_flush(g_plat.xc);
+			err = xcb_request_check(g_plat.xc, vck);
 			if (err) {
 				free(err);
 				e->pixmap_xid = 0;
