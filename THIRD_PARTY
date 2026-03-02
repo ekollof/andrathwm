@@ -1,1 +1,8 @@
-No third-party vendored libraries.
+Third-party vendored libraries:
+
+  tests/greatest.h
+    URL:     https://github.com/silentbicycle/greatest
+    Version: master (retrieved 2026-03-02)
+    License: ISC
+    Author:  Scott Vokes <vokes.s@gmail.com>
+    Use:     Unit test harness for the tests/ suite.

@@ -107,7 +107,7 @@ TEST_CFLAGS = -std=c11 -pedantic -Werror -Wall -I. -Isrc -Itests
 TEST_SRCS  = src/status_util.c src/log.c
 TEST_BINS  = build/test_status_util
 
-build/test_status_util: tests/test_status_util.c $(TEST_SRCS) tests/minunit.h | $(BUILDDIR)
+build/test_status_util: tests/test_status_util.c $(TEST_SRCS) tests/greatest.h | $(BUILDDIR)
 	$(TEST_CC) $(TEST_CFLAGS) -o $@ tests/test_status_util.c $(TEST_SRCS)
 
 test: $(TEST_BINS)
