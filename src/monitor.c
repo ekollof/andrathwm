@@ -67,8 +67,8 @@ arrange(Monitor *m)
 		 * (ConfigureNotify, MapNotify, DamageNotify, etc.). */
 		{
 			xcb_generic_event_t *xe;
-			xcb_flush(g_plat.xc);
-			while ((xe = xcb_poll_for_event(g_plat.xc))) {
+			g_wm_backend->flush(&g_plat);
+			while ((xe = g_wm_backend->poll_event(&g_plat))) {
 				uint8_t type = xe->response_type & ~0x80;
 #ifdef COMPOSITOR
 				if (xe->response_type != 0)
@@ -107,8 +107,8 @@ cleanupmon(Monitor *mon)
 	/* Find index of the monitor being removed. */
 	idx = (int) (mon - g_awm.monitors);
 
-	xcb_unmap_window(g_plat.xc, mon->barwin);
-	xcb_destroy_window(g_plat.xc, mon->barwin);
+	g_wm_backend->unmap(&g_plat, mon->barwin);
+	g_wm_backend->destroy_win(&g_plat, mon->barwin);
 
 	/* Compact the array: shift entries left over the removed slot. */
 	for (i = idx; i < (int) g_awm.n_monitors - 1; i++)
@@ -402,7 +402,7 @@ monocle(Monitor *m)
 			compositor_set_hidden(c, 1);
 			uint32_t xy[2] = { (uint32_t) (int32_t) (WIDTH(c) * -2),
 				(uint32_t) (int32_t) c->y };
-			xcb_configure_window(g_plat.xc, c->win,
+			g_wm_backend->configure_win(&g_plat, c->win,
 			    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, xy);
 		}
 }
@@ -429,7 +429,7 @@ resizebarwin(Monitor *m)
 		w -= getsystraywidth();
 	uint32_t xywh[4] = { (uint32_t) (int32_t) m->wx,
 		(uint32_t) (int32_t) m->by, w, (uint32_t) g_plat.bh };
-	xcb_configure_window(g_plat.xc, m->barwin,
+	g_wm_backend->configure_win(&g_plat, m->barwin,
 	    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_WIDTH |
 	        XCB_CONFIG_WINDOW_HEIGHT,
 	    xywh);
@@ -445,15 +445,15 @@ restack(Monitor *m)
 		return;
 	if (m->sel->isfloating || !m->lt[m->sellt]->arrange) {
 		uint32_t stack = XCB_STACK_MODE_ABOVE;
-		xcb_configure_window(
-		    g_plat.xc, m->sel->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+		g_wm_backend->configure_win(
+		    &g_plat, m->sel->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 	}
 	if (m->lt[m->sellt]->arrange) {
 		uint32_t sibling = (uint32_t) m->barwin;
 		for (c = g_awm.stack_head; c; c = c->snext)
 			if (!c->isfloating && ISVISIBLE(c, m)) {
 				uint32_t vals[2] = { sibling, XCB_STACK_MODE_BELOW };
-				xcb_configure_window(g_plat.xc, c->win,
+				g_wm_backend->configure_win(&g_plat, c->win,
 				    XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE,
 				    vals);
 				sibling = (uint32_t) c->win;
@@ -465,8 +465,8 @@ restack(Monitor *m)
 	/* Same EnterNotify drain as arrange() — see comment there. */
 	{
 		xcb_generic_event_t *xe;
-		xcb_flush(g_plat.xc);
-		while ((xe = xcb_poll_for_event(g_plat.xc))) {
+		g_wm_backend->flush(&g_plat);
+		while ((xe = g_wm_backend->poll_event(&g_plat))) {
 			uint8_t type = xe->response_type & ~0x80;
 #ifdef COMPOSITOR
 			if (xe->response_type != 0)
@@ -584,7 +584,8 @@ togglebar(const Arg *arg)
 				newy = g_awm_selmon->mh - g_plat.bh;
 		}
 		y = (uint32_t) newy;
-		xcb_configure_window(g_plat.xc, systray->win, XCB_CONFIG_WINDOW_Y, &y);
+		g_wm_backend->configure_win(
+		    &g_plat, systray->win, XCB_CONFIG_WINDOW_Y, &y);
 	}
 	updateworkarea(g_awm_selmon);
 	arrange(g_awm_selmon);
@@ -596,7 +597,6 @@ updatebars(void)
 {
 	unsigned int w;
 	Monitor     *m;
-	int          depth = xcb_screen_root_depth(g_plat.xc, g_plat.screen);
 
 	/* WM_CLASS value: "awm\0awm" (instance NUL class) */
 	static const char wm_class[] = "awm\0awm";
@@ -609,64 +609,28 @@ updatebars(void)
 		if (showsystray && m == systraytomon(m))
 			w -= getsystraywidth();
 
-#ifdef COMPOSITOR
-		{
-			uint32_t vals[3] = {
-				(uint32_t) scheme[SchemeNorm][ColBg].pixel, /* back_pixel */
-				1, /* override_redirect */
-				XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE |
-				    XCB_EVENT_MASK_ENTER_WINDOW |
-				    XCB_EVENT_MASK_LEAVE_WINDOW, /* event_mask */
-			};
-			m->barwin = xcb_generate_id(g_plat.xc);
-			xcb_create_window(g_plat.xc, (uint8_t) depth, m->barwin,
-			    g_plat.root, (int16_t) m->wx, (int16_t) m->by, (uint16_t) w,
-			    (uint16_t) g_plat.bh, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
-			    XCB_COPY_FROM_PARENT,
-			    XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT |
-			        XCB_CW_EVENT_MASK,
-			    vals);
-		}
-#else
-		{
-			uint32_t vals[3] = {
-				XCB_BACK_PIXMAP_PARENT_RELATIVE, /* back_pixmap =
-				                                    ParentRelative */
-				1,                               /* override_redirect */
-				XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE |
-				    XCB_EVENT_MASK_ENTER_WINDOW |
-				    XCB_EVENT_MASK_LEAVE_WINDOW, /* event_mask */
-			};
-			m->barwin = xcb_generate_id(g_plat.xc);
-			xcb_create_window(g_plat.xc, (uint8_t) depth, m->barwin,
-			    g_plat.root, (int16_t) m->wx, (int16_t) m->by, (uint16_t) w,
-			    (uint16_t) g_plat.bh, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
-			    XCB_COPY_FROM_PARENT,
-			    XCB_CW_BACK_PIXMAP | XCB_CW_OVERRIDE_REDIRECT |
-			        XCB_CW_EVENT_MASK,
-			    vals);
-		}
-#endif
+		m->barwin = g_wm_backend->create_bar_win(
+		    &g_plat, m->wx, m->by, (int) w, g_plat.bh, COMPOSITOR_ACTIVE);
 		{
 			uint32_t cur = (uint32_t) cursor[CurNormal]->cursor;
-			xcb_change_window_attributes(
-			    g_plat.xc, m->barwin, XCB_CW_CURSOR, &cur);
+			g_wm_backend->change_attr(&g_plat, m->barwin, XCB_CW_CURSOR, &cur);
 		}
 		if (showsystray && m == systraytomon(m)) {
 			uint32_t stack = XCB_STACK_MODE_ABOVE;
-			xcb_map_window(g_plat.xc, systray->win);
-			xcb_configure_window(
-			    g_plat.xc, systray->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+			g_wm_backend->map(&g_plat, systray->win);
+			g_wm_backend->configure_win(
+			    &g_plat, systray->win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 		}
 		{
 			uint32_t stack = XCB_STACK_MODE_ABOVE;
-			xcb_map_window(g_plat.xc, m->barwin);
-			xcb_configure_window(
-			    g_plat.xc, m->barwin, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+			g_wm_backend->map(&g_plat, m->barwin);
+			g_wm_backend->configure_win(
+			    &g_plat, m->barwin, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 		}
 		/* WM_CLASS: instance + class both "awm", separated by NUL */
-		xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, m->barwin,
-		    XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, sizeof(wm_class), wm_class);
+		g_wm_backend->change_prop(&g_plat, m->barwin, XCB_ATOM_WM_CLASS,
+		    XCB_ATOM_STRING, 8, XCB_PROP_MODE_REPLACE, sizeof(wm_class),
+		    wm_class);
 	}
 }
 

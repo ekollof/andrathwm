@@ -66,6 +66,13 @@
  * Prefer this over XSync(dpy, False) wherever error-draining is not needed. */
 #define xflush() xcb_flush(g_plat.xc)
 
+/* 1 when the compositor is compiled in, 0 otherwise. */
+#ifdef COMPOSITOR
+#define COMPOSITOR_ACTIVE 1
+#else
+#define COMPOSITOR_ACTIVE 0
+#endif
+
 /* Large enough for the fully assembled status2d string, including per-core
  * CPU vbar escapes (up to 64 cores × ~44 bytes each) plus all other widgets.
  * Must be >= STATUS_MAXLEN defined in status_config.h. */

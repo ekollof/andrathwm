@@ -1219,6 +1219,8 @@ setup(void)
 	int              i;
 	struct sigaction sa;
 
+	g_wm_backend = &wm_backend_x11;
+
 	/* do not transform children into zombies when they terminate */
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags   = SA_NOCLDSTOP | SA_NOCLDWAIT | SA_RESTART;

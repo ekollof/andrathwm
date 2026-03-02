@@ -100,8 +100,8 @@ buttonpress(xcb_generic_event_t *e)
 	} else if ((c = wintoclient(ev->event))) {
 		focus(c);
 		restack(g_awm_selmon);
-		xcb_allow_events(
-		    g_plat.xc, XCB_ALLOW_REPLAY_POINTER, XCB_CURRENT_TIME);
+		g_wm_backend->allow_events(
+		    &g_plat, XCB_ALLOW_REPLAY_POINTER, XCB_CURRENT_TIME);
 		xflush();
 		click = ClkClientWin;
 	}
@@ -118,8 +118,9 @@ buttonpress(xcb_generic_event_t *e)
 			 * unconditionally without replaying the event back to the
 			 * g_plat.root, which would cause a grab race with GTK's menu
 			 * seat-grab. */
-			xcb_allow_events(g_plat.xc, XCB_ALLOW_ASYNC_POINTER, ev->time);
-			xcb_flush(g_plat.xc);
+			g_wm_backend->allow_events(
+			    &g_plat, XCB_ALLOW_ASYNC_POINTER, ev->time);
+			g_wm_backend->flush(&g_plat);
 			sni_handle_click(
 			    ev->event, ev->detail, ev->root_x, ev->root_y, ev->time);
 			return; /* Don't process further */
@@ -139,33 +140,7 @@ buttonpress(xcb_generic_event_t *e)
 void
 checkotherwm(void)
 {
-	uint32_t             mask = XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT;
-	xcb_void_cookie_t    ck;
-	xcb_generic_error_t *err;
-
-	/* root is not yet set when this is called (setup() runs after us),
-	 * so derive it directly from the XCB setup data. */
-	if (!g_plat.root) {
-		xcb_screen_iterator_t sit =
-		    xcb_setup_roots_iterator(xcb_get_setup(g_plat.xc));
-		int i;
-		for (i = 0; i < g_plat.screen; i++)
-			xcb_screen_next(&sit);
-		g_plat.root = sit.data->root;
-	}
-
-	/* Probe for another WM by requesting SubstructureRedirect on g_plat.root.
-	 * Only one client may hold this mask; xcb_request_check returns an
-	 * error synchronously if another WM is already running. */
-	ck = xcb_change_window_attributes_checked(
-	    g_plat.xc, g_plat.root, XCB_CW_EVENT_MASK, &mask);
-	err = xcb_request_check(g_plat.xc, ck);
-	if (err) {
-		free(err);
-		die("awm: another window manager is already running");
-	}
-	/* XCB error handler is wired in x_dispatch_cb — nothing to register here
-	 */
+	g_wm_backend->check_other_wm(&g_plat);
 }
 
 void
@@ -189,15 +164,12 @@ clientmessage(xcb_generic_event_t *e)
 			c->next        = systray->icons;
 			systray->icons = c;
 			{
-				xcb_get_geometry_cookie_t ck =
-				    xcb_get_geometry(g_plat.xc, c->win);
-				xcb_get_geometry_reply_t *gr =
-				    xcb_get_geometry_reply(g_plat.xc, ck, NULL);
-				if (gr) {
-					c->w = c->oldw = gr->width;
-					c->h = c->oldh = gr->height;
-					c->oldbw       = gr->border_width;
-					free(gr);
+				int gx, gy, gw, gh, gbw;
+				if (g_wm_backend->get_geometry(
+				        &g_plat, c->win, &gx, &gy, &gw, &gh, &gbw)) {
+					c->w = c->oldw = gw;
+					c->h = c->oldh = gh;
+					c->oldbw       = gbw;
 				} else {
 					c->w = c->oldw = g_plat.bh;
 					c->h = c->oldh = g_plat.bh;
@@ -211,20 +183,20 @@ clientmessage(xcb_generic_event_t *e)
 			c->tags = 1;
 			updatesizehints(c);
 			updatesystrayicongeom(c, c->w, c->h);
-			xcb_change_save_set(g_plat.xc, XCB_SET_MODE_INSERT, c->win);
+			g_wm_backend->change_save_set(&g_plat, c->win, 1);
 			{
 				uint32_t mask = XCB_EVENT_MASK_STRUCTURE_NOTIFY |
 				    XCB_EVENT_MASK_PROPERTY_CHANGE |
 				    XCB_EVENT_MASK_RESIZE_REDIRECT;
-				xcb_change_window_attributes(
-				    g_plat.xc, c->win, XCB_CW_EVENT_MASK, &mask);
+				g_wm_backend->change_attr(
+				    &g_plat, c->win, XCB_CW_EVENT_MASK, &mask);
 			}
-			xcb_reparent_window(g_plat.xc, c->win, systray->win, 0, 0);
+			g_wm_backend->reparent_window(&g_plat, c->win, systray->win, 0, 0);
 			/* use bar background so icon blends with the bar */
 			{
 				uint32_t bg = clr_to_argb(&scheme[SchemeNorm][ColBg]);
-				xcb_change_window_attributes(
-				    g_plat.xc, c->win, XCB_CW_BACK_PIXEL, &bg);
+				g_wm_backend->change_attr(
+				    &g_plat, c->win, XCB_CW_BACK_PIXEL, &bg);
 			}
 			/* Send XEMBED_EMBEDDED_NOTIFY to complete embedding per spec.
 			 * data1 = embedder window, data2 = protocol version */
@@ -262,11 +234,7 @@ clientmessage(xcb_generic_event_t *e)
 		/* _NET_CLOSE_WINDOW client message */
 		if (!sendevent(c->win, g_plat.wmatom[WMDelete], 0,
 		        g_plat.wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
-
-			xcb_grab_server(g_plat.xc);
-			xcb_set_close_down_mode(g_plat.xc, XCB_CLOSE_DOWN_DESTROY_ALL);
-			xcb_kill_client(g_plat.xc, c->win);
-			xcb_ungrab_server(g_plat.xc);
+			g_wm_backend->kill_client_hard(&g_plat, c->win);
 		}
 		xflush();
 	} else if (cme->type == g_plat.netatom[NetMoveResizeWindow]) {
@@ -309,7 +277,7 @@ configurenotify(xcb_generic_event_t *e)
 							(uint32_t) m->mw,
 							(uint32_t) m->mh,
 						};
-						xcb_configure_window(g_plat.xc, c->win,
+						g_wm_backend->configure_win(&g_plat, c->win,
 						    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
 						        XCB_CONFIG_WINDOW_WIDTH |
 						        XCB_CONFIG_WINDOW_HEIGHT,
@@ -390,7 +358,7 @@ configurerequest(xcb_generic_event_t *e)
 					(uint32_t) c->w,
 					(uint32_t) c->h,
 				};
-				xcb_configure_window(g_plat.xc, c->win,
+				g_wm_backend->configure_win(&g_plat, c->win,
 				    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
 				        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
 				    xywh);
@@ -417,7 +385,8 @@ configurerequest(xcb_generic_event_t *e)
 		if (ev->value_mask & XCB_CONFIG_WINDOW_STACK_MODE)
 			vals[n++] = (uint32_t) ev->stack_mode;
 		if (n > 0)
-			xcb_configure_window(g_plat.xc, ev->window, ev->value_mask, vals);
+			g_wm_backend->configure_win(
+			    &g_plat, ev->window, ev->value_mask, vals);
 	}
 	xflush();
 }
@@ -516,25 +485,6 @@ expose(xcb_generic_event_t *e)
 	}
 }
 
-/* Return 1 if `w` is a descendant of `ancestor` in the X window tree.
- * We walk up via XQueryTree, stopping at the g_plat.root.  The depth is
- * bounded by the browser's internal widget hierarchy (typically 2–5 hops), so
- * this is cheap in practice. */
-static int
-iswindowdescendant(xcb_window_t w, xcb_window_t ancestor)
-{
-
-	while (w && w != ancestor && w != g_plat.root) {
-		xcb_query_tree_reply_t *r = xcb_query_tree_reply(
-		    g_plat.xc, xcb_query_tree(g_plat.xc, w), NULL);
-		if (!r)
-			break;
-		w = r->parent;
-		free(r);
-	}
-	return w == ancestor;
-}
-
 /* there are some broken focus acquiring clients needing extra handling */
 void
 focusin(xcb_generic_event_t *e)
@@ -553,23 +503,17 @@ focusin(xcb_generic_event_t *e)
 	 * (e.g. an in-page widget, chat overlay, or popup inside a fullscreen
 	 * browser window).  Without this guard, focusin() would steal focus back
 	 * to the top-level client window, making those widgets unreachable. */
-	if (iswindowdescendant(ev->event, g_awm_selmon->sel->win))
+	if (g_wm_backend->is_window_descendant(
+	        &g_plat, ev->event, g_awm_selmon->sel->win))
 		return;
 
 	/* Allow focus to move to override-redirect windows (e.g. the launcher).
 	 * These are unmanaged by the WM by design; stealing focus back would
 	 * make them permanently unfocusable. */
 	{
-		xcb_get_window_attributes_cookie_t ck =
-		    xcb_get_window_attributes(g_plat.xc, ev->event);
-		xcb_get_window_attributes_reply_t *r =
-		    xcb_get_window_attributes_reply(g_plat.xc, ck, NULL);
-		if (r) {
-			int or = r->override_redirect;
-			free(r);
-			if (or)
-				return;
-		}
+		int or = 0;
+		if (g_wm_backend->get_override_redirect(&g_plat, ev->event, &or) && or)
+			return;
 	}
 
 	setfocus(g_awm_selmon->sel);
@@ -578,36 +522,7 @@ focusin(xcb_generic_event_t *e)
 void
 grabkeys(void)
 {
-	updatenumlockmask();
-	{
-		unsigned int i, j, k;
-		unsigned int modifiers[] = { 0, XCB_MOD_MASK_LOCK, g_plat.numlockmask,
-			g_plat.numlockmask | XCB_MOD_MASK_LOCK };
-		const xcb_setup_t *setup = xcb_get_setup(g_plat.xc);
-		xcb_keycode_t      kmin  = setup->min_keycode;
-		xcb_keycode_t      kmax  = setup->max_keycode;
-		int                count = kmax - kmin + 1;
-
-		xcb_ungrab_key(g_plat.xc, XCB_GRAB_ANY, g_plat.root, XCB_MOD_MASK_ANY);
-
-		xcb_get_keyboard_mapping_cookie_t mck =
-		    xcb_get_keyboard_mapping(g_plat.xc, kmin, (uint8_t) count);
-		xcb_get_keyboard_mapping_reply_t *mr =
-		    xcb_get_keyboard_mapping_reply(g_plat.xc, mck, NULL);
-		if (!mr)
-			return;
-		int           skip = mr->keysyms_per_keycode;
-		xcb_keysym_t *syms = xcb_get_keyboard_mapping_keysyms(mr);
-		for (k = kmin; k <= kmax; k++)
-			for (i = 0; i < LENGTH(keys); i++)
-				if (keys[i].keysym == (KeySym) syms[(k - kmin) * skip])
-					for (j = 0; j < LENGTH(modifiers); j++)
-						xcb_grab_key(g_plat.xc, 1, g_plat.root,
-						    (uint16_t) (keys[i].mod | modifiers[j]),
-						    (xcb_keycode_t) k, XCB_GRAB_MODE_ASYNC,
-						    XCB_GRAB_MODE_ASYNC);
-		free(mr);
-	}
+	g_wm_backend->grab_keys_full(&g_plat);
 }
 
 void
@@ -619,8 +534,7 @@ keypress(xcb_generic_event_t *e)
 
 	ev              = (xcb_key_press_event_t *) e;
 	last_event_time = ev->time;
-	keysym          = xcb_key_symbols_get_keysym(
-        g_plat.keysyms, (xcb_keycode_t) ev->detail, 0);
+	keysym = g_wm_backend->get_keysym(&g_plat, (xcb_keycode_t) ev->detail, 0);
 
 	/* While the switcher is open, handle Tab/Escape/Return directly here
 	 * and suppress the normal keybinding dispatch.  The switcher GTK window
@@ -656,9 +570,9 @@ keypress(xcb_generic_event_t *e)
 void
 keyrelease(xcb_generic_event_t *e)
 {
-	xcb_key_release_event_t *ev     = (xcb_key_release_event_t *) e;
-	xcb_keysym_t             keysym = xcb_key_symbols_get_keysym(
-        g_plat.keysyms, (xcb_keycode_t) ev->detail, 0);
+	xcb_key_release_event_t *ev = (xcb_key_release_event_t *) e;
+	xcb_keysym_t             keysym =
+	    g_wm_backend->get_keysym(&g_plat, (xcb_keycode_t) ev->detail, 0);
 
 	/* Confirm the switcher when the modifier that opened it is released */
 	if (switcher_active()) {
@@ -721,7 +635,7 @@ mappingnotify(xcb_generic_event_t *e)
 {
 	xcb_mapping_notify_event_t *ev = (xcb_mapping_notify_event_t *) e;
 
-	xcb_refresh_keyboard_mapping(g_plat.keysyms, ev);
+	g_wm_backend->refresh_keyboard_mapping(&g_plat, ev);
 	if (ev->request == XCB_MAPPING_KEYBOARD)
 		grabkeys();
 }
@@ -740,25 +654,24 @@ maprequest(xcb_generic_event_t *e)
 	}
 
 	{
-		xcb_get_window_attributes_cookie_t ck =
-		    xcb_get_window_attributes(g_plat.xc, ev->window);
-		xcb_get_window_attributes_reply_t *r =
-		    xcb_get_window_attributes_reply(g_plat.xc, ck, NULL);
-		if (!r)
+		int override = 0;
+		if (!g_wm_backend->get_override_redirect(
+		        &g_plat, ev->window, &override))
 			return;
-		int override = r->override_redirect;
-		free(r);
 		if (override)
 			return;
 	}
 	if (!wintoclient(ev->window)) {
-		xcb_get_geometry_cookie_t gck =
-		    xcb_get_geometry(g_plat.xc, ev->window);
-		xcb_get_geometry_reply_t *gr =
-		    xcb_get_geometry_reply(g_plat.xc, gck, NULL);
-		if (gr) {
-			manage(ev->window, gr);
-			free(gr);
+		int                      gx, gy, gw, gh, gbw;
+		xcb_get_geometry_reply_t gr_local = { 0 };
+		if (g_wm_backend->get_geometry(
+		        &g_plat, ev->window, &gx, &gy, &gw, &gh, &gbw)) {
+			gr_local.x            = (int16_t) gx;
+			gr_local.y            = (int16_t) gy;
+			gr_local.width        = (uint16_t) gw;
+			gr_local.height       = (uint16_t) gh;
+			gr_local.border_width = (uint16_t) gbw;
+			manage(ev->window, &gr_local);
 		}
 	}
 }
@@ -809,9 +722,8 @@ propertynotify(xcb_generic_event_t *e)
 			break;
 		case XCB_ATOM_WM_TRANSIENT_FOR:
 			if (!c->isfloating &&
-			    xcb_icccm_get_wm_transient_for_reply(g_plat.xc,
-			        xcb_icccm_get_wm_transient_for(g_plat.xc, c->win), &trans,
-			        NULL) &&
+			    (trans = g_wm_backend->get_wm_transient_for(
+			         &g_plat, c->win)) != XCB_WINDOW_NONE &&
 			    (c->isfloating = (wintoclient(trans)) != NULL))
 				arrange(c->mon);
 			break;
@@ -879,9 +791,9 @@ unmapnotify(xcb_generic_event_t *e)
 		 * _not_ destroy them. We map those windows back */
 		{
 			uint32_t above = XCB_STACK_MODE_ABOVE;
-			xcb_map_window(g_plat.xc, c->win);
-			xcb_configure_window(
-			    g_plat.xc, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+			g_wm_backend->map(&g_plat, c->win);
+			g_wm_backend->configure_win(
+			    &g_plat, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
 		}
 		updatesystray();
 	}
@@ -890,30 +802,7 @@ unmapnotify(xcb_generic_event_t *e)
 void
 updatenumlockmask(void)
 {
-	unsigned int                      i, j;
-	xcb_get_modifier_mapping_cookie_t ck = xcb_get_modifier_mapping(g_plat.xc);
-	xcb_get_modifier_mapping_reply_t *mr;
-	xcb_keycode_t                    *nlcodes;
-	xcb_keycode_t                    *modcodes;
-
-	g_plat.numlockmask = 0;
-	mr                 = xcb_get_modifier_mapping_reply(g_plat.xc, ck, NULL);
-	if (!mr)
-		return;
-	nlcodes  = xcb_key_symbols_get_keycode(g_plat.keysyms, XKB_KEY_Num_Lock);
-	modcodes = xcb_get_modifier_mapping_keycodes(mr);
-	if (nlcodes) {
-		for (i = 0; i < 8; i++)
-			for (j = 0; j < mr->keycodes_per_modifier; j++) {
-				xcb_keycode_t kc = modcodes[i * mr->keycodes_per_modifier + j];
-				xcb_keycode_t *nl;
-				for (nl = nlcodes; *nl != XCB_NO_SYMBOL; nl++)
-					if (kc == *nl)
-						g_plat.numlockmask |= (1u << i);
-			}
-		free(nlcodes);
-	}
-	free(mr);
+	g_wm_backend->update_numlock_mask(&g_plat);
 }
 
 /* Return a human-readable string for a base X11 error code (1-17).

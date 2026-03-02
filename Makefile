@@ -25,7 +25,7 @@ SRCS = $(addprefix $(SRCDIR)/,$(SRC))
 OBJ = $(addprefix $(BUILDDIR)/,$(SRC:.c=.o))
 
 # awm-ui: separate GTK helper process (launcher + SNI menus)
-UI_SRC  = $(DRW_SRC) platform_x11.c awm_ui.c launcher.c icon.c log.c util.c notif.c preview.c
+UI_SRC  = awm_ui.c launcher.c icon.c log.c util.c notif.c preview.c
 UI_SRCS = $(addprefix $(SRCDIR)/,$(UI_SRC))
 UI_OBJ  = $(addprefix $(BUILDDIR)/ui_,$(UI_SRC:.c=.o))
 
