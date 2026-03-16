@@ -33,6 +33,10 @@
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
 
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 #include "launcher.h"
 #include "log.h"
 #include "notif.h"

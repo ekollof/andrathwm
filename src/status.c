@@ -56,7 +56,7 @@ status_prime_components(void)
 	}
 
 	/* Prime components that require an initial call to seed their state
-	 * (e.g. cpu_perc needs a /proc/stat snapshot before the first delta
+	 * (e.g. cpu_perc needs an initial CPU-time snapshot before the first delta
 	 * can be computed).  Using the explicit prime flag avoids fragile
 	 * function-pointer comparisons that break under LTO. */
 	for (i = 0; i < STATUS_ARGS_LEN; i++) {
