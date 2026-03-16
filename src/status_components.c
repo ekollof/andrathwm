@@ -9,6 +9,8 @@
 #include "status_components.h"
 #include "status_util.h"
 
+#define CPU_PERCPU_MAX 64
+
 #if defined(__linux__)
 #include <stdint.h>
 #include <unistd.h>
@@ -322,8 +324,6 @@ cpu_perc(const char *unused)
 /* cpu_percpu — read per-core usage from /proc/stat.
  * Fills out[0..n-1] with integer percentages.  Returns core count.
  * Uses static previous-sample arrays; first call returns 0 (no delta). */
-#define CPU_PERCPU_MAX 64
-
 int
 cpu_percpu(int *out, int maxcores)
 {
@@ -413,6 +413,65 @@ cpu_perc(const char *unused)
 	            (b[CP_USER] + b[CP_NICE] + b[CP_SYS] + b[CP_INTR])) /
 	        sum);
 }
+
+int
+cpu_percpu(int *out, int maxcores)
+{
+#ifdef KERN_CPTIME2
+	static uint64_t prev[CPU_PERCPU_MAX][CPUSTATES];
+	uint64_t        cur[CPUSTATES];
+	uint64_t        sum;
+	int             mib[3];
+	int             ncpu, n, i, j;
+	size_t          size;
+
+	if (!out || maxcores <= 0)
+		return 0;
+
+	size = sizeof(ncpu);
+	if (sysctlbyname("hw.ncpu", &ncpu, &size, NULL, 0) < 0 || !size || ncpu <= 0)
+		return 0;
+
+	n = ncpu;
+	if (n > maxcores)
+		n = maxcores;
+	if (n > CPU_PERCPU_MAX)
+		n = CPU_PERCPU_MAX;
+
+	mib[0] = CTL_KERN;
+	mib[1] = KERN_CPTIME2;
+
+	for (i = 0; i < n; i++) {
+		size   = sizeof(cur);
+		mib[2] = i;
+		if (sysctl(mib, 3, &cur, &size, NULL, 0) < 0 || size != sizeof(cur))
+			break;
+
+		sum = 0;
+		for (j = 0; j < CPUSTATES; j++)
+			sum += cur[j] - prev[i][j];
+
+		if (sum == 0 || prev[i][CP_USER] == 0) {
+			out[i] = 0;
+		} else {
+			uint64_t busy = (cur[CP_USER] + cur[CP_NICE] + cur[CP_SYS] +
+			                    cur[CP_INTR]) -
+			    (prev[i][CP_USER] + prev[i][CP_NICE] + prev[i][CP_SYS] +
+			        prev[i][CP_INTR]);
+			out[i] = (int) (100 * busy / sum);
+		}
+
+		for (j = 0; j < CPUSTATES; j++)
+			prev[i][j] = cur[j];
+	}
+
+	return i;
+#else
+	(void) out;
+	(void) maxcores;
+	return 0;
+#endif
+}
 #elif defined(__FreeBSD__)
 #include <sys/param.h>
 #include <sys/sysctl.h>
@@ -444,10 +503,65 @@ cpu_perc(const char *unused)
 	            (b[CP_USER] + b[CP_NICE] + b[CP_SYS] + b[CP_INTR])) /
 	        sum);
 }
+
+int
+cpu_percpu(int *out, int maxcores)
+{
+	static long prev[CPU_PERCPU_MAX][CPUSTATES];
+	long        cur[CPU_PERCPU_MAX][CPUSTATES];
+	long        sum;
+	int         ncpu, n, i, j;
+	size_t      size;
+
+	if (!out || maxcores <= 0)
+		return 0;
+
+	size = sizeof(ncpu);
+	if (sysctlbyname("hw.ncpu", &ncpu, &size, NULL, 0) < 0 || !size || ncpu <= 0)
+		return 0;
+
+	n = ncpu;
+	if (n > maxcores)
+		n = maxcores;
+	if (n > CPU_PERCPU_MAX)
+		n = CPU_PERCPU_MAX;
+
+	size = (size_t) n * CPUSTATES * sizeof(long);
+	if (sysctlbyname("kern.cp_times", &cur[0][0], &size, NULL, 0) < 0 ||
+	    size < CPUSTATES * sizeof(long))
+		return 0;
+
+	n = (int) (size / (CPUSTATES * sizeof(long)));
+	if (n > maxcores)
+		n = maxcores;
+	if (n > CPU_PERCPU_MAX)
+		n = CPU_PERCPU_MAX;
+
+	for (i = 0; i < n; i++) {
+		sum = 0;
+		for (j = 0; j < CPUSTATES; j++)
+			sum += cur[i][j] - prev[i][j];
+
+		if (sum <= 0 || prev[i][CP_USER] == 0) {
+			out[i] = 0;
+		} else {
+			long busy = (cur[i][CP_USER] + cur[i][CP_NICE] + cur[i][CP_SYS] +
+			                cur[i][CP_INTR]) -
+			    (prev[i][CP_USER] + prev[i][CP_NICE] + prev[i][CP_SYS] +
+			        prev[i][CP_INTR]);
+			out[i] = (int) (100 * busy / sum);
+		}
+
+		for (j = 0; j < CPUSTATES; j++)
+			prev[i][j] = cur[i][j];
+	}
+
+	return n;
+}
 #endif
 
 /* cpu_percpu stub for non-Linux platforms */
-#if !defined(__linux__)
+#if !defined(__linux__) && !defined(__OpenBSD__) && !defined(__FreeBSD__)
 int
 cpu_percpu(int *out, int maxcores)
 {
@@ -571,22 +685,22 @@ ram_used(const char *unused)
 const char *
 ram_total(const char *unused)
 {
-	unsigned int npages;
-	size_t       len;
+	uint64_t npages;
+	size_t   len;
 
 	len = sizeof(npages);
 	if (sysctlbyname("vm.stats.vm.v_page_count", &npages, &len, NULL, 0) < 0 ||
 	    !len)
 		return NULL;
 
-	return status_fmt_human(npages * getpagesize(), 1024);
+	return status_fmt_human(npages * (uint64_t) getpagesize(), 1024);
 }
 
 const char *
 ram_used(const char *unused)
 {
-	unsigned int active;
-	size_t       len;
+	uint64_t active;
+	size_t   len;
 
 	len = sizeof(active);
 	if (sysctlbyname("vm.stats.vm.v_active_count", &active, &len, NULL, 0) <
@@ -594,7 +708,7 @@ ram_used(const char *unused)
 	    !len)
 		return NULL;
 
-	return status_fmt_human(active * getpagesize(), 1024);
+	return status_fmt_human(active * (uint64_t) getpagesize(), 1024);
 }
 #endif
 

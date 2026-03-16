@@ -36,6 +36,10 @@
 #include <glib-unix.h>
 #include <gtk/gtk.h>
 
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 #include "awm.h"
 #include "client.h"
 #include "events.h"
@@ -317,7 +321,7 @@ ui_send_shm(UiMsgType type, const void *base, size_t shm_size)
 	static unsigned int seq    = 0;
 
 	/* Prefer memfd_create — anonymous, no name-collision risk */
-#ifdef __NR_memfd_create
+#if defined(__linux__) || defined(__FreeBSD__)
 	shm_fd = memfd_create("awm-preview", MFD_CLOEXEC);
 #endif
 	if (shm_fd < 0) {
@@ -768,20 +772,38 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 	case UI_MSG_LAUNCHER_EXEC: {
 		/* payload is a NUL-terminated command string */
 		launcher_visible = 0;
-		if (len == 0)
+		if (len == 0) {
+			awm_warn("awm: UI_MSG_LAUNCHER_EXEC with zero payload");
 			break;
+		}
 		char   cmd[4096];
 		size_t cmdlen = len < sizeof(cmd) ? len : sizeof(cmd) - 1;
 		memcpy(cmd, payload, cmdlen);
 		cmd[cmdlen] = '\0';
-		awm_debug("awm: exec from ui: %s", cmd);
+		awm_info("awm: launching: %s", cmd);
 
 		pid_t epid = fork();
 		if (epid < 0) {
 			awm_error("awm: fork for exec: %s", strerror(errno));
 		} else if (epid == 0) {
+			struct sigaction sa;
+
+			if (xc)
+				close(xcb_get_file_descriptor(xc));
 			setsid();
-			execlp("sh", "sh", "-c", cmd, NULL);
+
+			/* setup() installs SIGCHLD=SIG_IGN|SA_NOCLDWAIT in awm so the WM
+			 * never accumulates zombies.  A forked launcher child must restore
+			 * default SIGCHLD semantics before exec'ing /bin/sh; some shells and
+			 * launch wrappers rely on waitpid()-based child tracking and can fail
+			 * when SIGCHLD is inherited as ignored (observed on FreeBSD). */
+			sigemptyset(&sa.sa_mask);
+			sa.sa_flags   = 0;
+			sa.sa_handler = SIG_DFL;
+			sigaction(SIGCHLD, &sa, NULL);
+
+			execl("/bin/sh", "sh", "-c", cmd, NULL);
+			awm_error("awm: execl /bin/sh failed: %s", strerror(errno));
 			_exit(1);
 		}
 		break;
@@ -928,6 +950,20 @@ ui_spawn(GMainContext *ctx)
 		return -1;
 	}
 
+#ifdef SO_NOSIGPIPE
+	{
+		int one = 1;
+
+		if (setsockopt(fds[0], SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)) <
+		        0 ||
+		    setsockopt(fds[1], SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)) <
+		        0) {
+			awm_warn("ui_spawn: setsockopt(SO_NOSIGPIPE): %s",
+			    strerror(errno));
+		}
+	}
+#endif
+
 	pid_t pid = fork();
 	if (pid < 0) {
 		awm_error("ui_spawn: fork: %s", strerror(errno));
@@ -958,6 +994,11 @@ ui_spawn(GMainContext *ctx)
 		/* Build argv: awm-ui <child_fd> */
 		char fd_str[32];
 		snprintf(fd_str, sizeof(fd_str), "%d", fds[1]);
+
+		/* In a source-tree run (`./awm`), prefer the sibling `./awm-ui`
+		 * so both processes come from the same build.  Fall back to PATH
+		 * for installed setups where awm-ui lives in PREFIX/bin. */
+		execl("./awm-ui", "awm-ui", fd_str, NULL);
 
 		/* Look for awm-ui in PATH */
 		execlp("awm-ui", "awm-ui", fd_str, NULL);

@@ -25,6 +25,10 @@
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
 
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 #include "icon.h"
 #include "launcher.h"
 #include "log.h"
@@ -618,6 +622,19 @@ row_get_item(GtkListBoxRow *row)
 	return (LauncherItem *) g_object_get_data(G_OBJECT(row), "launcher-item");
 }
 
+static GtkListBoxRow *
+launcher_first_visible_row(GtkListBox *lb)
+{
+	GtkListBoxRow *row;
+	int            i = 0;
+
+	while ((row = gtk_list_box_get_row_at_index(lb, i++))) {
+		if (gtk_widget_get_child_visible(GTK_WIDGET(row)))
+			return row;
+	}
+	return NULL;
+}
+
 /* Build all rows for the listbox from the full item list.
  * Sorting: build a temporary pointer array, qsort it with launcher_item_cmp,
  * then append rows in that order.  Filtering is done via
@@ -712,13 +729,10 @@ launcher_sort_func(GtkListBoxRow *a, GtkListBoxRow *b, gpointer user_data)
 static void
 launcher_launch_row(Launcher *launcher, LauncherItem *item)
 {
+	ssize_t n;
+
 	if (!item || !item->exec)
 		return;
-
-	item->launch_count++;
-	launcher_history_save(launcher);
-
-	launcher_hide(launcher);
 
 	/* Build the command string.  For terminal apps prefix with the
 	 * configured terminal emulator so awm can exec it unchanged. */
@@ -740,10 +754,31 @@ launcher_launch_row(Launcher *launcher, LauncherItem *item)
 	hdr->payload_len = (uint32_t) len;
 	memcpy(buf + sizeof(UiMsgHeader), cmd, len);
 
-	ssize_t n =
-	    send(launcher->ui_fd, buf, sizeof(UiMsgHeader) + len, MSG_NOSIGNAL);
-	if (n < 0)
+	awm_debug("launcher: sending exec command: %s", cmd);
+	do {
+		n = send(launcher->ui_fd, buf, sizeof(UiMsgHeader) + len,
+		    MSG_NOSIGNAL);
+	} while (n < 0 && errno == EINTR);
+	if (n < 0) {
 		awm_error("launcher: send EXEC failed: %s", strerror(errno));
+		return;
+	}
+	if ((size_t) n != sizeof(UiMsgHeader) + len) {
+		awm_warn("launcher: partial send (%zd/%zu bytes)", n,
+		    sizeof(UiMsgHeader) + len);
+		return;
+	}
+
+	/* On successful EXEC send, update launcher state locally and hide without
+	 * emitting LAUNCHER_DISMISSED.  EXEC already implies dismissal on the awm
+	 * side, and avoiding a second packet prevents EXEC from being stranded if
+	 * only one queued packet is drained in a loop iteration. */
+	item->launch_count++;
+	launcher_history_save(launcher);
+	if (launcher->visible) {
+		gtk_widget_hide(launcher->window);
+		launcher->visible = 0;
+	}
 }
 
 /* Signal: row activated (double-click or Enter on a row) */
@@ -766,15 +801,10 @@ select_first_visible_idle(gpointer user_data)
 {
 	Launcher      *launcher = (Launcher *) user_data;
 	GtkListBox    *lb       = GTK_LIST_BOX(launcher->listbox);
-	GtkListBoxRow *row;
-	int            i = 0;
+	GtkListBoxRow *row      = launcher_first_visible_row(lb);
 
-	while ((row = gtk_list_box_get_row_at_index(lb, i++))) {
-		if (gtk_widget_get_child_visible(GTK_WIDGET(row))) {
-			gtk_list_box_select_row(lb, row);
-			break;
-		}
-	}
+	if (row)
+		gtk_list_box_select_row(lb, row);
 	return G_SOURCE_REMOVE; /* one-shot */
 }
 
@@ -840,6 +870,51 @@ on_delete_event(GtkWidget *widget, GdkEvent *event, gpointer user_data)
 	return TRUE; /* prevent GTK from destroying the window */
 }
 
+/* Signal: search entry activate (Enter pressed while typing in search box).
+ * GtkSearchEntry can consume Return before it reaches the toplevel key-press
+ * handler, so launch explicitly here. */
+static void
+on_search_activate(GtkEntry *entry, gpointer user_data)
+{
+	Launcher      *launcher = (Launcher *) user_data;
+	GtkListBox    *lb       = GTK_LIST_BOX(launcher->listbox);
+	GtkListBoxRow *sel;
+	(void) entry;
+
+	sel = gtk_list_box_get_selected_row(lb);
+	if (!sel)
+		sel = launcher_first_visible_row(lb);
+	if (sel)
+		launcher_launch_row(launcher, row_get_item(sel));
+	else
+		awm_warn("launcher: activate with no visible selection");
+}
+
+/* Signal: key press on search entry.
+ * Handle Return directly here so execution does not depend on toplevel
+ * key event propagation. */
+static gboolean
+on_search_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
+{
+	Launcher      *launcher = (Launcher *) user_data;
+	GtkListBox    *lb       = GTK_LIST_BOX(launcher->listbox);
+	GtkListBoxRow *sel;
+	(void) widget;
+
+	if (event->keyval != GDK_KEY_Return && event->keyval != GDK_KEY_KP_Enter)
+		return FALSE;
+
+	sel = gtk_list_box_get_selected_row(lb);
+	if (!sel)
+		sel = launcher_first_visible_row(lb);
+	if (sel)
+		launcher_launch_row(launcher, row_get_item(sel));
+	else
+		awm_warn("launcher: Return with no visible selection");
+
+	return TRUE;
+}
+
 /* Signal: key press on the window */
 static gboolean
 on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
@@ -858,8 +933,12 @@ on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
 	case GDK_KEY_Return:
 	case GDK_KEY_KP_Enter: {
 		sel = gtk_list_box_get_selected_row(lb);
+		if (!sel)
+			sel = launcher_first_visible_row(lb);
 		if (sel)
 			launcher_launch_row(launcher, row_get_item(sel));
+		else
+			awm_warn("launcher: Enter pressed with no visible selection");
 		return TRUE;
 	}
 
@@ -1034,6 +1113,10 @@ launcher_create(int ui_fd, const char *term)
 	/* Signals */
 	g_signal_connect(launcher->search, "search-changed",
 	    G_CALLBACK(on_search_changed), launcher);
+	g_signal_connect(
+	    launcher->search, "activate", G_CALLBACK(on_search_activate), launcher);
+	g_signal_connect(launcher->search, "key-press-event",
+	    G_CALLBACK(on_search_key_press), launcher);
 	g_signal_connect(launcher->listbox, "row-activated",
 	    G_CALLBACK(on_row_activated), launcher);
 	g_signal_connect(

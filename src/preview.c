@@ -38,6 +38,10 @@
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
 
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 #include "log.h"
 #include "preview.h"
 #include "ui_proto.h"
