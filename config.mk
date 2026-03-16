@@ -48,6 +48,11 @@ BACKEND ?= X11
 
 # flags
 CPPFLAGS = -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_XOPEN_SOURCE=700L -DVERSION=\"${VERSION}\" -DBACKEND_X11 ${XINERAMAFLAGS} ${RANDRFLAGS} ${XSSFLAGS} ${SNIFLAGS} ${COMPOSITORFLAGS}
+# FreeBSD: Ensure BSD extensions (CMSG_*, etc.) remain visible with _XOPEN_SOURCE
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),FreeBSD)
+CPPFLAGS += -D__BSD_VISIBLE
+endif
 # Uncomment to enable debug logging (icon rendering, etc.):
 #CPPFLAGS += -DAWM_DEBUG
 #CFLAGS   = -g -std=c99 -pedantic -Wall -O0 ${INCS} ${CPPFLAGS}

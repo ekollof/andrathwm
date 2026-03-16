@@ -1,5 +1,6 @@
 # AndrathWM - dynamic window manager
 # See LICENSE file for copyright and license details.
+# Requires GNU Make (use 'gmake' on BSD systems)
 
 include config.mk
 
@@ -55,7 +56,7 @@ awm-ui: $(UI_OBJ)
 
 # Build xidle (XCB screensaver — no Xlib dependency)
 xidle: $(SRCDIR)/xidle.c
-	${CC} -std=c11 -o $@ $< -lxcb -lxcb-screensaver
+	${CC} -std=c11 $(shell pkg-config --cflags xcb) -o $@ $< $(shell pkg-config --libs xcb xcb-screensaver)
 
 compile_flags.txt: config.mk
 	printf '%s\n' $(INCS) $(CPPFLAGS) > $@

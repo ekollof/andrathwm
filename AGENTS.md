@@ -2,6 +2,8 @@
 
 ## Build Commands
 
+**Build system:** Requires GNU Make (`gmake` on BSD systems).
+
 ```sh
 make                  # build awm, awm-ui, xidle (default Cairo backend)
 make DRW_LEGACY=1     # build with legacy XCB+Cairo hybrid backend (deprecated — will be removed on feature/backend-abstraction)
