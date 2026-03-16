@@ -29,7 +29,9 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#ifdef __linux__
 #include <linux/memfd.h>
+#endif
 
 #include <glib-unix.h>
 #include <gtk/gtk.h>

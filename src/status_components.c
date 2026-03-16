@@ -416,6 +416,7 @@ cpu_perc(const char *unused)
 #elif defined(__FreeBSD__)
 #include <sys/param.h>
 #include <sys/sysctl.h>
+#include <sys/resource.h>
 
 const char *
 cpu_perc(const char *unused)
