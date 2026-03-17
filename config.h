@@ -140,7 +140,7 @@ static const Layout layouts[] = {
 static char dmenumon[2] =
     "0"; /* component of dmenucmd, manipulated in spawn() */
 static const char *dmenucmd[] = { "rofi", "-show", "run", NULL };
-static const char *termcmd[]  = { "st", NULL };
+static const char *termcmd[]  = { "kitty", NULL };
 
 static const char *passmenu[]    = { "/usr/bin/env", "ksh", "-c",
 	   "$HOME/bin/getpass", NULL };
