@@ -29,8 +29,18 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <unistd.h>
 #ifdef __linux__
+#include <sys/syscall.h>
 #include <linux/memfd.h>
+#ifndef SYS_memfd_create
+#include <asm/unistd.h>
+#endif
+static int
+awm_memfd_create(const char *name, unsigned int flags)
+{
+	return (int) syscall(SYS_memfd_create, name, flags);
+}
 #endif
 
 #include <glib-unix.h>
@@ -63,8 +73,8 @@ static pid_t ui_pid           = -1; /* awm-ui child process */
 static int   ui_fd            = -1; /* socket fd to awm-ui */
 int          launcher_visible = 0;  /* 1 while the launcher window is open */
 xcb_window_t launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
-static GMainContext *ui_ctx   = NULL; /* GMainContext used by run() — kept for
-                                       * the respawn timer callback */
+static GMainContext *ui_ctx = NULL; /* GMainContext used by run() — kept for
+                                     * the respawn timer callback */
 char         stext[STATUS_TEXT_LEN];
 int          screen;
 int          sw, sh;             /* X display screen geometry width, height */
@@ -73,10 +83,10 @@ int          lrpad;              /* sum of left and right padding for text */
 int          awm_tagslength = 0; /* = TAGSLENGTH; set in setup() */
 double       ui_dpi         = 96.0; /* resolved screen DPI */
 double       ui_scale       = 1.0;  /* ui_dpi / 96.0 */
-unsigned int ui_borderpx    = 1;    /* borderpx * ui_scale — set in setup() */
-unsigned int ui_snap        = 32;   /* snap     * ui_scale — set in setup() */
-unsigned int ui_iconsize    = 16;   /* iconsize * ui_scale — set in setup() */
-unsigned int ui_gappx       = 5;    /* gappx[0] * ui_scale — set in setup() */
+unsigned int ui_borderpx    = 1;  /* borderpx * ui_scale — set in setup() */
+unsigned int ui_snap        = 32; /* snap     * ui_scale — set in setup() */
+unsigned int ui_iconsize    = 16; /* iconsize * ui_scale — set in setup() */
+unsigned int ui_gappx       = 5;  /* gappx[0] * ui_scale — set in setup() */
 unsigned int numlockmask    = 0;
 static guint xsource_id     = 0; /* GLib source ID for the X11 event source */
 #ifdef STATUSNOTIFIER
@@ -339,7 +349,9 @@ ui_send_shm(UiMsgType type, const void *base, size_t shm_size)
 	static unsigned int seq    = 0;
 
 	/* Prefer memfd_create — anonymous, no name-collision risk */
-#if defined(__linux__) || defined(__FreeBSD__)
+#ifdef __linux__
+	shm_fd = awm_memfd_create("awm-preview", MFD_CLOEXEC);
+#elif defined(__FreeBSD__)
 	shm_fd = memfd_create("awm-preview", MFD_CLOEXEC);
 #endif
 	if (shm_fd < 0) {
@@ -810,9 +822,10 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 
 			/* setup() installs SIGCHLD=SIG_IGN|SA_NOCLDWAIT in awm so the WM
 			 * never accumulates zombies.  A forked launcher child must restore
-			 * default SIGCHLD semantics before exec'ing /bin/sh; some shells and
-			 * launch wrappers rely on waitpid()-based child tracking and can fail
-			 * when SIGCHLD is inherited as ignored (observed on FreeBSD). */
+			 * default SIGCHLD semantics before exec'ing /bin/sh; some shells
+			 * and launch wrappers rely on waitpid()-based child tracking and
+			 * can fail when SIGCHLD is inherited as ignored (observed on
+			 * FreeBSD). */
 			sigemptyset(&sa.sa_mask);
 			sa.sa_flags   = 0;
 			sa.sa_handler = SIG_DFL;
@@ -974,8 +987,8 @@ ui_spawn(GMainContext *ctx)
 		        0 ||
 		    setsockopt(fds[1], SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)) <
 		        0) {
-			awm_warn("ui_spawn: setsockopt(SO_NOSIGPIPE): %s",
-			    strerror(errno));
+			awm_warn(
+			    "ui_spawn: setsockopt(SO_NOSIGPIPE): %s", strerror(errno));
 		}
 	}
 #endif
