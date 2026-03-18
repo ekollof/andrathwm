@@ -22,6 +22,7 @@
 
 #include "awm.h"
 #include "client.h"
+#include "compositor.h"
 #include "events.h"
 #include "monitor.h"
 #include "spawn.h"
@@ -872,6 +873,128 @@ static xcb_generic_event_t *
 x11_next_event(PlatformCtx *p)
 {
 	return xcb_wait_for_event(p->xc);
+}
+
+/* -------------------------------------------------------------------------
+ * XCB async error handler
+ * ---------------------------------------------------------------------- */
+
+/* Return a human-readable string for a base X11 error code (1-17).
+ * Extension errors (codes > 127) are labelled generically. */
+static const char *
+xcb_error_text(uint8_t error_code)
+{
+	/* X11 core error codes — xproto.h §XCB_REQUEST … XCB_IMPLEMENTATION */
+	static const char *names[] = {
+		/* 0 */ "Success",
+		/* 1 */ "BadRequest",
+		/* 2 */ "BadValue",
+		/* 3 */ "BadWindow",
+		/* 4 */ "BadPixmap",
+		/* 5 */ "BadAtom",
+		/* 6 */ "BadCursor",
+		/* 7 */ "BadFont",
+		/* 8 */ "BadMatch",
+		/* 9 */ "BadDrawable",
+		/* 10 */ "BadAccess",
+		/* 11 */ "BadAlloc",
+		/* 12 */ "BadColor",
+		/* 13 */ "BadGC",
+		/* 14 */ "BadIDChoice",
+		/* 15 */ "BadName",
+		/* 16 */ "BadLength",
+		/* 17 */ "BadImplementation",
+	};
+	if (error_code < (sizeof names / sizeof names[0]))
+		return names[error_code];
+	return "ExtensionError";
+}
+
+/* XCB async error handler — called from x_dispatch_cb() when the event
+ * response_type is 0 (error packet).  Mirrors the old Xlib xerror() logic
+ * but operates entirely on xcb_generic_error_t fields.
+ *
+ * Return values:  0 = benign, silently ignored.
+ *                 1 = unexpected; logged via awm_error but execution
+ * continues.
+ *
+ * Unlike the old Xlib handler we do NOT call exit() on unexpected errors —
+ * the async nature of XCB means some races are unavoidable and a WM must
+ * survive them.  Truly fatal conditions (X server death) are caught via the
+ * HUP/ERR path in platform_source_dispatch(). */
+int
+xcb_error_handler(xcb_generic_error_t *e)
+{
+	uint8_t req = e->major_code;
+	uint8_t err = e->error_code;
+
+	/* Whitelist benign async errors that arise routinely in a WM:
+	 * - BadWindow:   window destroyed between our request and the reply
+	 * - SetInputFocus + BadMatch:   window became unviewable/unmapped
+	 * - PolyText8/PolyFillRectangle/PolySegment/CopyArea + BadDrawable:
+	 *     drawable destroyed while we were drawing
+	 * - ConfigureWindow + BadMatch: sibling ordering race
+	 * - GrabButton/GrabKey + BadAccess: another client owns the grab */
+	if (err == XCB_WINDOW || (req == X_SetInputFocus && err == XCB_MATCH) ||
+	    (req == X_PolyText8 && err == XCB_DRAWABLE) ||
+	    (req == X_PolyFillRectangle && err == XCB_DRAWABLE) ||
+	    (req == X_PolySegment && err == XCB_DRAWABLE) ||
+	    (req == X_ConfigureWindow && err == XCB_MATCH) ||
+	    (req == X_GrabButton && err == XCB_ACCESS) ||
+	    (req == X_GrabKey && err == XCB_ACCESS) ||
+	    (req == X_CopyArea && err == XCB_DRAWABLE))
+		return 0;
+#ifdef COMPOSITOR
+	/* Transient XRender errors (BadPicture, BadPictFormat) arise when a GL
+	 * window exits while a compositor repaint is in flight. */
+	{
+		int render_req, render_err;
+		compositor_xrender_errors(&render_req, &render_err);
+		if (render_req > 0 && req == (uint8_t) render_req &&
+		    (err == (uint8_t) render_err             /* BadPicture    */
+		        || err == (uint8_t) (render_err + 1) /* BadPictFormat */
+		        || err == XCB_DRAWABLE || err == XCB_PIXMAP))
+			return 0;
+	}
+	/* Transient XDamage errors (BadDamage) when a window is destroyed
+	 * while we call xcb_damage_destroy on its damage handle.
+	 * BadIDChoice on XDamage Subtract arises when a stale DAMAGE_NOTIFY
+	 * event fires after comp_free_win() already destroyed the damage
+	 * object — the event was queued before the destroy, so we still try
+	 * to ack it and get an async BadIDChoice.  Both are benign. */
+	{
+		int damage_req, damage_err;
+		compositor_damage_errors(&damage_req, &damage_err);
+		if (damage_err > 0 && err == (uint8_t) damage_err)
+			return 0;
+		if (damage_req > 0 && req == (uint8_t) damage_req &&
+		    err == XCB_ID_CHOICE)
+			return 0;
+	}
+	/* Transient X Present errors (BadIDChoice) arise when a stale
+	 * PresentCompleteNotify or similar event fires after comp_free_win()
+	 * already destroyed the Present event subscription (EID).  The X
+	 * server sends BadIDChoice on the next xcb_present_select_input
+	 * referencing that EID.  Benign — ignore. */
+	{
+		int present_req;
+		compositor_present_errors(&present_req);
+		if (present_req > 0 && req == (uint8_t) present_req &&
+		    err == XCB_ID_CHOICE)
+			return 0;
+	}
+	/* GLX errors are stubs — compositor_glx_errors always returns -1 */
+	{
+		int glx_req, glx_err;
+		compositor_glx_errors(&glx_req, &glx_err);
+		(void) glx_req;
+		(void) glx_err;
+	}
+#endif
+	awm_error("X11 async error: %s (major=%d minor=%d error=%d resource=0x%x)",
+	    xcb_error_text(err), (int) req, (int) e->minor_code, (int) err,
+	    (unsigned) e->resource_id);
+	return 1;
 }
 
 /* -------------------------------------------------------------------------

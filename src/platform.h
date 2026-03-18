@@ -214,6 +214,10 @@ typedef struct {
 extern WmBackend *g_wm_backend;
 extern WmBackend  wm_backend_x11;
 
+/* XCB async error handler — defined in platform_x11.c, called from
+ * x_dispatch_cb() in awm.c when response_type == 0. */
+int xcb_error_handler(xcb_generic_error_t *e);
+
 #endif /* BACKEND_X11 */
 
 #endif /* PLATFORM_H */
