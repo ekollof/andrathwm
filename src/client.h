@@ -31,7 +31,7 @@ void             hide(Client *c);
 void             hidewin(const Arg *arg);
 void             incnmaster(const Arg *arg);
 void             killclient(const Arg *arg);
-void             manage(xcb_window_t w, xcb_get_geometry_reply_t *gr);
+void             manage(xcb_window_t w, int x, int y, int ww, int wh, int bw);
 void             movemouse(const Arg *arg);
 Client          *nexttiled(Client *c, Monitor *m);
 void             pop(Client *c);

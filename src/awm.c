@@ -1130,7 +1130,8 @@ scan(void)
 			xcb_get_geometry_reply_t *gr =
 			    xcb_get_geometry_reply(g_plat.xc, gck, NULL);
 			if (gr) {
-				manage(wins[i], gr);
+				manage(wins[i], gr->x, gr->y, gr->width, gr->height,
+				    gr->border_width);
 				free(gr);
 			}
 		}
@@ -1165,7 +1166,8 @@ scan(void)
 			xcb_get_geometry_reply_t *gr =
 			    xcb_get_geometry_reply(g_plat.xc, gck, NULL);
 			if (gr) {
-				manage(wins[i], gr);
+				manage(wins[i], gr->x, gr->y, gr->width, gr->height,
+				    gr->border_width);
 				free(gr);
 			}
 		}

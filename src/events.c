@@ -512,7 +512,8 @@ focusin(xcb_generic_event_t *e)
 	 * make them permanently unfocusable. */
 	{
 		int or = 0;
-		if (g_wm_backend->get_override_redirect(&g_plat, ev->event, &or) && or)
+		if (g_wm_backend->get_override_redirect(&g_plat, ev->event, & or) &&
+		    or)
 			return;
 	}
 
@@ -662,17 +663,10 @@ maprequest(xcb_generic_event_t *e)
 			return;
 	}
 	if (!wintoclient(ev->window)) {
-		int                      gx, gy, gw, gh, gbw;
-		xcb_get_geometry_reply_t gr_local = { 0 };
+		int gx, gy, gw, gh, gbw;
 		if (g_wm_backend->get_geometry(
-		        &g_plat, ev->window, &gx, &gy, &gw, &gh, &gbw)) {
-			gr_local.x            = (int16_t) gx;
-			gr_local.y            = (int16_t) gy;
-			gr_local.width        = (uint16_t) gw;
-			gr_local.height       = (uint16_t) gh;
-			gr_local.border_width = (uint16_t) gbw;
-			manage(ev->window, &gr_local);
-		}
+		        &g_plat, ev->window, &gx, &gy, &gw, &gh, &gbw))
+			manage(ev->window, gx, gy, gw, gh, gbw);
 	}
 }
 

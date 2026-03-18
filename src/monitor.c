@@ -17,16 +17,7 @@
 #include "config.h"
 
 #ifdef XINERAMA
-static int
-isuniquegeom(xcb_xinerama_screen_info_t *unique, size_t n,
-    xcb_xinerama_screen_info_t *info)
-{
-	while (n--)
-		if (unique[n].x_org == info->x_org && unique[n].y_org == info->y_org &&
-		    unique[n].width == info->width && unique[n].height == info->height)
-			return 0;
-	return 1;
-}
+/* isuniquegeom moved to platform_x11.c */
 #endif /* XINERAMA */
 
 void
@@ -378,8 +369,8 @@ monocle(Monitor *m)
 	if (n > 0) /* override layout symbol */
 		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
 	for (c = g_awm.stack_head; c && (!ISVISIBLE(c, m) || c->isfloating);
-	    c  = c->snext)
-        ;
+	     c = c->snext)
+		;
 	if (c && !c->isfloating) {
 		/* Use resizeclient() directly, bypassing applysizehints().
 		 * resize() skips the XConfigureWindow call when the stored
@@ -499,7 +490,7 @@ tile(Monitor *m)
 	 * distribute remaining space evenly.  Both passes are O(n) — nexttiled
 	 * advances one window at a time, not from the head each iteration. */
 	for (n = 0, c = nexttiled(g_awm.clients_head, m); c;
-	    c = nexttiled(c->next, m), n++)
+	     c = nexttiled(c->next, m), n++)
 		;
 
 	if (n == 0)
@@ -511,8 +502,8 @@ tile(Monitor *m)
 		else
 			mw = m->ww - m->pertag.gappx[m->pertag.curtag];
 		for (i = 0, my = ty = m->pertag.gappx[m->pertag.curtag],
-		    c    = nexttiled(g_awm.clients_head, m);
-		    c; c = nexttiled(c->next, m), i++)
+		    c     = nexttiled(g_awm.clients_head, m);
+		     c; c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i) -
 				    m->pertag.gappx[m->pertag.curtag];
@@ -547,7 +538,7 @@ tile(Monitor *m)
 		else
 			mw = m->ww;
 		for (i = my = ty = 0, c = nexttiled(g_awm.clients_head, m); c;
-		    c = nexttiled(c->next, m), i++)
+		     c = nexttiled(c->next, m), i++)
 			if (i < m->nmaster) {
 				h = (m->wh - my) / (MIN(n, m->nmaster) - i);
 				if (n == 1)
@@ -650,198 +641,7 @@ updatebarpos(Monitor *m)
 int
 updategeom(void)
 {
-	int dirty = 0;
-
-#ifdef XRANDR
-	{
-		const xcb_query_extension_reply_t *ext =
-		    xcb_get_extension_data(g_plat.xc, &xcb_randr_id);
-		if (ext && ext->present) {
-			int                                             i, n, nn;
-			Client                                         *c;
-			xcb_randr_get_screen_resources_current_cookie_t src;
-			xcb_randr_get_screen_resources_current_reply_t *sr;
-			xcb_randr_crtc_t                               *crtcs;
-			typedef struct {
-				int x, y, w, h;
-			} ScreenGeom;
-			ScreenGeom *unique = NULL;
-			int         j;
-
-			src =
-			    xcb_randr_get_screen_resources_current(g_plat.xc, g_plat.root);
-			sr = xcb_randr_get_screen_resources_current_reply(
-			    g_plat.xc, src, NULL);
-			if (!sr)
-				goto xinerama_fallback;
-
-			crtcs  = xcb_randr_get_screen_resources_current_crtcs(sr);
-			nn     = 0;
-			unique = ecalloc(sr->num_crtcs, sizeof(ScreenGeom));
-			/* Get active CRTC geometries */
-			for (i = 0; i < (int) sr->num_crtcs; i++) {
-				xcb_randr_get_crtc_info_cookie_t cic = xcb_randr_get_crtc_info(
-				    g_plat.xc, crtcs[i], XCB_CURRENT_TIME);
-				xcb_randr_get_crtc_info_reply_t *ci =
-				    xcb_randr_get_crtc_info_reply(g_plat.xc, cic, NULL);
-				if (!ci || ci->num_outputs == 0 || ci->width == 0) {
-					free(ci);
-					continue;
-				}
-				/* Check if geometry is unique */
-				int is_unique = 1;
-				for (j = 0; j < nn; j++) {
-					if (unique[j].x == (int) ci->x &&
-					    unique[j].y == (int) ci->y &&
-					    unique[j].w == (int) ci->width &&
-					    unique[j].h == (int) ci->height) {
-						is_unique = 0;
-						break;
-					}
-				}
-				if (is_unique) {
-					unique[nn].x = ci->x;
-					unique[nn].y = ci->y;
-					unique[nn].w = ci->width;
-					unique[nn].h = ci->height;
-					nn++;
-				}
-				free(ci);
-			}
-			free(sr);
-
-			n = (int) g_awm.n_monitors;
-
-			/* Create new monitors if nn > n */
-			for (i = n; i < nn; i++) {
-				if (!createmon())
-					die("awm: createmon failed: monitor count exceeds tag "
-					    "count");
-			}
-
-			/* Update monitor geometries */
-			for (i = 0; i < nn; i++) {
-				Monitor *m = &g_awm.monitors[i];
-				if (i >= n || unique[i].x != m->mx || unique[i].y != m->my ||
-				    unique[i].w != m->mw || unique[i].h != m->mh) {
-					dirty  = 1;
-					m->num = i;
-					m->mx = m->wx = unique[i].x;
-					m->my = m->wy = unique[i].y;
-					m->mw = m->ww = unique[i].w;
-					m->mh = m->wh = unique[i].h;
-					updatebarpos(m);
-				}
-			}
-
-			/* Remove monitors if n > nn — remove from the tail. */
-			while ((int) g_awm.n_monitors > nn) {
-				Monitor *dying = &g_awm.monitors[g_awm.n_monitors - 1];
-				/* Redirect selmon and clients away from the dying monitor. */
-				if (g_awm.selmon_num == (int) (g_awm.n_monitors - 1))
-					g_awm.selmon_num = 0;
-				for (c = g_awm.clients_head; c; c = c->next) {
-					dirty = 1;
-					if (c->mon == dying)
-						c->mon = g_awm_selmon;
-				}
-				cleanupmon(dying);
-			}
-			free(unique);
-			goto geom_done;
-		}
-	}
-xinerama_fallback:
-#endif /* XRANDR */
-#ifdef XINERAMA
-{
-	xcb_xinerama_is_active_reply_t *ia = xcb_xinerama_is_active_reply(
-	    g_plat.xc, xcb_xinerama_is_active(g_plat.xc), NULL);
-	int xin_active = ia && ia->state;
-	free(ia);
-	if (xin_active) {
-		int                                 i, j, n, nn;
-		Client                             *c;
-		xcb_xinerama_query_screens_reply_t *qi =
-		    xcb_xinerama_query_screens_reply(
-		        g_plat.xc, xcb_xinerama_query_screens(g_plat.xc), NULL);
-		xcb_xinerama_screen_info_t *info =
-		    xcb_xinerama_query_screens_screen_info(qi);
-		nn = xcb_xinerama_query_screens_screen_info_length(qi);
-		xcb_xinerama_screen_info_t *unique = NULL;
-
-		if (!qi || !info) {
-			free(qi);
-			goto default_monitor;
-		}
-		n = (int) g_awm.n_monitors;
-		/* only consider unique geometries as separate screens */
-		unique = ecalloc((size_t) nn, sizeof(xcb_xinerama_screen_info_t));
-		for (i = 0, j = 0; i < nn; i++)
-			if (isuniquegeom(unique, j, &info[i]))
-				memcpy(&unique[j++], &info[i],
-				    sizeof(xcb_xinerama_screen_info_t));
-		free(qi); /* frees info array too */
-		nn = j;
-
-		/* new monitors if nn > n */
-		for (i = n; i < nn; i++) {
-			if (!createmon())
-				die("awm: createmon failed: monitor count exceeds tag count");
-		}
-		for (i = 0; i < nn; i++) {
-			Monitor *m = &g_awm.monitors[i];
-			if (i >= n || unique[i].x_org != m->mx ||
-			    unique[i].y_org != m->my || unique[i].width != m->mw ||
-			    unique[i].height != m->mh) {
-				dirty  = 1;
-				m->num = i;
-				m->mx = m->wx = unique[i].x_org;
-				m->my = m->wy = unique[i].y_org;
-				m->mw = m->ww = unique[i].width;
-				m->mh = m->wh = unique[i].height;
-				updatebarpos(m);
-			}
-		}
-		/* removed monitors if n > nn — remove from tail */
-		while ((int) g_awm.n_monitors > nn) {
-			Monitor *dying = &g_awm.monitors[g_awm.n_monitors - 1];
-			if (g_awm.selmon_num == (int) (g_awm.n_monitors - 1))
-				g_awm.selmon_num = 0;
-			for (c = g_awm.clients_head; c; c = c->next) {
-				dirty = 1;
-				if (c->mon == dying)
-					c->mon = g_awm_selmon;
-			}
-			cleanupmon(dying);
-		}
-		free(unique);
-		goto geom_done;
-	}
-default_monitor:;
-}
-#else
-default_monitor:
-#endif /* XINERAMA */
-	/* default monitor setup */
-	if (g_awm.n_monitors == 0) {
-		if (!createmon())
-			die("awm: createmon failed: monitor count exceeds tag count");
-	}
-	if (g_awm.monitors[0].mw != g_plat.sw ||
-	    g_awm.monitors[0].mh != g_plat.sh) {
-		dirty                = 1;
-		g_awm.monitors[0].mw = g_awm.monitors[0].ww = g_plat.sw;
-		g_awm.monitors[0].mh = g_awm.monitors[0].wh = g_plat.sh;
-		updatebarpos(&g_awm.monitors[0]);
-	}
-geom_done:
-	if (dirty) {
-		g_awm_set_selmon(wintomon(g_plat.root));
-	}
-	assert(g_awm.n_monitors >= 0 && g_awm.n_monitors <= WMSTATE_MAX_MONITORS);
-	wmstate_update();
-	return dirty;
+	return g_wm_backend->update_geom(&g_plat);
 }
 
 void
