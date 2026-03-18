@@ -63,7 +63,7 @@ awm_memfd_create(const char *name, unsigned int flags)
 #include "ui_proto.h"
 #include "wmstate.h"
 #include "xrdb.h"
-#include "xsource.h"
+#include "platform_source.h"
 #define AWM_CONFIG_IMPL
 #include "config.h"
 
@@ -1065,7 +1065,7 @@ run(void)
 	ui_ctx = ctx; /* store for respawn timer callback */
 
 	/* X11 source — wakes the loop whenever X events are pending */
-	xsource_id = xsource_attach(g_plat.xc, ctx, x_dispatch_cb, NULL);
+	xsource_id = platform_source_attach(g_plat.xc, ctx, x_dispatch_cb, NULL);
 
 #ifdef STATUSNOTIFIER
 	/* D-Bus source — use helper so reconnect can re-attach cleanly */
@@ -1077,9 +1077,9 @@ run(void)
 		awm_warn(
 		    "awm: failed to spawn awm-ui — launcher and SNI menus disabled");
 
-	/* Let xsource_dispatch quit cleanly on X server death
+	/* Let platform_source_dispatch quit cleanly on X server death
 	 * instead of calling exit(1), so cleanup() can run. */
-	xsource_use_gtk_main_quit();
+	platform_source_use_gtk_main_quit();
 	gtk_main();
 }
 

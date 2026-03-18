@@ -14,7 +14,7 @@ RENDER_SRC = render_cairo_xcb.c
 
 SRC = $(RENDER_SRC) platform_x11.c awm.c util.c menu.c dbus.c icon.c sni.c log.c \
 	client.c monitor.c events.c ewmh.c systray.c spawn.c xrdb.c \
-	status.c status_util.c status_components.c xsource.c \
+	status.c status_util.c status_components.c platform_x11_source.c \
 	compositor.c compositor_egl.c compositor_xrender.c switcher.c \
 	wmstate.c
 SRCS = $(addprefix $(SRCDIR)/,$(SRC))

@@ -3,14 +3,14 @@
  */
 
 #include <assert.h>
-#include "xsource.h"
+#include "platform_source.h"
 
 #include <xcb/xcb.h>
 #include <glib.h>
 #include <gtk/gtk.h>
 
 /* Whether to call gtk_main_quit() (instead of exit) on X server death.
- * Set to 1 via xsource_set_quit_loop(). */
+ * Set to 1 via platform_source_use_gtk_main_quit(). */
 static int xsource_use_gtk_quit = 0;
 
 /* Internal structure — GSource must be the first member so that the
@@ -80,10 +80,7 @@ xsource_dispatch(GSource *src, GSourceFunc callback, gpointer user_data)
 }
 
 static GSourceFuncs xsource_funcs = {
-	xsource_prepare,
-	xsource_check,
-	xsource_dispatch,
-	NULL, /* finalize */
+	xsource_prepare, xsource_check, xsource_dispatch, NULL, /* finalize */
 	NULL, /* closure_callback */
 	NULL, /* closure_marshal */
 };
@@ -92,7 +89,7 @@ static GSourceFuncs xsource_funcs = {
  * Public API
  * ------------------------------------------------------------------------- */
 
-GSource *
+static GSource *
 xsource_new(xcb_connection_t *xc, GSourceFunc callback, gpointer user_data)
 {
 	GSource *src;
@@ -114,8 +111,8 @@ xsource_new(xcb_connection_t *xc, GSourceFunc callback, gpointer user_data)
 }
 
 guint
-xsource_attach(xcb_connection_t *xc, GMainContext *ctx, GSourceFunc callback,
-    gpointer user_data)
+platform_source_attach(xcb_connection_t *xc, GMainContext *ctx,
+    GSourceFunc callback, gpointer user_data)
 {
 	GSource *src;
 	guint    id;
@@ -128,7 +125,7 @@ xsource_attach(xcb_connection_t *xc, GMainContext *ctx, GSourceFunc callback,
 }
 
 void
-xsource_use_gtk_main_quit(void)
+platform_source_use_gtk_main_quit(void)
 {
 	xsource_use_gtk_quit = 1;
 }

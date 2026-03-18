@@ -842,7 +842,7 @@ xcb_error_text(uint8_t error_code)
  * Unlike the old Xlib handler we do NOT call exit() on unexpected errors —
  * the async nature of XCB means some races are unavoidable and a WM must
  * survive them.  Truly fatal conditions (X server death) are caught via the
- * HUP/ERR path in xsource_dispatch(). */
+ * HUP/ERR path in platform_source_dispatch(). */
 int
 xcb_error_handler(xcb_generic_error_t *e)
 {
