@@ -37,7 +37,7 @@
 #include "sni.h"
 #endif
 
-#include "drw.h"
+#include "render.h"
 #include "icon.h"
 #include "log.h"
 #include "util.h"
@@ -60,7 +60,7 @@
 #define HEIGHT(X) ((X)->h + 2 * (X)->bw)
 #define TAGMASK ((1 << LENGTH(tags)) - 1)
 #define TAGSLENGTH (LENGTH(tags))
-#define TEXTW(X) (drw_fontset_getwidth(drw, (X)) + g_plat.lrpad)
+#define TEXTW(X) (g_render_backend->fontset_getwidth(drw, (X)) + g_plat.lrpad)
 
 /* Flush the X request buffer without a round-trip.
  * Prefer this over XSync(dpy, False) wherever error-draining is not needed. */
@@ -280,15 +280,15 @@ struct Systray {
 };
 
 /* extern globals — defined in awm.c */
-extern int      awm_tagslength; /* = TAGSLENGTH; set in setup() */
-extern Drw     *drw;
-extern Clr    **scheme;
-extern Cur     *cursor[CurLast];
-extern Systray *systray;
-extern char     stext[STATUS_TEXT_LEN];
-extern int      restart;
-extern int      barsdirty;
-extern int      launcher_visible; /* 1 while launcher window is open */
+extern int         awm_tagslength; /* = TAGSLENGTH; set in setup() */
+extern AwmSurface *drw;
+extern Clr       **scheme;
+extern Cur        *cursor[CurLast];
+extern Systray    *systray;
+extern char        stext[STATUS_TEXT_LEN];
+extern int         restart;
+extern int         barsdirty;
+extern int         launcher_visible; /* 1 while launcher window is open */
 extern xcb_window_t
     launcher_xwin; /* X window ID of the launcher (from LAUNCHER_READY) */
 extern xcb_timestamp_t

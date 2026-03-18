@@ -8,16 +8,11 @@ include config.mk
 SRCDIR = src
 BUILDDIR = build
 
-# Drawing backend: pure Cairo backend (src/drw_cairo.c) is the default.
-# Use 'make DRW_LEGACY=1' to fall back to the hybrid XCB+Cairo backend (src/drw.c).
-# Both implement the same drw.h API; no callers need to change.
-ifdef DRW_LEGACY
-DRW_SRC = drw.c
-else
-DRW_SRC = drw_cairo.c
-endif
+# Drawing backend: render_cairo_xcb.c implements the RenderBackend vtable.
+# The legacy drw.c / drw_cairo.c backends have been removed.
+RENDER_SRC = render_cairo_xcb.c
 
-SRC = $(DRW_SRC) platform_x11.c awm.c util.c menu.c dbus.c icon.c sni.c log.c \
+SRC = $(RENDER_SRC) platform_x11.c awm.c util.c menu.c dbus.c icon.c sni.c log.c \
 	client.c monitor.c events.c ewmh.c systray.c spawn.c xrdb.c \
 	status.c status_util.c status_components.c xsource.c \
 	compositor.c compositor_egl.c compositor_xrender.c switcher.c \

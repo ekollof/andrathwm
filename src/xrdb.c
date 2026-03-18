@@ -262,7 +262,7 @@ xrdb(const Arg *arg)
 
 	loadxrdb();
 	for (i = 0; i < LENGTH(colors); i++)
-		scheme[i] = drw_scm_create(drw, colors[i], 3);
+		scheme[i] = g_render_backend->scm_create(drw, colors[i], 3);
 	updatesystrayiconcolors();
 	focus(NULL);
 	arrange(NULL);

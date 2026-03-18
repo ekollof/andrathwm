@@ -5,7 +5,7 @@
 
 #ifdef STATUSNOTIFIER
 
-#include "drw.h"
+#include "render.h"
 #include <dbus/dbus.h>
 #include <gtk/gtk.h>
 
@@ -82,8 +82,8 @@ typedef struct {
 
 /* Initialization and cleanup */
 int  sni_init(xcb_connection_t *xc, xcb_connection_t *cairo_xcb,
-     xcb_visualtype_t *xcb_visual, xcb_window_t rootwin, Drw *drw, Clr **scheme,
-     unsigned int icon_size);
+     xcb_visualtype_t *xcb_visual, xcb_window_t rootwin, AwmSurface *drw,
+     Clr **scheme, unsigned int icon_size);
 void sni_cleanup(void);
 int  sni_reconnect(void); /* cleanup + re-init preserving awm globals */
 

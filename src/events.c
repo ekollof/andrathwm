@@ -8,7 +8,6 @@
 #include "client.h"
 #include "compositor.h"
 #include "ewmh.h"
-#include "drw.h"
 #include "monitor.h"
 #include "spawn.h"
 #include "switcher.h"
@@ -61,7 +60,8 @@ buttonpress(xcb_generic_event_t *e)
 		    ev->event_x < x + TEXTW(g_awm_selmon->ltsymbol))
 			click = ClkLtSymbol;
 		else if (ev->event_x > g_awm_selmon->ww -
-		        drw_draw_statusd(drw, 0, 0, 0, 0, stext) - getsystraywidth())
+		        g_render_backend->draw_statusd(drw, 0, 0, 0, 0, stext) -
+		        getsystraywidth())
 			click = ClkStatusText;
 		else if (i >= LENGTH(tags)) {
 			/* Awesomebar - find which window was clicked */
@@ -77,7 +77,8 @@ buttonpress(xcb_generic_event_t *e)
 					n++;
 
 			if (n > 0) {
-				int tw        = drw_draw_statusd(drw, 0, 0, 0, 0, stext);
+				int tw =
+				    g_render_backend->draw_statusd(drw, 0, 0, 0, 0, stext);
 				int stw       = getsystraywidth();
 				int remainder = m->ww - tw - stw - x;
 				int tabw      = remainder / n;
@@ -262,7 +263,7 @@ configurenotify(xcb_generic_event_t *e)
 		g_plat.sw = ev->width;
 		g_plat.sh = ev->height;
 		if (updategeom()) {
-			drw_resize(drw, g_plat.sw, g_plat.bh);
+			g_render_backend->resize(drw, g_plat.sw, g_plat.bh);
 			updatebars();
 			FOR_EACH_MON(m)
 			{

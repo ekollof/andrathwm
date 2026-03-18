@@ -27,15 +27,12 @@
  *     then focuses and warps.
  *
  * Thumbnail rendering (when compositor is active):
- *   1. Obtain the client's XComposite pixmap (cw->pixmap, or a fresh
- *      xcb_composite_name_window_pixmap if cw->pixmap is currently 0).
- *   2. Wrap the source pixmap in an XRender source picture.
- *   3. Allocate a destination pixmap at the desired thumbnail size and wrap
- *      it in an XRender destination picture.
- *   4. Set a projective scale transform on the source picture and call
- *      xcb_render_composite to perform server-side scaled copy.
- *   5. Wrap the destination pixmap in a cairo_xcb_surface and paint it in
- *      the GtkDrawingArea "draw" callback.
+ *   Delegates to comp_capture_thumb() which dispatches through the
+ *   compositor backend vtable (GL FBO + glReadPixels for EGL; xcb_get_image
+ *   via XRender for the XRender backend).  The switcher holds no X pixmap or
+ *   XRender picture resources of its own.  Thumbnails are refreshed on a
+ *   100 ms g_timeout_add timer by calling comp_capture_thumb() again in
+ *   refresh_thumbnail().
  *
  * Z-order / focus management:
  *   The switcher window uses override_redirect (set via GDK before the window
@@ -52,9 +49,6 @@
 #include <string.h>
 
 #include <xcb/xcb.h>
-#include <xcb/composite.h>
-#include <xcb/render.h>
-#include <xcb/xcb_renderutil.h>
 #include <cairo/cairo.h>
 #include <cairo/cairo-xcb.h>
 #include <gtk/gtk.h>
@@ -92,12 +86,11 @@ typedef struct {
 	Client  *c;
 	CompWin *cw; /* compositor window (may be NULL)   */
 	/* Scaled thumbnail resources (NULL/0 if compositor unavailable) */
-	xcb_pixmap_t         thumb_pixmap; /* destination pixmap at thumb size  */
-	xcb_render_picture_t thumb_pict;   /* XRender picture on thumb_pixmap   */
-	cairo_surface_t     *thumb_surf;   /* cairo_xcb_surface wrapping above  */
-	int                  thumb_w;      /* actual rendered thumbnail width   */
-	int                  thumb_h;      /* actual rendered thumbnail height  */
-	int                  has_thumb;    /* 1 = thumbnail resources are valid */
+	cairo_surface_t
+	    *thumb_surf; /* cairo image surface from comp_capture_thumb */
+	int  thumb_w;    /* actual rendered thumbnail width   */
+	int  thumb_h;    /* actual rendered thumbnail height  */
+	int  has_thumb;  /* 1 = thumbnail resources are valid */
 	/* GTK card widget */
 	GtkWidget *card; /* GtkDrawingArea                    */
 } SwitcherEntry;
@@ -126,270 +119,34 @@ static void     switcher_cancel(void);
 static void     switcher_select(int idx);
 static void     switcher_rebuild_cards(void);
 static void     free_thumbnails(void);
-static void     build_thumbnail(SwitcherEntry *e);
 static void     refresh_thumbnail(SwitcherEntry *e);
 static gboolean sw_refresh_cb(gpointer data);
 
 /* -------------------------------------------------------------------------
- * XRender helpers
+ * Initial thumbnail capture
+ * Delegates to comp_capture_thumb() (GL FBO path for EGL, XRender path for
+ * XRender backend).  Sets e->has_thumb = 1 on success.
  * ---------------------------------------------------------------------- */
 
-/* Find the XRender picture format for a given visual ID.
- * Returns 0 on failure. */
-static xcb_render_pictformat_t
-find_visual_format(xcb_visualid_t vid)
-{
-	const xcb_render_pictvisual_t *pv;
-
-	if (!comp.render_formats)
-		return 0;
-	pv = xcb_render_util_find_visual_format(comp.render_formats, vid);
-	return pv ? pv->format : 0;
-}
-
-/* Find the XRender picture format for a given depth.
- * Tries ARGB_32 for depth 32, RGB_24 for depth 24, else the root visual. */
-static xcb_render_pictformat_t
-find_format_for_depth(int depth)
-{
-	const xcb_render_pictforminfo_t *fi;
-
-	if (!comp.render_formats)
-		return 0;
-
-	if (depth == 32) {
-		fi = xcb_render_util_find_standard_format(
-		    comp.render_formats, XCB_PICT_STANDARD_ARGB_32);
-		if (fi)
-			return fi->id;
-	}
-	if (depth == 24) {
-		fi = xcb_render_util_find_standard_format(
-		    comp.render_formats, XCB_PICT_STANDARD_RGB_24);
-		if (fi)
-			return fi->id;
-	}
-	return find_visual_format(xcb_screen_root_visual(g_plat.xc, g_plat.screen));
-}
-
-/* Walk the xcb_screen visuals to find the xcb_visualtype_t for the g_plat.root
- * visual of our g_plat.screen. */
-static xcb_visualtype_t *
-get_root_visualtype(void)
-{
-	xcb_screen_iterator_t sit = xcb_setup_roots_iterator(xcb_get_setup(g_plat.xc));
-	for (int i = 0; i < g_plat.screen; i++)
-		xcb_screen_next(&sit);
-
-	xcb_visualid_t       root_vid = sit.data->root_visual;
-	xcb_depth_iterator_t dit = xcb_screen_allowed_depths_iterator(sit.data);
-	for (; dit.rem; xcb_depth_next(&dit)) {
-		xcb_visualtype_iterator_t vit = xcb_depth_visuals_iterator(dit.data);
-		for (; vit.rem; xcb_visualtype_next(&vit)) {
-			if (vit.data->visual_id == root_vid)
-				return vit.data;
-		}
-	}
-	return NULL;
-}
-
-/* Build the XRender thumbnail for entry e.
- * If cw->pixmap is 0 we acquire a fresh one ourselves and release it after
- * compositing (snapshot approach).
- * Leaves e->has_thumb = 0 on any error. */
 static void
 build_thumbnail(SwitcherEntry *e)
 {
-	CompWin                *cw;
-	xcb_render_pictformat_t src_fmt, dst_fmt;
-	xcb_render_picture_t    src_pict;
-	xcb_render_transform_t  xform;
-	double                  sx, sy, scale;
-	int                     tw, th;
-	xcb_void_cookie_t       ck;
-	xcb_generic_error_t    *err;
-	uint32_t                pict_mask  = 0;
-	uint32_t                pict_val   = 0;
-	xcb_pixmap_t            own_pixmap = 0; /* pixmap we acquired ourselves */
+	cairo_surface_t *surf;
 
-	e->has_thumb    = 0;
-	e->thumb_pixmap = 0;
-	e->thumb_pict   = 0;
-	e->thumb_surf   = NULL;
+	e->has_thumb  = 0;
+	e->thumb_surf = NULL;
 
-	if (!comp.active)
+	if (!comp.active || !e->c)
 		return;
 
-	/* Find the compositor window for this client */
-	for (cw = comp.windows; cw; cw = cw->next)
-		if (cw->client == e->c)
-			break;
-
-	if (!cw || cw->w <= 0 || cw->h <= 0)
+	surf = comp_capture_thumb(e->c, SW_MAX_THUMB_W, SW_MAX_THUMB_H);
+	if (!surf)
 		return;
 
-	e->cw = cw; /* remember for live refresh */
-
-	/* Use cw->pixmap if available; otherwise acquire a fresh snapshot. */
-	xcb_pixmap_t src_pixmap = cw->pixmap;
-	if (!src_pixmap) {
-		xcb_pixmap_t         pix = xcb_generate_id(g_plat.xc);
-		xcb_void_cookie_t    nck;
-		xcb_generic_error_t *nerr;
-		nck = xcb_composite_name_window_pixmap_checked(
-		    g_plat.xc, (xcb_window_t) cw->win, pix);
-		xcb_flush(g_plat.xc);
-		nerr = xcb_request_check(g_plat.xc, nck);
-		if (nerr) {
-			free(nerr);
-			return;
-		}
-		own_pixmap = pix;
-		src_pixmap = pix;
-	}
-
-	/* Compute thumbnail dimensions, preserving aspect ratio */
-	sx    = (double) SW_MAX_THUMB_W / (double) cw->w;
-	sy    = (double) SW_MAX_THUMB_H / (double) cw->h;
-	scale = sx < sy ? sx : sy;
-	if (scale > 1.0)
-		scale = 1.0;
-	tw = (int) (cw->w * scale);
-	th = (int) (cw->h * scale);
-	if (tw < 1)
-		tw = 1;
-	if (th < 1)
-		th = 1;
-
-	/* Source picture wrapping the pixmap */
-	src_fmt = find_format_for_depth(cw->depth);
-	if (!src_fmt) {
-		if (own_pixmap)
-			xcb_free_pixmap(g_plat.xc, own_pixmap);
-		return;
-	}
-
-	src_pict = xcb_generate_id(g_plat.xc);
-	xcb_render_create_picture(g_plat.xc, src_pict, (xcb_drawable_t) src_pixmap,
-	    src_fmt, pict_mask, &pict_val);
-
-	/* Set scale transform on the source picture.
-	 * XRender uses a fixed-point 16.16 matrix.
-	 * For scaling: element [0][0] = 1/scale_x, [1][1] = 1/scale_y,
-	 * [2][2] = 1.0 (in 16.16: multiply by 65536). */
-	{
-		double             inv    = 1.0 / scale;
-		xcb_render_fixed_t fp_inv = (xcb_render_fixed_t) (inv * 65536.0 + 0.5);
-		xcb_render_fixed_t fp_one = 65536;
-
-		xform.matrix11 = fp_inv;
-		xform.matrix12 = 0;
-		xform.matrix13 = 0;
-		xform.matrix21 = 0;
-		xform.matrix22 = fp_inv;
-		xform.matrix23 = 0;
-		xform.matrix31 = 0;
-		xform.matrix32 = 0;
-		xform.matrix33 = fp_one;
-	}
-	xcb_render_set_picture_transform(g_plat.xc, src_pict, xform);
-
-	/* Bilinear filter for nicer downscaling */
-	{
-		static const char filter[] = "good";
-		xcb_render_set_picture_filter(
-		    g_plat.xc, src_pict, (uint16_t) (sizeof(filter) - 1), filter, 0, NULL);
-	}
-
-	/* Destination pixmap at thumbnail size (root depth / visual) */
-	uint8_t dst_depth = (uint8_t) xcb_screen_root_depth(g_plat.xc, g_plat.screen);
-	dst_fmt           = find_visual_format(xcb_screen_root_visual(g_plat.xc, g_plat.screen));
-	if (!dst_fmt) {
-		xcb_render_free_picture(g_plat.xc, src_pict);
-		if (own_pixmap)
-			xcb_free_pixmap(g_plat.xc, own_pixmap);
-		return;
-	}
-
-	e->thumb_pixmap = xcb_generate_id(g_plat.xc);
-	ck              = xcb_create_pixmap_checked(g_plat.xc, dst_depth, e->thumb_pixmap,
-	                 (xcb_drawable_t) g_plat.root, (uint16_t) tw, (uint16_t) th);
-	xcb_flush(g_plat.xc);
-	err = xcb_request_check(g_plat.xc, ck);
-	if (err) {
-		awm_warn("switcher: create thumb pixmap failed (error %d)",
-		    (int) err->error_code);
-		free(err);
-		xcb_render_free_picture(g_plat.xc, src_pict);
-		if (own_pixmap)
-			xcb_free_pixmap(g_plat.xc, own_pixmap);
-		e->thumb_pixmap = 0;
-		return;
-	}
-
-	e->thumb_pict = xcb_generate_id(g_plat.xc);
-	xcb_render_create_picture(g_plat.xc, e->thumb_pict,
-	    (xcb_drawable_t) e->thumb_pixmap, dst_fmt, pict_mask, &pict_val);
-
-	/* Pre-fill dst with opaque background so ARGB windows blend cleanly */
-	{
-		Clr               *bg = &scheme[SchemeNorm][ColBg];
-		xcb_render_color_t bc;
-		xcb_rectangle_t    br = { 0, 0, (uint16_t) tw, (uint16_t) th };
-		bc.red                = bg->r;
-		bc.green              = bg->g;
-		bc.blue               = bg->b;
-		bc.alpha              = 0xffff;
-		xcb_render_fill_rectangles(
-		    g_plat.xc, XCB_RENDER_PICT_OP_SRC, e->thumb_pict, bc, 1, &br);
-	}
-
-	/* Composite: scale from source into destination.
-	 * ARGB sources need OVER so pre-multiplied alpha blends against
-	 * the background we just filled; opaque sources use SRC directly. */
-	xcb_render_composite(g_plat.xc,
-	    cw->argb ? XCB_RENDER_PICT_OP_OVER : XCB_RENDER_PICT_OP_SRC, src_pict,
-	    XCB_RENDER_PICTURE_NONE, e->thumb_pict, 0, 0, /* src x,y  */
-	    0, 0,                                         /* mask x,y */
-	    0, 0,                                         /* dst x,y  */
-	    (uint16_t) tw, (uint16_t) th);
-	xcb_flush(g_plat.xc);
-
-	xcb_render_free_picture(g_plat.xc, src_pict);
-	/* Release snapshot pixmap we acquired ourselves (if any) */
-	if (own_pixmap)
-		xcb_free_pixmap(g_plat.xc, own_pixmap);
-
-	/* Wrap the destination pixmap as a cairo surface */
-	{
-		xcb_visualtype_t *vis = get_root_visualtype();
-		if (!vis) {
-			xcb_render_free_picture(g_plat.xc, e->thumb_pict);
-			xcb_free_pixmap(g_plat.xc, e->thumb_pixmap);
-			e->thumb_pict   = 0;
-			e->thumb_pixmap = 0;
-			return;
-		}
-
-		e->thumb_surf = cairo_xcb_surface_create(
-		    g_plat.xc, (xcb_drawable_t) e->thumb_pixmap, vis, tw, th);
-		if (!e->thumb_surf ||
-		    cairo_surface_status(e->thumb_surf) != CAIRO_STATUS_SUCCESS) {
-			if (e->thumb_surf) {
-				cairo_surface_destroy(e->thumb_surf);
-				e->thumb_surf = NULL;
-			}
-			xcb_render_free_picture(g_plat.xc, e->thumb_pict);
-			xcb_free_pixmap(g_plat.xc, e->thumb_pixmap);
-			e->thumb_pict   = 0;
-			e->thumb_pixmap = 0;
-			return;
-		}
-	}
-
-	e->thumb_w   = tw;
-	e->thumb_h   = th;
-	e->has_thumb = 1;
+	e->thumb_surf = surf;
+	e->thumb_w    = cairo_image_surface_get_width(surf);
+	e->thumb_h    = cairo_image_surface_get_height(surf);
+	e->has_thumb  = 1;
 }
 
 /* Re-composite the thumbnail from the live compositor pixmap.
@@ -569,9 +326,10 @@ on_card_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 
 		int txt_x = SW_CARD_PAD + icon_drawn_w;
 		int txt_w = w - txt_x - SW_CARD_PAD;
-		if (txt_w > 0 && drw && drw->fonts && drw->fonts->desc) {
+		if (txt_w > 0 && drw && render_surface_font_desc(drw)) {
 			PangoLayout *layout = pango_cairo_create_layout(cr);
-			pango_layout_set_font_description(layout, drw->fonts->desc);
+			pango_layout_set_font_description(
+			    layout, render_surface_font_desc(drw));
 			pango_layout_set_text(layout, e->c->name, -1);
 			pango_layout_set_width(layout, txt_w * PANGO_SCALE);
 			pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
@@ -616,14 +374,6 @@ free_thumbnails(void)
 		if (e->thumb_surf) {
 			cairo_surface_destroy(e->thumb_surf);
 			e->thumb_surf = NULL;
-		}
-		if (e->thumb_pict) {
-			xcb_render_free_picture(g_plat.xc, e->thumb_pict);
-			e->thumb_pict = 0;
-		}
-		if (e->thumb_pixmap) {
-			xcb_free_pixmap(g_plat.xc, e->thumb_pixmap);
-			e->thumb_pixmap = 0;
 		}
 		e->has_thumb = 0;
 	}
@@ -888,8 +638,8 @@ switcher_show_internal(int all_monitors, int start_prev)
 			xcb_window_t xwin = (xcb_window_t) gdk_x11_window_get_xid(gwin);
 			if (xwin) {
 				uint32_t stack_above = XCB_STACK_MODE_ABOVE;
-				xcb_configure_window(
-				    g_plat.xc, xwin, XCB_CONFIG_WINDOW_STACK_MODE, &stack_above);
+				xcb_configure_window(g_plat.xc, xwin,
+				    XCB_CONFIG_WINDOW_STACK_MODE, &stack_above);
 				xcb_flush(g_plat.xc);
 			}
 		}
@@ -898,8 +648,8 @@ switcher_show_internal(int all_monitors, int start_prev)
 	/* Grab the keyboard so we receive all key events (including releases of
 	 * Alt/Super) while the switcher is open.  This supplements the passive
 	 * grabs on individual keybindings. */
-	xcb_grab_keyboard(g_plat.xc, 0, g_plat.root, XCB_CURRENT_TIME, XCB_GRAB_MODE_ASYNC,
-	    XCB_GRAB_MODE_ASYNC);
+	xcb_grab_keyboard(g_plat.xc, 0, g_plat.root, XCB_CURRENT_TIME,
+	    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
 	xcb_flush(g_plat.xc);
 }
 

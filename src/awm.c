@@ -106,7 +106,7 @@ int             barsdirty       = 0;
 xcb_timestamp_t last_event_time = XCB_CURRENT_TIME;
 Cur            *cursor[CurLast];
 Clr           **scheme;
-Drw            *drw;
+AwmSurface     *drw;
 
 /* ---- compile-time invariants ---- */
 _Static_assert(LENGTH(tags) <= 31,
@@ -176,12 +176,12 @@ cleanup(void)
 	switcher_cleanup();
 
 	for (i = 0; i < CurLast; i++)
-		drw_cur_free(drw, cursor[i]);
+		g_render_backend->cur_free(drw, cursor[i]);
 	for (i = 0; i < LENGTH(colors); i++)
 		free(scheme[i]);
 	free(scheme);
 	xcb_destroy_window(g_plat.xc, g_plat.wmcheckwin);
-	drw_free(drw);
+	g_render_backend->free(drw);
 	xcb_key_symbols_free(g_plat.keysyms);
 	g_plat.keysyms = NULL;
 	xflush();
@@ -595,7 +595,7 @@ x_dispatch_cb(gpointer user_data)
 				g_plat.sh = (int) rrev->height;
 			}
 			updategeom();
-			drw_resize(drw, g_plat.sw, g_plat.bh);
+			g_render_backend->resize(drw, g_plat.sw, g_plat.bh);
 			updatebars();
 			{
 				Monitor *m;
@@ -1301,16 +1301,17 @@ setup(void)
 		g_plat.root = sit.data->root;
 	}
 	/* clients_head and stack_head are inline zero-initialised in g_awm */
-	/* drw uses a dedicated bare xcb_connection_t (opened inside drw_create)
+	/* Initialise the render backend before creating the draw surface. */
+	g_render_backend = &render_backend_cairo_xcb;
+	/* drw uses a dedicated bare xcb_connection_t (opened inside render_create)
 	 * for all cairo rendering, keeping its XCB traffic off xc. */
-	drw = drw_create(
+	drw = g_render_backend->create(
 	    g_plat.xc, g_plat.screen, g_plat.root, g_plat.sw, g_plat.sh);
 	assert(drw != NULL);
-	if (!drw_fontset_create(drw, fonts, LENGTH(fonts)))
+	if (!g_render_backend->fontset_create(drw, fonts, LENGTH(fonts)))
 		die("no fonts could be loaded.");
-	assert(drw->fonts != NULL);
-	g_plat.lrpad = drw->fonts->h;
-	g_plat.bh    = drw->fonts->h + 2;
+	g_plat.lrpad = (int) render_surface_font_height(drw);
+	g_plat.bh    = (int) render_surface_font_height(drw) + 2;
 	/* Scale pixel geometry constants by the resolved DPI factor */
 	g_plat.ui_borderpx = (unsigned int) (borderpx * g_plat.ui_scale + 0.5);
 	g_plat.ui_snap     = (unsigned int) (snap * g_plat.ui_scale + 0.5);
@@ -1339,13 +1340,14 @@ setup(void)
 	/* init key symbols table */
 	g_plat.keysyms = xcb_key_symbols_alloc(g_plat.xc);
 	/* init cursors */
-	cursor[CurNormal] = drw_cur_create(drw, 68);  /* XC_left_ptr */
-	cursor[CurResize] = drw_cur_create(drw, 120); /* XC_sizing */
-	cursor[CurMove]   = drw_cur_create(drw, 52);  /* XC_fleur */
+	cursor[CurNormal] =
+	    g_render_backend->cur_create(drw, 68); /* XC_left_ptr */
+	cursor[CurResize] = g_render_backend->cur_create(drw, 120); /* XC_sizing */
+	cursor[CurMove]   = g_render_backend->cur_create(drw, 52);  /* XC_fleur */
 	/* init appearance */
 	scheme = ecalloc(LENGTH(colors), sizeof(Clr *));
 	for (i = 0; i < LENGTH(colors); i++)
-		scheme[i] = drw_scm_create(drw, colors[i], 3);
+		scheme[i] = g_render_backend->scm_create(drw, colors[i], 3);
 	status_init(g_main_context_default());
 	/* init system tray */
 	updatesystray();
@@ -1416,8 +1418,9 @@ setup(void)
 	icon_init();
 #ifdef STATUSNOTIFIER
 	/* Initialize StatusNotifier support */
-	if (!sni_init(g_plat.xc, g_plat.xc, drw->xcb_visual, g_plat.root, drw,
-	        scheme, (unsigned int) (sniconsize * g_plat.ui_scale + 0.5)))
+	if (!sni_init(g_plat.xc, g_plat.xc, render_surface_xcb_visual(drw),
+	        g_plat.root, drw, scheme,
+	        (unsigned int) (sniconsize * g_plat.ui_scale + 0.5)))
 		awm_warn("Failed to initialize StatusNotifier support");
 #endif
 #ifdef COMPOSITOR

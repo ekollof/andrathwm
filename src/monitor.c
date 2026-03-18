@@ -216,9 +216,8 @@ drawbar(Monitor *m)
 
 	assert(m != NULL);
 	assert(drw != NULL);
-	assert(drw->fonts != NULL);
-	boxs = drw->fonts->h / 9;
-	boxw = drw->fonts->h / 6 + 2;
+	boxs = (int) render_surface_font_height(drw) / 9;
+	boxw = (int) render_surface_font_height(drw) / 6 + 2;
 
 	if (!m->showbar)
 		return;
@@ -231,14 +230,14 @@ drawbar(Monitor *m)
 		/* Measure the status2d string first (measurement-only: all zeros),
 		 * then render it right-aligned against the bar edge.
 		 * tw is used below to size the title-tab area.                   */
-		drw_setscheme(drw, scheme[SchemeNorm]);
-		tw = drw_draw_statusd(drw, 0, 0, 0, 0, stext);
+		g_render_backend->setscheme(drw, scheme[SchemeNorm]);
+		tw = g_render_backend->draw_statusd(drw, 0, 0, 0, 0, stext);
 		/* Pre-clear the status region with SchemeNorm bg so there is no
 		 * stale content visible between or around the s2d widgets.      */
-		drw_rect(drw, m->ww - stw - tw, 0, (unsigned int) tw,
+		g_render_backend->rect(drw, m->ww - stw - tw, 0, (unsigned int) tw,
 		    (unsigned int) g_plat.bh, 1, 1);
-		drw_draw_statusd(drw, m->ww - stw - tw, 0, (unsigned int) tw,
-		    (unsigned int) g_plat.bh, stext);
+		g_render_backend->draw_statusd(drw, m->ww - stw - tw, 0,
+		    (unsigned int) tw, (unsigned int) g_plat.bh, stext);
 	}
 
 	resizebarwin(m);
@@ -257,20 +256,21 @@ drawbar(Monitor *m)
 			continue;
 
 		w = TEXTW(tags[i]);
-		drw_setscheme(drw,
+		g_render_backend->setscheme(drw,
 		    scheme[m->tagset[m->seltags] & 1 << i ? SchemeSel : SchemeNorm]);
-		drw_text(
+		g_render_backend->text(
 		    drw, x, 0, w, g_plat.bh, g_plat.lrpad / 2, tags[i], urg & 1 << i);
 		if (occ & 1 << i)
-			drw_rect(drw, x + boxs, boxs, boxw, boxw,
+			g_render_backend->rect(drw, x + boxs, boxs, boxw, boxw,
 			    m == g_awm_selmon && g_awm_selmon->sel &&
 			        g_awm_selmon->sel->tags & 1 << i,
 			    urg & 1 << i);
 		x += w;
 	}
 	w = TEXTW(m->ltsymbol);
-	drw_setscheme(drw, scheme[SchemeNorm]);
-	x = drw_text(drw, x, 0, w, g_plat.bh, g_plat.lrpad / 2, m->ltsymbol, 0);
+	g_render_backend->setscheme(drw, scheme[SchemeNorm]);
+	x = g_render_backend->text(
+	    drw, x, 0, w, g_plat.bh, g_plat.lrpad / 2, m->ltsymbol, 0);
 
 	/* Draw window titles with icons (awesomebar) */
 	if ((w = m->ww - tw - stw - x) > g_plat.bh && n > 0) {
@@ -287,9 +287,9 @@ drawbar(Monitor *m)
 
 			/* Use different scheme for hidden windows */
 			if (c->ishidden)
-				drw_setscheme(drw, scheme[SchemeNorm]);
+				g_render_backend->setscheme(drw, scheme[SchemeNorm]);
 			else
-				drw_setscheme(
+				g_render_backend->setscheme(
 				    drw, scheme[m->sel == c ? SchemeSel : SchemeNorm]);
 
 			/* Draw icon if available */
@@ -298,38 +298,40 @@ drawbar(Monitor *m)
 				/* Draw background rectangle for icon area first to avoid
 				 * garbage. Use invert=1 to use the background color (ColBg).
 				 */
-				drw_rect(drw, x, 0,
+				g_render_backend->rect(drw, x, 0,
 				    (int) g_plat.ui_iconsize + g_plat.lrpad / 2, g_plat.bh, 1,
 				    1);
 
-				/* Render icon using drw */
-				drw_pic(drw, x + g_plat.lrpad / 4,
+				/* Render icon using render backend */
+				g_render_backend->pic(drw, x + g_plat.lrpad / 4,
 				    (g_plat.bh - (int) g_plat.ui_iconsize) / 2,
 				    (int) g_plat.ui_iconsize, (int) g_plat.ui_iconsize,
 				    c->icon);
 				textx = x + (int) g_plat.ui_iconsize + g_plat.lrpad / 2;
-				drw_text(drw, textx, 0,
+				g_render_backend->text(drw, textx, 0,
 				    tabw - ((int) g_plat.ui_iconsize + g_plat.lrpad / 2),
 				    g_plat.bh, 0, c->name, 0);
 			} else {
-				drw_text(
+				g_render_backend->text(
 				    drw, x, 0, tabw, g_plat.bh, g_plat.lrpad / 2, c->name, 0);
 			}
 
 			/* Draw rectangle indicator for hidden windows */
 			if (c->ishidden)
-				drw_rect(drw, textx + boxs, boxs, boxw, boxw, 0, 0);
+				g_render_backend->rect(
+				    drw, textx + boxs, boxs, boxw, boxw, 0, 0);
 			else if (c->isfloating)
-				drw_rect(drw, textx + boxs, boxs, boxw, boxw, c->isfixed, 0);
+				g_render_backend->rect(
+				    drw, textx + boxs, boxs, boxw, boxw, c->isfixed, 0);
 
 			x += tabw;
 			remainder -= tabw;
 		}
 	} else {
-		drw_setscheme(drw, scheme[SchemeNorm]);
-		drw_rect(drw, x, 0, w, g_plat.bh, 1, 1);
+		g_render_backend->setscheme(drw, scheme[SchemeNorm]);
+		g_render_backend->rect(drw, x, 0, w, g_plat.bh, 1, 1);
 	}
-	drw_map(drw, m->barwin, 0, 0, m->ww - stw, g_plat.bh);
+	g_render_backend->map(drw, m->barwin, 0, 0, m->ww - stw, g_plat.bh);
 }
 
 void

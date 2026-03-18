@@ -20,7 +20,6 @@
 #include <gdk/gdkx.h>
 
 #include "dbus.h"
-#include "drw.h"
 #include "icon.h"
 #include "log.h"
 #include "menu.h"
@@ -72,9 +71,9 @@ static xcb_connection_t *sni_cairo_xcb =
     NULL; /* dedicated XCB conn for cairo */
 static xcb_visualtype_t *sni_xcb_visual =
     NULL; /* default visual for cairo surfaces */
-static xcb_window_t sni_root   = 0;
-static Drw         *sni_drw    = NULL;
-static Clr        **sni_scheme = NULL;
+static xcb_window_t sni_root     = 0;
+static AwmSurface  *sni_drw      = NULL;
+static Clr        **sni_scheme   = NULL;
 static unsigned int sni_iconsize = 22; /* Set during sni_init() */
 
 /* Permanent 1×1 OR input-only GdkWindow used as the grab_win for
@@ -146,8 +145,8 @@ static void sni_fetch_item_properties(SNIItem *item);
 
 int
 sni_init(xcb_connection_t *xc_in, xcb_connection_t *cairo_xcb,
-    xcb_visualtype_t *xcb_visual, xcb_window_t rootwin, Drw *drw, Clr **scheme,
-    unsigned int icon_size)
+    xcb_visualtype_t *xcb_visual, xcb_window_t rootwin, AwmSurface *drw,
+    Clr **scheme, unsigned int icon_size)
 {
 	DBusError err;
 
@@ -160,7 +159,7 @@ sni_init(xcb_connection_t *xc_in, xcb_connection_t *cairo_xcb,
 	sni_root       = rootwin;
 	sni_drw        = drw;
 	sni_scheme     = scheme;
-	sni_iconsize     = icon_size;
+	sni_iconsize   = icon_size;
 
 	/* Disable glycin loaders - they use subprocesses which can deadlock
 	 * with async operations and window manager event loops */
@@ -331,7 +330,7 @@ sni_reconnect(void)
 	xcb_connection_t *cairo_xcb  = sni_cairo_xcb;
 	xcb_visualtype_t *xcb_visual = sni_xcb_visual;
 	xcb_window_t      root       = sni_root;
-	Drw              *drw        = sni_drw;
+	AwmSurface       *drw        = sni_drw;
 	Clr             **scheme     = sni_scheme;
 	unsigned int      sz         = sni_iconsize;
 
@@ -1168,8 +1167,8 @@ sni_render_item(SNIItem *item)
 	/* Draw a subtle loading indicator circle on top */
 	cairo_set_source_rgba(cr, 0.7, 0.7, 0.7, 0.5);
 	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-	cairo_arc(
-	    cr, sni_iconsize / 2, sni_iconsize / 2, sni_iconsize / 4, 0, 2 * 3.14159);
+	cairo_arc(cr, sni_iconsize / 2, sni_iconsize / 2, sni_iconsize / 4, 0,
+	    2 * 3.14159);
 	cairo_fill(cr);
 
 	cairo_destroy(cr);
