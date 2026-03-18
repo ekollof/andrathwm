@@ -4,6 +4,8 @@
 #ifndef EWMH_H
 #define EWMH_H
 
+#ifdef BACKEND_X11
+
 #include "awm.h"
 
 /* EWMH property setters */
@@ -22,5 +24,7 @@ void updateworkarea(Monitor *m);
 int sendevent(xcb_window_t w, xcb_atom_t proto, int mask, long d0, long d1,
     long d2, long d3, long d4);
 unsigned long getembedinfo(Client *c);
+
+#endif /* BACKEND_X11 */
 
 #endif /* EWMH_H */

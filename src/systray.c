@@ -1,6 +1,8 @@
 /* AndrathWM - XEMBED systray functions
  * See LICENSE file for copyright and license details. */
 
+#ifdef BACKEND_X11
+
 #include <assert.h>
 #include "systray.h"
 #include "awm.h"
@@ -67,7 +69,8 @@ updatesystrayicongeom(Client *i, int w, int h)
 			if (i->w == i->h)
 				i->w = g_plat.bh;
 			else
-				i->w = (int) ((float) g_plat.bh * ((float) i->w / (float) i->h));
+				i->w =
+				    (int) ((float) g_plat.bh * ((float) i->w / (float) i->h));
 			i->h = g_plat.bh;
 		}
 	}
@@ -122,8 +125,8 @@ updatesystrayiconcolors(void)
 	colors[4] = colors[7] = colors[10] = g;
 	colors[5] = colors[8] = colors[11] = b;
 	xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, systray->win,
-	    (xcb_atom_t) g_plat.netatom[NetSystemTrayColors], XCB_ATOM_CARDINAL, 32, 12,
-	    colors);
+	    (xcb_atom_t) g_plat.netatom[NetSystemTrayColors], XCB_ATOM_CARDINAL,
+	    32, 12, colors);
 }
 
 void
@@ -205,9 +208,10 @@ updatesystray(void)
 			 * EVENT_MASK, COLORMAP */
 			uint32_t cw_vals[5] = { bgpix, border, one, evmask, cmap };
 			systray->win        = xcb_generate_id(g_plat.xc);
-			xcb_create_window(g_plat.xc, 32, systray->win, g_plat.root, (int16_t) x,
-			    (int16_t) m->by, (uint16_t) w, (uint16_t) g_plat.bh, 0,
-			    XCB_WINDOW_CLASS_INPUT_OUTPUT, systray->visual_id,
+			xcb_create_window(g_plat.xc, 32, systray->win, g_plat.root,
+			    (int16_t) x, (int16_t) m->by, (uint16_t) w,
+			    (uint16_t) g_plat.bh, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+			    systray->visual_id,
 			    XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL |
 			        XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK |
 			        XCB_CW_COLORMAP,
@@ -216,14 +220,16 @@ updatesystray(void)
 			{
 				uint32_t horz =
 				    (uint32_t) g_plat.netatom[NetSystemTrayOrientationHorz];
-				xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, systray->win,
+				xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE,
+				    systray->win,
 				    (xcb_atom_t) g_plat.netatom[NetSystemTrayOrientation],
 				    XCB_ATOM_CARDINAL, 32, 1, &horz);
 			}
 			/* _NET_SYSTEM_TRAY_VISUAL */
 			{
 				uint32_t vis_id = (uint32_t) systray->visual_id;
-				xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, systray->win,
+				xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE,
+				    systray->win,
 				    (xcb_atom_t) g_plat.netatom[NetSystemTrayVisual],
 				    XCB_ATOM_VISUALID, 32, 1, &vis_id);
 			}
@@ -232,8 +238,8 @@ updatesystray(void)
 			{
 				uint32_t above = XCB_STACK_MODE_ABOVE;
 				xcb_map_window(g_plat.xc, systray->win);
-				xcb_configure_window(
-				    g_plat.xc, systray->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+				xcb_configure_window(g_plat.xc, systray->win,
+				    XCB_CONFIG_WINDOW_STACK_MODE, &above);
 			}
 		}
 		{
@@ -400,3 +406,5 @@ removesniiconsystray(xcb_window_t w)
 	if (g_awm.n_monitors > 0)
 		updatesystray();
 }
+
+#endif /* BACKEND_X11 */

@@ -4,6 +4,8 @@
 #ifndef SYSTRAY_H
 #define SYSTRAY_H
 
+#ifdef BACKEND_X11
+
 #include "awm.h"
 
 unsigned long clr_to_argb(Clr *clr);
@@ -16,5 +18,7 @@ void    updatesystrayiconstate(Client *i, xcb_property_notify_event_t *ev);
 Client *wintosystrayicon(xcb_window_t w);
 void    addsniiconsystray(xcb_window_t w, int width, int height);
 void    removesniiconsystray(xcb_window_t w);
+
+#endif /* BACKEND_X11 */
 
 #endif /* SYSTRAY_H */

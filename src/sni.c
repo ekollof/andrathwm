@@ -38,8 +38,10 @@ xcb_screen_root_depth_sni(xcb_connection_t *conn, int scr_num)
 }
 
 /* Forward declaration for awm integration */
+#ifdef BACKEND_X11
 extern void addsniiconsystray(xcb_window_t w, int width, int height);
 extern void removesniiconsystray(xcb_window_t w);
+#endif /* BACKEND_X11 */
 /* Schedule a D-Bus reconnect from the awm main loop (defined in awm.c). */
 extern void sni_schedule_reconnect(void);
 
@@ -700,7 +702,9 @@ sni_remove_item(SNIItem *item)
 		sni_free_menu(item->menu);
 
 	if (item->win) {
+#ifdef BACKEND_X11
 		removesniiconsystray(item->win);
+#endif
 		xcb_destroy_window(sni_xc, item->win);
 	}
 
@@ -1117,7 +1121,9 @@ sni_render_item(SNIItem *item)
 
 		/* Add to systray BEFORE rendering so it's in the right parent */
 		awm_debug("SNI: Adding window to systray before rendering");
+#ifdef BACKEND_X11
 		addsniiconsystray(item->win, item->w, item->h);
+#endif
 		item->mapped = 1;
 	}
 

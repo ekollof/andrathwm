@@ -7,11 +7,11 @@
 #include "client.h"
 #include "awm.h"
 #include "events.h"
-#include "ewmh.h"
 #include "monitor.h"
 #include "spawn.h"
 #include "systray.h"
 #include "wmstate.h"
+#include "wm_properties.h"
 #include "xrdb.h"
 #include "config.h"
 
@@ -266,7 +266,7 @@ focus(Client *c)
 				    vals);
 			}
 		}
-		setfocus(c);
+		wmprop_set_focus(c);
 	} else {
 		g_wm_backend->set_input_focus(
 		    &g_plat, g_awm_selmon->barwin, XCB_CURRENT_TIME);
@@ -631,7 +631,7 @@ killclient(const Arg *arg)
 	if (!g_awm_selmon->sel)
 		return;
 
-	if (!sendevent(g_awm_selmon->sel->win, g_plat.wmatom[WMDelete], 0,
+	if (!wmprop_send_event(g_awm_selmon->sel->win, g_plat.wmatom[WMDelete], 0,
 	        g_plat.wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
 
 		g_wm_backend->kill_client_hard(&g_plat, g_awm_selmon->sel->win);
@@ -725,8 +725,8 @@ manage(xcb_window_t w, int x, int y, int ww, int wh, int bw)
 		    XCB_PROP_MODE_APPEND, 1, &winxid);
 	}
 
-	setewmhdesktop(c);
-	setwmstate(c);
+	wmprop_set_client_desktop(c);
+	wmprop_set_wm_state(c);
 
 	{
 		uint32_t extents[4] = { (uint32_t) c->bw, (uint32_t) c->bw,
@@ -1082,7 +1082,7 @@ setfullscreen(Client *c, int fullscreen)
 		c->oldbw        = c->bw;
 		c->bw           = 0;
 		c->isfloating   = 1;
-		setwmstate(c);
+		wmprop_set_wm_state(c);
 		resizeclient(c, c->mon->mx, c->mon->my, c->mon->mw, c->mon->mh);
 #ifdef COMPOSITOR
 		/* Defer the bypass+unredirect+overlay-lower sequence by ~40 ms so
@@ -1101,7 +1101,7 @@ setfullscreen(Client *c, int fullscreen)
 		c->y            = c->oldy;
 		c->w            = c->oldw;
 		c->h            = c->oldh;
-		setwmstate(c);
+		wmprop_set_wm_state(c);
 #ifdef COMPOSITOR
 		compositor_bypass_window(c, 0);
 #endif
@@ -1189,7 +1189,7 @@ seturgent(Client *c, int urg)
 			g_wm_backend->set_wm_hints(&g_plat, c->win, &wmh);
 		}
 	}
-	setwmstate(c);
+	wmprop_set_wm_state(c);
 }
 
 void
@@ -1254,12 +1254,12 @@ tag(const Arg *arg)
 				return;
 			g_awm_selmon->sel->tags = newtags;
 			g_awm_selmon->sel->mon  = m;
-			setewmhdesktop(g_awm_selmon->sel);
+			wmprop_set_client_desktop(g_awm_selmon->sel);
 			arrange(m);
 			break;
 		}
 		g_awm_selmon->sel->tags = arg->ui & TAGMASK;
-		setewmhdesktop(g_awm_selmon->sel);
+		wmprop_set_client_desktop(g_awm_selmon->sel);
 		focus(NULL);
 		arrange(g_awm_selmon);
 	}
@@ -1335,11 +1335,11 @@ toggletag(const Arg *arg)
 	newtags = g_awm_selmon->sel->tags ^ (arg->ui & TAGMASK);
 	if (newtags) {
 		g_awm_selmon->sel->tags = newtags;
-		setewmhdesktop(g_awm_selmon->sel);
+		wmprop_set_client_desktop(g_awm_selmon->sel);
 		focus(NULL);
 		arrange(g_awm_selmon);
 	}
-	updatecurrentdesktop();
+	wmprop_update_current_desktop();
 	wmstate_update();
 }
 
@@ -1454,7 +1454,7 @@ toggleview(const Arg *arg)
 			attachclients(g_awm_selmon);
 			arrange(g_awm_selmon);
 			focus(NULL);
-			updatecurrentdesktop();
+			wmprop_update_current_desktop();
 			return;
 		}
 
@@ -1493,7 +1493,7 @@ toggleview(const Arg *arg)
 		arrange(g_awm_selmon);
 		focus(NULL);
 	}
-	updatecurrentdesktop();
+	wmprop_update_current_desktop();
 	wmstate_update();
 }
 
@@ -1548,7 +1548,7 @@ unmanage(Client *c, int destroyed)
 #endif
 	free(c);
 	focus(NULL);
-	updateclientlist();
+	wmprop_update_client_list();
 	arrange(m);
 #ifdef COMPOSITOR
 	/* If the destroyed window was fullscreen and had bypassed the compositor,
@@ -1761,7 +1761,7 @@ view(const Arg *arg)
 		attachclients(g_awm_selmon);
 		arrange(g_awm_selmon);
 		focus(NULL);
-		updatecurrentdesktop();
+		wmprop_update_current_desktop();
 		return;
 	}
 	g_awm_selmon->seltags ^= 1;
@@ -1802,7 +1802,7 @@ view(const Arg *arg)
 	attachclients(g_awm_selmon);
 	arrange(g_awm_selmon);
 	focus(NULL);
-	updatecurrentdesktop();
+	wmprop_update_current_desktop();
 	wmstate_update();
 }
 

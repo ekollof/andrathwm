@@ -7,12 +7,15 @@
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include "client.h"
 #include "compositor.h"
-#include "ewmh.h"
 #include "monitor.h"
 #include "spawn.h"
 #include "switcher.h"
 #include "systray.h"
+#ifdef BACKEND_X11
+#include "ewmh.h"
+#endif
 #include "wmstate.h"
+#include "wm_properties.h"
 #include "xrdb.h"
 #include "config.h"
 
@@ -33,6 +36,10 @@ buttonpress(xcb_generic_event_t *e)
 		focus(NULL);
 	}
 	if (ev->event == g_awm_selmon->barwin) {
+		int stw = 0; /* systray width — 0 on non-X11 */
+#ifdef BACKEND_X11
+		stw = (int) getsystraywidth();
+#endif
 		i = x = 0;
 		/* Calculate x position after tags (accounting for hidden empty tags)
 		 */
@@ -60,8 +67,7 @@ buttonpress(xcb_generic_event_t *e)
 		    ev->event_x < x + TEXTW(g_awm_selmon->ltsymbol))
 			click = ClkLtSymbol;
 		else if (ev->event_x > g_awm_selmon->ww -
-		        g_render_backend->draw_statusd(drw, 0, 0, 0, 0, stext) -
-		        getsystraywidth())
+		        g_render_backend->draw_statusd(drw, 0, 0, 0, 0, stext) - stw)
 			click = ClkStatusText;
 		else if (i >= LENGTH(tags)) {
 			/* Awesomebar - find which window was clicked */
@@ -79,7 +85,6 @@ buttonpress(xcb_generic_event_t *e)
 			if (n > 0) {
 				int tw =
 				    g_render_backend->draw_statusd(drw, 0, 0, 0, 0, stext);
-				int stw       = getsystraywidth();
 				int remainder = m->ww - tw - stw - x;
 				int tabw      = remainder / n;
 				int cx        = x;
@@ -151,6 +156,7 @@ clientmessage(xcb_generic_event_t *e)
 	Client                     *c   = wintoclient(cme->window);
 	unsigned int                i;
 
+#ifdef BACKEND_X11
 	if (showsystray && systray && cme->window == systray->win &&
 	    cme->type == g_plat.netatom[NetSystemTrayOP]) {
 		/* add systray icons */
@@ -211,6 +217,7 @@ clientmessage(xcb_generic_event_t *e)
 		}
 		return;
 	}
+#endif /* BACKEND_X11 */
 
 	if (!c)
 		return;
@@ -233,7 +240,7 @@ clientmessage(xcb_generic_event_t *e)
 		}
 	} else if (cme->type == g_plat.netatom[NetCloseWindow]) {
 		/* _NET_CLOSE_WINDOW client message */
-		if (!sendevent(c->win, g_plat.wmatom[WMDelete], 0,
+		if (!wmprop_send_event(c->win, g_plat.wmatom[WMDelete], 0,
 		        g_plat.wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
 			g_wm_backend->kill_client_hard(&g_plat, c->win);
 		}
@@ -294,7 +301,7 @@ configurenotify(xcb_generic_event_t *e)
 			focus(NULL);
 			arrange(NULL);
 			FOR_EACH_MON(m)
-			updateworkarea(m);
+			wmprop_update_workarea(m);
 		}
 #ifdef COMPOSITOR
 		compositor_notify_screen_resize();
@@ -400,11 +407,13 @@ destroynotify(xcb_generic_event_t *e)
 
 	if ((c = wintoclient(ev->window)))
 		unmanage(c, 1);
+#ifdef BACKEND_X11
 	else if ((c = wintosystrayicon(ev->window))) {
 		removesystrayicon(c);
 		resizebarwin(g_awm_selmon);
 		updatesystray();
 	}
+#endif /* BACKEND_X11 */
 }
 
 void
@@ -481,8 +490,10 @@ expose(xcb_generic_event_t *e)
 
 	if (ev->count == 0 && (m = wintomon(ev->window))) {
 		drawbar(m);
+#ifdef BACKEND_X11
 		if (m == g_awm_selmon)
 			updatesystray();
+#endif
 	}
 }
 
@@ -518,7 +529,7 @@ focusin(xcb_generic_event_t *e)
 			return;
 	}
 
-	setfocus(g_awm_selmon->sel);
+	wmprop_set_focus(g_awm_selmon->sel);
 }
 
 void
@@ -648,12 +659,14 @@ maprequest(xcb_generic_event_t *e)
 	xcb_map_request_event_t *ev = (xcb_map_request_event_t *) e;
 
 	Client *i;
+#ifdef BACKEND_X11
 	if ((i = wintosystrayicon(ev->window))) {
 		/* Systray icon requested mapping - handle via updatesystray */
 		resizebarwin(g_awm_selmon);
 		updatesystray();
 		return;
 	}
+#endif /* BACKEND_X11 */
 
 	{
 		int override = 0;
@@ -696,6 +709,7 @@ propertynotify(xcb_generic_event_t *e)
 	xcb_window_t                 trans;
 	xcb_property_notify_event_t *ev = (xcb_property_notify_event_t *) e;
 
+#ifdef BACKEND_X11
 	if ((c = wintosystrayicon(ev->window))) {
 		if (ev->atom == XCB_ATOM_WM_NORMAL_HINTS) {
 			updatesizehints(c);
@@ -705,6 +719,7 @@ propertynotify(xcb_generic_event_t *e)
 		resizebarwin(g_awm_selmon);
 		updatesystray();
 	}
+#endif /* BACKEND_X11 */
 
 	if ((ev->window == g_plat.root) && (ev->atom == XCB_ATOM_WM_NAME)) {
 		(void) fake_signal();
@@ -763,11 +778,15 @@ resizerequest(xcb_generic_event_t *e)
 	xcb_resize_request_event_t *ev = (xcb_resize_request_event_t *) e;
 	Client                     *i;
 
+#ifdef BACKEND_X11
 	if ((i = wintosystrayicon(ev->window))) {
 		updatesystrayicongeom(i, ev->width, ev->height);
 		resizebarwin(g_awm_selmon);
 		updatesystray();
 	}
+#else
+	(void) i;
+#endif /* BACKEND_X11 */
 }
 
 void
@@ -781,6 +800,7 @@ unmapnotify(xcb_generic_event_t *e)
 			setclientstate(c, XCB_ICCCM_WM_STATE_WITHDRAWN);
 		else
 			unmanage(c, 0);
+#ifdef BACKEND_X11
 	} else if ((c = wintosystrayicon(ev->window))) {
 		/* KLUDGE! sometimes icons occasionally unmap their windows, but do
 		 * _not_ destroy them. We map those windows back */
@@ -791,6 +811,7 @@ unmapnotify(xcb_generic_event_t *e)
 			    &g_plat, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
 		}
 		updatesystray();
+#endif /* BACKEND_X11 */
 	}
 }
 

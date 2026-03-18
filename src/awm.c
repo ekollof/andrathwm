@@ -53,7 +53,6 @@ awm_memfd_create(const char *name, unsigned int flags)
 #include "awm.h"
 #include "client.h"
 #include "events.h"
-#include "ewmh.h"
 #include "icon.h"
 #include "monitor.h"
 #include "spawn.h"
@@ -62,6 +61,7 @@ awm_memfd_create(const char *name, unsigned int flags)
 #include "systray.h"
 #include "ui_proto.h"
 #include "wmstate.h"
+#include "wm_properties.h"
 #include "xrdb.h"
 #include "platform_source.h"
 #define AWM_CONFIG_IMPL
@@ -612,7 +612,7 @@ x_dispatch_cb(gpointer user_data)
 			{
 				Monitor *m;
 				FOR_EACH_MON(m)
-				updateworkarea(m);
+				wmprop_update_workarea(m);
 			}
 #ifdef COMPOSITOR
 			compositor_notify_screen_resize();
@@ -632,7 +632,9 @@ x_dispatch_cb(gpointer user_data)
 
 	if (barsdirty) {
 		drawbars();
+#ifdef BACKEND_X11
 		updatesystray();
+#endif
 		barsdirty = 0;
 	}
 
@@ -1350,7 +1352,9 @@ setup(void)
 		scheme[i] = g_render_backend->scm_create(drw, colors[i], 3);
 	status_init(g_main_context_default());
 	/* init system tray */
+#ifdef BACKEND_X11
 	updatesystray();
+#endif
 	/* init bars */
 	updatebars();
 	updatestatus();
@@ -1388,15 +1392,12 @@ setup(void)
 		xcb_delete_property(
 		    g_plat.xc, g_plat.root, g_plat.netatom[NetClientList]);
 	}
-	setnumdesktops();
-	setcurrentdesktop();
-	setdesktopnames();
-	setviewport();
+	wmprop_setup();
 	/* Update workarea for all monitors */
 	{
 		Monitor *m;
 		FOR_EACH_MON(m)
-		updateworkarea(m);
+		wmprop_update_workarea(m);
 	}
 	/* select events */
 	{

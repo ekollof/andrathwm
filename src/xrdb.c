@@ -263,7 +263,9 @@ xrdb(const Arg *arg)
 	loadxrdb();
 	for (i = 0; i < LENGTH(colors); i++)
 		scheme[i] = g_render_backend->scm_create(drw, colors[i], 3);
+#ifdef BACKEND_X11
 	updatesystrayiconcolors();
+#endif
 	focus(NULL);
 	arrange(NULL);
 	ui_send_theme();

@@ -5,10 +5,10 @@
 #include "monitor.h"
 #include "awm.h"
 #include "client.h"
-#include "ewmh.h"
 #include "spawn.h"
 #include "status.h"
 #include "systray.h"
+#include "wm_properties.h"
 #include "xrdb.h"
 #ifdef COMPOSITOR
 #include "compositor.h"
@@ -223,7 +223,9 @@ drawbar(Monitor *m)
 		return;
 
 	if (showsystray && m == systraytomon(m) && !systrayonleft)
+#ifdef BACKEND_X11
 		stw = getsystraywidth();
+#endif
 
 	/* draw status first so it can be overdrawn by tags later */
 	if (m == g_awm_selmon) { /* status is only drawn on selected monitor */
@@ -419,7 +421,9 @@ resizebarwin(Monitor *m)
 {
 	unsigned int w = m->ww;
 	if (showsystray && m == systraytomon(m) && !systrayonleft)
+#ifdef BACKEND_X11
 		w -= getsystraywidth();
+#endif
 	uint32_t xywh[4] = { (uint32_t) (int32_t) m->wx,
 		(uint32_t) (int32_t) m->by, w, (uint32_t) g_plat.bh };
 	g_wm_backend->configure_win(&g_plat, m->barwin,
@@ -476,7 +480,7 @@ restack(Monitor *m)
 #ifdef COMPOSITOR
 	compositor_raise_overlay();
 #endif
-	updateclientlist(); /* Update stacking order */
+	wmprop_update_client_list(); /* Update stacking order */
 }
 
 void
@@ -580,7 +584,7 @@ togglebar(const Arg *arg)
 		g_wm_backend->configure_win(
 		    &g_plat, systray->win, XCB_CONFIG_WINDOW_Y, &y);
 	}
-	updateworkarea(g_awm_selmon);
+	wmprop_update_workarea(g_awm_selmon);
 	arrange(g_awm_selmon);
 	wmstate_update();
 }
@@ -600,7 +604,9 @@ updatebars(void)
 			continue;
 		w = m->ww;
 		if (showsystray && m == systraytomon(m))
+#ifdef BACKEND_X11
 			w -= getsystraywidth();
+#endif
 
 		m->barwin = g_wm_backend->create_bar_win(
 		    &g_plat, m->wx, m->by, (int) w, g_plat.bh, COMPOSITOR_ACTIVE);
@@ -652,7 +658,9 @@ updatestatus(void)
 	if (stext[0] == '\0')
 		snprintf(stext, sizeof(stext), "awm-" VERSION);
 	drawbar(g_awm_selmon);
+#ifdef BACKEND_X11
 	updatesystray();
+#endif
 	wmstate_update();
 }
 

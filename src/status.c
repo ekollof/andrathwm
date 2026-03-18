@@ -134,7 +134,9 @@ status_timer_cb(gpointer user_data)
 	 * may be no pending X events to trigger x_dispatch_cb. */
 	if (barsdirty) {
 		drawbars();
+#ifdef BACKEND_X11
 		updatesystray();
+#endif
 		barsdirty = 0;
 	}
 	return G_SOURCE_CONTINUE;
