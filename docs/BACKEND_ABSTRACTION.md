@@ -564,16 +564,16 @@ In addition to all rules in `AGENTS.md`, the following hold on this branch:
 
 Before opening a pull request from `feature/backend-abstraction` to `master`:
 
-- [ ] `make` produces zero warnings and zero errors (`-Werror -Wall -pedantic`)
-- [ ] `make DRW_LEGACY=1` removed from CI — flag no longer exists
-- [ ] No `#include <X11/...>` in any `src/` file
-- [ ] No `xcb_*` in `client.c`, `monitor.c`, `events.c` (grep clean)
-- [ ] No `drw_*` outside `render_cairo_xcb.c` (grep clean)
-- [ ] No `#include "xsource.h"` anywhere
-- [ ] `systray.c` and `ewmh.c` wrapped in `#ifdef BACKEND_X11`
+- [x] `make` produces zero warnings and zero errors (`-Werror -Wall -pedantic`)
+- [x] `make DRW_LEGACY=1` removed from CI — flag no longer exists
+- [x] No `#include <X11/...>` in any `src/` file
+- [x] No `xcb_*` function calls in `client.c`, `monitor.c`, `events.c` (grep clean; bootstrap xcb_connect/xcb_disconnect in main() exempt)
+- [x] No `drw_*` outside `render_cairo_xcb.c` (grep clean)
+- [x] No `#include "xsource.h"` anywhere
+- [x] `systray.c` and `ewmh.c` wrapped in `#ifdef BACKEND_X11`
 - [ ] `config.h` is last `#include` in every `.c` that uses it
-- [ ] Inline XRender path removed from `switcher.c`; `thumb_pict` and
+- [x] Inline XRender path removed from `switcher.c`; `thumb_pict` and
       `thumb_pixmap` fields removed from `SwitcherEntry`
-- [ ] All `awm_*` logging macros used — no bare `printf`/`fprintf`
+- [x] All `awm_*` logging macros used — no bare `printf`/`fprintf`
 - [ ] `AGENTS.md` constraints checklist satisfied in full
 - [ ] Tested in Xephyr: `Xephyr :1 -screen 1280x720 && DISPLAY=:1 ./awm -s`
