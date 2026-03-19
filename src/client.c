@@ -772,11 +772,11 @@ manage(xcb_window_t w, int x, int y, int ww, int wh, int bw)
 void
 movemouse(const Arg *arg)
 {
-	int                  x, y, ocx, ocy, nx, ny;
-	Client              *c;
-	Monitor             *m;
-	xcb_generic_event_t *xe;
-	xcb_timestamp_t      lasttime = 0;
+	int         x, y, ocx, ocy, nx, ny;
+	Client     *c;
+	Monitor    *m;
+	AwmEvent   *xe;
+	WmTimestamp lasttime = 0;
 
 	if (!(c = g_awm_selmon->sel))
 		return;
@@ -799,29 +799,26 @@ movemouse(const Arg *arg)
 		while (!(xe = g_wm_backend->next_event(&g_plat)))
 			;
 		{
-			uint8_t type = xe->response_type & ~0x80;
-			if (type == XCB_BUTTON_RELEASE) {
+			if (xe->type == AWM_EV_BUTTON_RELEASE) {
 				free(xe);
 				break;
 			}
-			switch (type) {
-			case XCB_CONFIGURE_REQUEST:
-			case XCB_EXPOSE:
-			case XCB_MAP_REQUEST:
-				if (handler[type])
-					handler[type](xe);
+			switch (xe->type) {
+			case AWM_EV_CONFIGURE_REQUEST:
+			case AWM_EV_EXPOSE:
+			case AWM_EV_MAP_REQUEST:
+				if (handler[xe->type])
+					handler[xe->type](xe);
 				break;
-			case XCB_MOTION_NOTIFY: {
-				xcb_motion_notify_event_t *me =
-				    (xcb_motion_notify_event_t *) xe;
-				if ((me->time - lasttime) <= (1000 / motionfps)) {
+			case AWM_EV_MOTION: {
+				if ((xe->motion.time - lasttime) <= (1000 / motionfps)) {
 					free(xe);
 					continue;
 				}
-				lasttime = me->time;
+				lasttime = xe->motion.time;
 
-				nx = ocx + (me->root_x - x);
-				ny = ocy + (me->root_y - y);
+				nx = ocx + (xe->motion.root_x - x);
+				ny = ocy + (xe->motion.root_y - y);
 				if (abs(g_awm_selmon->wx - nx) < (int) g_plat.ui_snap)
 					nx = g_awm_selmon->wx;
 				else if (abs((g_awm_selmon->wx + g_awm_selmon->ww) -
@@ -847,13 +844,8 @@ movemouse(const Arg *arg)
 			}
 			default:
 #ifdef COMPOSITOR
-				/* Damage events use a dynamic event code
-				 * (damage_ev_base + XCB_DAMAGE_NOTIFY) that
-				 * cannot appear as a switch case constant.
-				 * Forward all unhandled events to the compositor
-				 * and flush any queued repaint synchronously —
+				/* Flush any pending compositor repaint synchronously —
 				 * g_idle_add never fires inside the grab loop. */
-				compositor_handle_event(xe);
 				compositor_repaint_now();
 #endif
 				break;
@@ -941,11 +933,11 @@ resizeclient(Client *c, int x, int y, int w, int h)
 void
 resizemouse(const Arg *arg)
 {
-	int                  ocx, ocy, nw, nh;
-	Client              *c;
-	Monitor             *m;
-	xcb_generic_event_t *xe;
-	xcb_timestamp_t      lasttime = 0;
+	int         ocx, ocy, nw, nh;
+	Client     *c;
+	Monitor    *m;
+	AwmEvent   *xe;
+	WmTimestamp lasttime = 0;
 
 	if (!(c = g_awm_selmon->sel))
 		return;
@@ -966,29 +958,26 @@ resizemouse(const Arg *arg)
 		while (!(xe = g_wm_backend->next_event(&g_plat)))
 			;
 		{
-			uint8_t type = xe->response_type & ~0x80;
-			if (type == XCB_BUTTON_RELEASE) {
+			if (xe->type == AWM_EV_BUTTON_RELEASE) {
 				free(xe);
 				break;
 			}
-			switch (type) {
-			case XCB_CONFIGURE_REQUEST:
-			case XCB_EXPOSE:
-			case XCB_MAP_REQUEST:
-				if (handler[type])
-					handler[type](xe);
+			switch (xe->type) {
+			case AWM_EV_CONFIGURE_REQUEST:
+			case AWM_EV_EXPOSE:
+			case AWM_EV_MAP_REQUEST:
+				if (handler[xe->type])
+					handler[xe->type](xe);
 				break;
-			case XCB_MOTION_NOTIFY: {
-				xcb_motion_notify_event_t *me =
-				    (xcb_motion_notify_event_t *) xe;
-				if ((me->time - lasttime) <= (1000 / motionfps)) {
+			case AWM_EV_MOTION: {
+				if ((xe->motion.time - lasttime) <= (1000 / motionfps)) {
 					free(xe);
 					continue;
 				}
-				lasttime = me->time;
+				lasttime = xe->motion.time;
 
-				nw = MAX(me->event_x - ocx - 2 * c->bw + 1, 1);
-				nh = MAX(me->event_y - ocy - 2 * c->bw + 1, 1);
+				nw = MAX(xe->motion.root_x - ocx - 2 * c->bw + 1, 1);
+				nh = MAX(xe->motion.root_y - ocy - 2 * c->bw + 1, 1);
 				if (c->mon->wx + nw >= g_awm_selmon->wx &&
 				    c->mon->wx + nw <= g_awm_selmon->wx + g_awm_selmon->ww &&
 				    c->mon->wy + nh >= g_awm_selmon->wy &&
@@ -1009,13 +998,8 @@ resizemouse(const Arg *arg)
 			}
 			default:
 #ifdef COMPOSITOR
-				/* Damage events use a dynamic event code
-				 * (damage_ev_base + XCB_DAMAGE_NOTIFY) that
-				 * cannot appear as a switch case constant.
-				 * Forward all unhandled events to the compositor
-				 * and flush any queued repaint synchronously —
+				/* Flush any pending compositor repaint synchronously —
 				 * g_idle_add never fires inside the grab loop. */
-				compositor_handle_event(xe);
 				compositor_repaint_now();
 #endif
 				break;
@@ -1031,9 +1015,9 @@ resizemouse(const Arg *arg)
 	 * events are dispatched through the normal handler. */
 	g_wm_backend->flush(&g_plat);
 	while ((xe = g_wm_backend->poll_event(&g_plat))) {
-		uint8_t type = xe->response_type & ~0x80;
-		if (type != XCB_ENTER_NOTIFY && type < LASTEvent && handler[type])
-			handler[type](xe);
+		if (xe->type != AWM_EV_ENTER && xe->type != AWM_EV_NONE &&
+		    handler[xe->type])
+			handler[xe->type](xe);
 		free(xe);
 	}
 	if ((m = recttomon(c->x, c->y, c->w, c->h)) != g_awm_selmon) {
@@ -1180,12 +1164,12 @@ seturgent(Client *c, int urg)
 {
 	c->isurgent = urg;
 	{
-		xcb_icccm_wm_hints_t wmh;
+		AwmWmHints wmh;
 		if (g_wm_backend->get_wm_hints(&g_plat, c->win, &wmh)) {
 			if (urg)
-				wmh.flags |= XCB_ICCCM_WM_HINT_X_URGENCY;
+				wmh.flags |= AWM_WM_HINT_URGENCY;
 			else
-				wmh.flags &= ~XCB_ICCCM_WM_HINT_X_URGENCY;
+				wmh.flags &= ~AWM_WM_HINT_URGENCY;
 			g_wm_backend->set_wm_hints(&g_plat, c->win, &wmh);
 		}
 	}
@@ -1562,43 +1546,40 @@ unmanage(Client *c, int destroyed)
 void
 updatesizehints(Client *c)
 {
-	xcb_size_hints_t size;
+	AwmSizeHints size;
 
 	if (!g_wm_backend->get_wm_normal_hints(&g_plat, c->win, &size))
-		size.flags = XCB_ICCCM_SIZE_HINT_P_SIZE;
-	if (size.flags & XCB_ICCCM_SIZE_HINT_BASE_SIZE) {
-		c->basew = size.base_width;
-		c->baseh = size.base_height;
-	} else if (size.flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) {
-		c->basew = size.min_width;
-		c->baseh = size.min_height;
+		size.flags = AWM_SIZE_P_SIZE;
+	if (size.flags & AWM_SIZE_P_BASE_SIZE) {
+		c->basew = size.base_w;
+		c->baseh = size.base_h;
+	} else if (size.flags & AWM_SIZE_P_MIN_SIZE) {
+		c->basew = size.min_w;
+		c->baseh = size.min_h;
 	} else
 		c->basew = c->baseh = 0;
-	if (size.flags & XCB_ICCCM_SIZE_HINT_P_RESIZE_INC) {
-		c->incw = size.width_inc;
-		c->inch = size.height_inc;
+	if (size.flags & AWM_SIZE_P_RESIZE_INC) {
+		c->incw = size.inc_w;
+		c->inch = size.inc_h;
 	} else
 		c->incw = c->inch = 0;
-	if (size.flags & XCB_ICCCM_SIZE_HINT_P_MAX_SIZE) {
-		c->maxw = size.max_width;
-		c->maxh = size.max_height;
+	if (size.flags & AWM_SIZE_P_MAX_SIZE) {
+		c->maxw = size.max_w;
+		c->maxh = size.max_h;
 	} else
 		c->maxw = c->maxh = 0;
-	if (size.flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) {
-		c->minw = size.min_width;
-		c->minh = size.min_height;
-	} else if (size.flags & XCB_ICCCM_SIZE_HINT_BASE_SIZE) {
-		c->minw = size.base_width;
-		c->minh = size.base_height;
+	if (size.flags & AWM_SIZE_P_MIN_SIZE) {
+		c->minw = size.min_w;
+		c->minh = size.min_h;
+	} else if (size.flags & AWM_SIZE_P_BASE_SIZE) {
+		c->minw = size.base_w;
+		c->minh = size.base_h;
 	} else
 		c->minw = c->minh = 0;
-	if (size.flags & XCB_ICCCM_SIZE_HINT_P_ASPECT) {
-		c->mina = (size.min_aspect_num > 0)
-		    ? (float) size.min_aspect_den / size.min_aspect_num
-		    : 0.0f;
-		c->maxa = (size.max_aspect_den > 0)
-		    ? (float) size.max_aspect_num / size.max_aspect_den
-		    : 0.0f;
+	if (size.flags & AWM_SIZE_P_ASPECT) {
+		c->mina =
+		    (size.min_aspect > 0.0) ? (float) (1.0 / size.min_aspect) : 0.0f;
+		c->maxa = (float) size.max_aspect;
 	} else
 		c->maxa = c->mina = 0.0;
 	c->isfixed =
@@ -1611,7 +1592,7 @@ updatetitle(Client *c)
 {
 	if (!gettextprop(
 	        c->win, g_plat.netatom[NetWMName], c->name, sizeof c->name))
-		gettextprop(c->win, XCB_ATOM_WM_NAME, c->name, sizeof c->name);
+		gettextprop(c->win, AWM_ATOM_WM_NAME, c->name, sizeof c->name);
 	if (c->name[0] == '\0')
 		strcpy(c->name, broken);
 }
@@ -1638,15 +1619,14 @@ updatewindowtype(Client *c)
 void
 updatewmhints(Client *c)
 {
-	xcb_icccm_wm_hints_t wmh;
+	AwmWmHints wmh;
 
 	if (g_wm_backend->get_wm_hints(&g_plat, c->win, &wmh)) {
-		if (c == g_awm_selmon->sel &&
-		    (wmh.flags & XCB_ICCCM_WM_HINT_X_URGENCY)) {
-			wmh.flags &= ~XCB_ICCCM_WM_HINT_X_URGENCY;
+		if (c == g_awm_selmon->sel && (wmh.flags & AWM_WM_HINT_URGENCY)) {
+			wmh.flags &= ~AWM_WM_HINT_URGENCY;
 			g_wm_backend->set_wm_hints(&g_plat, c->win, &wmh);
 		} else
-			c->isurgent = (wmh.flags & XCB_ICCCM_WM_HINT_X_URGENCY) ? 1 : 0;
+			c->isurgent = (wmh.flags & AWM_WM_HINT_URGENCY) ? 1 : 0;
 		if (wmh.flags & XCB_ICCCM_WM_HINT_INPUT)
 			c->neverfocus = !wmh.input;
 		else

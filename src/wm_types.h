@@ -48,8 +48,12 @@ typedef uintptr_t WinId;
 typedef uint32_t AtomId;
 #define ATOM_NONE ((AtomId) 0)
 
-/* Key symbol.  Same bit layout as xkb_keysym_t and xcb_keysym_t. */
+/* Key symbol.  Same bit layout as xkb_keysym_t and xcb_keysym_t.
+ * Guarded because <X11/X.h> (pulled in transitively by GTK/GDK on BACKEND_X11)
+ * defines KeySym as XID (unsigned long), which conflicts on 64-bit. */
+#ifndef X_H
 typedef uint32_t KeySym;
+#endif /* X_H */
 
 /* Raw keycode (evdev scancode on Wayland, X11 keycode on X11).
  * Widened to uint32_t so it fits both (X11 uses uint8_t). */
@@ -151,6 +155,39 @@ typedef uint32_t  WmVisualId; /* xcb_visualid_t / wlroots format id   */
 #define AWM_ALLOW_REPLAY_POINTER 3u
 
 /* -------------------------------------------------------------------------
+ * AWM_NOTIFY_MODE_* — enter/leave/focus notify modes (X11 wire values)
+ * ---------------------------------------------------------------------- */
+#define AWM_NOTIFY_MODE_NORMAL 0u
+#define AWM_NOTIFY_MODE_GRAB 1u
+#define AWM_NOTIFY_MODE_UNGRAB 2u
+#define AWM_NOTIFY_MODE_WHILE_GRABBED 3u
+
+/* -------------------------------------------------------------------------
+ * AWM_NOTIFY_DETAIL_* — enter/leave detail values (X11 wire values)
+ * ---------------------------------------------------------------------- */
+#define AWM_NOTIFY_DETAIL_ANCESTOR 0u
+#define AWM_NOTIFY_DETAIL_VIRTUAL 1u
+#define AWM_NOTIFY_DETAIL_INFERIOR 2u
+#define AWM_NOTIFY_DETAIL_NONLINEAR 3u
+#define AWM_NOTIFY_DETAIL_NONLINEAR_VIRTUAL 4u
+#define AWM_NOTIFY_DETAIL_POINTER 5u
+#define AWM_NOTIFY_DETAIL_POINTER_ROOT 6u
+#define AWM_NOTIFY_DETAIL_NONE 7u
+
+/* -------------------------------------------------------------------------
+ * AWM_PROPERTY_* — property state values (X11 wire values)
+ * ---------------------------------------------------------------------- */
+#define AWM_PROPERTY_NEW_VALUE 0u
+#define AWM_PROPERTY_DELETE 1u
+
+/* -------------------------------------------------------------------------
+ * AWM_MAPPING_* — mapping notify request values (X11 wire values)
+ * ---------------------------------------------------------------------- */
+#define AWM_MAPPING_MODIFIER 0u
+#define AWM_MAPPING_KEYBOARD 1u
+#define AWM_MAPPING_POINTER 2u
+
+/* -------------------------------------------------------------------------
  * AWM_PROP_MODE_* — property change modes (match X11 wire values)
  * ---------------------------------------------------------------------- */
 #define AWM_PROP_MODE_REPLACE 0u
@@ -161,8 +198,16 @@ typedef uint32_t  WmVisualId; /* xcb_visualid_t / wlroots format id   */
  * AWM_ATOM_* — well-known atoms (X11 predefined values)
  * ---------------------------------------------------------------------- */
 #define AWM_ATOM_NONE ((AtomId) 0)
+#define AWM_ATOM_ANY ((AtomId) 0) /* XCB_ATOM_ANY == 0 */
+#define AWM_ATOM_ATOM ((AtomId) 4)
+#define AWM_ATOM_CARDINAL ((AtomId) 6)
 #define AWM_ATOM_STRING ((AtomId) 31)
+#define AWM_ATOM_WM_HINTS ((AtomId) 35)
+#define AWM_ATOM_WM_NORMAL_HINTS ((AtomId) 40)
 #define AWM_ATOM_WM_NAME ((AtomId) 39)
+#define AWM_ATOM_WM_CLASS ((AtomId) 67)
+#define AWM_ATOM_WM_TRANSIENT_FOR ((AtomId) 68)
+#define AWM_ATOM_WINDOW ((AtomId) 33)
 
 /* -------------------------------------------------------------------------
  * AWM_WM_STATE_* — ICCCM WM_STATE values
@@ -170,6 +215,20 @@ typedef uint32_t  WmVisualId; /* xcb_visualid_t / wlroots format id   */
 #define AWM_WM_STATE_WITHDRAWN 0
 #define AWM_WM_STATE_NORMAL 1
 #define AWM_WM_STATE_ICONIC 3
+
+/* -------------------------------------------------------------------------
+ * AWM_MAP_STATE_* — window map state values (X11 wire values)
+ * ---------------------------------------------------------------------- */
+#define AWM_MAP_STATE_UNMAPPED 0
+#define AWM_MAP_STATE_UNVIEWABLE 1
+#define AWM_MAP_STATE_VIEWABLE 2
+
+/* -------------------------------------------------------------------------
+ * AWM_INPUT_FOCUS_* — focus revert-to values (X11 wire values)
+ * ---------------------------------------------------------------------- */
+#define AWM_INPUT_FOCUS_NONE 0
+#define AWM_INPUT_FOCUS_POINTER_ROOT 1
+#define AWM_INPUT_FOCUS_PARENT 2
 
 /* -------------------------------------------------------------------------
  * AwmSizeHints — platform-agnostic size constraints
@@ -245,6 +304,7 @@ typedef struct {
 			WmMods      state;  /* modifier mask */
 			WmTimestamp time;
 			int         root_x, root_y;
+			int event_x, event_y; /* pointer coords relative to event window */
 		} button;
 
 		/* AWM_EV_KEY_PRESS / AWM_EV_KEY_RELEASE */

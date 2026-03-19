@@ -53,21 +53,14 @@ arrange(Monitor *m)
 		/* Flush all pending requests and discard stale EnterNotify
 		 * events so we don't spuriously change focus after a
 		 * layout change.  Non-EnterNotify events are dispatched
-		 * through the normal handler, and all events are also fed
-		 * to the compositor so it keeps its window list in sync
-		 * (ConfigureNotify, MapNotify, DamageNotify, etc.). */
+		 * through the normal handler. */
 		{
-			xcb_generic_event_t *xe;
+			AwmEvent *xe;
 			g_wm_backend->flush(&g_plat);
 			while ((xe = g_wm_backend->poll_event(&g_plat))) {
-				uint8_t type = xe->response_type & ~0x80;
-#ifdef COMPOSITOR
-				if (xe->response_type != 0)
-					compositor_handle_event(xe);
-#endif
-				if (type != XCB_ENTER_NOTIFY && type < LASTEvent &&
-				    handler[type])
-					handler[type](xe);
+				if (xe->type != AWM_EV_ENTER && xe->type != AWM_EV_NONE &&
+				    handler[xe->type])
+					handler[xe->type](xe);
 				free(xe);
 			}
 		}
@@ -461,16 +454,12 @@ restack(Monitor *m)
 		warp(m->sel);
 	/* Same EnterNotify drain as arrange() — see comment there. */
 	{
-		xcb_generic_event_t *xe;
+		AwmEvent *xe;
 		g_wm_backend->flush(&g_plat);
 		while ((xe = g_wm_backend->poll_event(&g_plat))) {
-			uint8_t type = xe->response_type & ~0x80;
-#ifdef COMPOSITOR
-			if (xe->response_type != 0)
-				compositor_handle_event(xe);
-#endif
-			if (type != XCB_ENTER_NOTIFY && type < LASTEvent && handler[type])
-				handler[type](xe);
+			if (xe->type != AWM_EV_ENTER && xe->type != AWM_EV_NONE &&
+			    handler[xe->type])
+				handler[xe->type](xe);
 			free(xe);
 		}
 	}

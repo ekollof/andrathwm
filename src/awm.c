@@ -72,7 +72,7 @@ Systray     *systray          = NULL;
 static pid_t ui_pid           = -1; /* awm-ui child process */
 static int   ui_fd            = -1; /* socket fd to awm-ui */
 int          launcher_visible = 0;  /* 1 while the launcher window is open */
-xcb_window_t launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
+WinId        launcher_xwin    = 0;  /* X window ID sent by awm-ui on startup */
 static GMainContext *ui_ctx = NULL; /* GMainContext used by run() — kept for
                                      * the respawn timer callback */
 char         stext[STATUS_TEXT_LEN];
@@ -82,31 +82,31 @@ static guint xsource_id     = 0; /* GLib source ID for the X11 event source */
 static guint dbus_src_id   = 0; /* GLib source ID for the D-Bus fd source */
 static guint dbus_retry_id = 0; /* GLib source ID for the reconnect timer */
 #endif
-void (*handler[LASTEvent])(xcb_generic_event_t *) = {
-	[XCB_BUTTON_PRESS]      = buttonpress,
-	[XCB_CLIENT_MESSAGE]    = clientmessage,
-	[XCB_CONFIGURE_REQUEST] = configurerequest,
-	[XCB_CONFIGURE_NOTIFY]  = configurenotify,
-	[XCB_DESTROY_NOTIFY]    = destroynotify,
-	[XCB_ENTER_NOTIFY]      = enternotify,
-	[XCB_LEAVE_NOTIFY]      = leavenotify,
-	[XCB_EXPOSE]            = expose,
-	[XCB_FOCUS_IN]          = focusin,
-	[XCB_KEY_PRESS]         = keypress,
-	[XCB_KEY_RELEASE]       = keyrelease,
-	[XCB_MAPPING_NOTIFY]    = mappingnotify,
-	[XCB_MAP_REQUEST]       = maprequest,
-	[XCB_MOTION_NOTIFY]     = motionnotify,
-	[XCB_PROPERTY_NOTIFY]   = propertynotify,
-	[XCB_RESIZE_REQUEST]    = resizerequest,
-	[XCB_UNMAP_NOTIFY]      = unmapnotify,
+void (*handler[19])(AwmEvent *) = {
+	[AWM_EV_BUTTON_PRESS]      = buttonpress,
+	[AWM_EV_CLIENT_MESSAGE]    = clientmessage,
+	[AWM_EV_CONFIGURE_REQUEST] = configurerequest,
+	[AWM_EV_CONFIGURE_NOTIFY]  = configurenotify,
+	[AWM_EV_DESTROY_NOTIFY]    = destroynotify,
+	[AWM_EV_ENTER]             = enternotify,
+	[AWM_EV_LEAVE]             = leavenotify,
+	[AWM_EV_EXPOSE]            = expose,
+	[AWM_EV_FOCUS_IN]          = focusin,
+	[AWM_EV_KEY_PRESS]         = keypress,
+	[AWM_EV_KEY_RELEASE]       = keyrelease,
+	[AWM_EV_MAPPING_NOTIFY]    = mappingnotify,
+	[AWM_EV_MAP_REQUEST]       = maprequest,
+	[AWM_EV_MOTION]            = motionnotify,
+	[AWM_EV_PROPERTY_NOTIFY]   = propertynotify,
+	[AWM_EV_RESIZE_REQUEST]    = resizerequest,
+	[AWM_EV_UNMAP_NOTIFY]      = unmapnotify,
 };
-int             restart         = 0;
-int             barsdirty       = 0;
-xcb_timestamp_t last_event_time = XCB_CURRENT_TIME;
-Cur            *cursor[CurLast];
-Clr           **scheme;
-AwmSurface     *drw;
+int         restart         = 0;
+int         barsdirty       = 0;
+WmTimestamp last_event_time = WM_CURRENT_TIME;
+Cur        *cursor[CurLast];
+Clr       **scheme;
+AwmSurface *drw;
 
 /* ---- compile-time invariants ---- */
 _Static_assert(LENGTH(tags) <= 31,
@@ -185,7 +185,7 @@ cleanup(void)
 	g_wm_backend->keysyms_free(&g_plat);
 	g_wm_backend->flush(&g_plat);
 	g_wm_backend->set_input_focus(
-	    &g_plat, XCB_INPUT_FOCUS_POINTER_ROOT, XCB_CURRENT_TIME);
+	    &g_plat, AWM_INPUT_FOCUS_POINTER_ROOT, WM_CURRENT_TIME);
 	g_wm_backend->delete_prop(
 	    &g_plat, g_plat.root, g_plat.netatom[NetActiveWindow]);
 	if (xsource_id > 0) {
@@ -435,7 +435,7 @@ bar_hover_enter(Monitor *m)
 			for (k = 0; k < count; k++)
 				if (entries[k].pixmap_xid)
 					g_wm_backend->free_pixmap(
-					    &g_plat, (xcb_pixmap_t) entries[k].pixmap_xid);
+					    &g_plat, (WmPixmap) entries[k].pixmap_xid);
 		}
 		free(entries);
 		return;
@@ -456,7 +456,7 @@ bar_hover_enter(Monitor *m)
 		for (k = 0; k < count; k++)
 			if (ep[k].pixmap_xid)
 				g_wm_backend->free_pixmap(
-				    &g_plat, (xcb_pixmap_t) ep[k].pixmap_xid);
+				    &g_plat, (WmPixmap) ep[k].pixmap_xid);
 	}
 	free(shm_buf);
 #else
@@ -564,63 +564,18 @@ launchermenu(const Arg *arg)
 static gboolean
 x_dispatch_cb(gpointer user_data)
 {
-	xcb_generic_event_t *ev;
+	AwmEvent *ev;
 	(void) user_data;
 
 	while ((ev = g_wm_backend->poll_event(&g_plat))) {
-		uint8_t type = ev->response_type & ~0x80;
-
-		/* XCB delivers async errors as packets with response_type == 0 */
-		if (ev->response_type == 0) {
-			xcb_error_handler((xcb_generic_error_t *) ev);
-			free(ev);
-			continue;
-		}
-
-#ifdef XRANDR
-		if (type ==
-		    (uint8_t) (g_plat.randrbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY)) {
-			/* Update virtual screen dimensions from the event payload before
-			 * calling updategeom(), mirroring what configurenotify() does
-			 * for the root ConfigureNotify path. */
-			{
-				xcb_randr_screen_change_notify_event_t *rrev =
-				    (xcb_randr_screen_change_notify_event_t *) ev;
-				g_plat.sw = (int) rrev->width;
-				g_plat.sh = (int) rrev->height;
-			}
-			updategeom();
-			g_render_backend->resize(drw, g_plat.sw, g_plat.bh);
-			updatebars();
-			{
-				Monitor *m;
-				FOR_EACH_MON(m)
-				{
-					for (Client *c = g_awm.clients_head; c; c = c->next)
-						if (c->isfullscreen)
-							resizeclient(c, m->mx, m->my, m->mw, m->mh);
-					resizebarwin(m);
-				}
-			}
-			focus(NULL);
-			arrange(NULL);
-			{
-				Monitor *m;
-				FOR_EACH_MON(m)
-				wmprop_update_workarea(m);
-			}
+		if (ev->type != AWM_EV_NONE) {
 #ifdef COMPOSITOR
-			compositor_notify_screen_resize();
+			/* compositor still consumes the raw XCB event internally;
+			 * skip for now — compositor_handle_event is X11-only and
+			 * lives inside the backend. */
 #endif
-			ui_send_monitor_geom();
-		} else
-#endif
-		{
-#ifdef COMPOSITOR
-			compositor_handle_event(ev);
-#endif
-			if (type < LASTEvent && handler[type])
-				handler[type](ev);
+			if ((unsigned) ev->type < 19 && handler[ev->type])
+				handler[ev->type](ev);
 		}
 		free(ev);
 	}
@@ -830,7 +785,7 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 			break;
 		UiLauncherReadyPayload p;
 		memcpy(&p, payload, sizeof(p));
-		launcher_xwin = (xcb_window_t) p.xwin;
+		launcher_xwin = (WinId) p.xwin;
 		awm_debug("awm: launcher ready, xwin=0x%x", (unsigned) launcher_xwin);
 		break;
 	}
@@ -842,7 +797,7 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 		 * here — just set input focus. */
 		if (launcher_xwin) {
 			g_wm_backend->set_input_focus(
-			    &g_plat, launcher_xwin, XCB_CURRENT_TIME);
+			    &g_plat, launcher_xwin, WM_CURRENT_TIME);
 			g_wm_backend->flush(&g_plat);
 		}
 		break;
@@ -854,7 +809,7 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 			UiPreviewFocusPayload fp;
 			Client               *c;
 			memcpy(&fp, payload, sizeof(fp));
-			c = wintoclient((xcb_window_t) fp.xwin);
+			c = wintoclient((WinId) fp.xwin);
 			if (c) {
 				if (c->mon != g_awm_selmon) {
 					unfocus(g_awm_selmon->sel, 0);
@@ -882,8 +837,7 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 			memcpy(&dp, payload, sizeof(dp));
 			for (k = 0; k < dp.count && k < 32; k++) {
 				if (dp.xids[k])
-					g_wm_backend->free_pixmap(
-					    &g_plat, (xcb_pixmap_t) dp.xids[k]);
+					g_wm_backend->free_pixmap(&g_plat, (WmPixmap) dp.xids[k]);
 			}
 			g_wm_backend->flush(&g_plat);
 		}
@@ -1084,9 +1038,9 @@ run(void)
 void
 scan(void)
 {
-	unsigned int  i;
-	xcb_window_t *wins = NULL;
-	int           num  = 0;
+	unsigned int i;
+	WinId       *wins = NULL;
+	int          num  = 0;
 
 	if (!g_wm_backend->query_root_tree(&g_plat, &wins, &num))
 		return;
@@ -1099,18 +1053,16 @@ scan(void)
 		if (!g_wm_backend->get_window_attributes(
 		        &g_plat, wins[i], &override, &map_state))
 			continue;
-		xcb_window_t trans =
-		    g_wm_backend->get_wm_transient_for(&g_plat, wins[i]);
-		if (override || trans != XCB_WINDOW_NONE)
+		WinId trans = g_wm_backend->get_wm_transient_for(&g_plat, wins[i]);
+		if (override || trans != WIN_NONE)
 			continue;
-		if (map_state == XCB_MAP_STATE_VIEWABLE ||
-		    getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC) {
+		if (map_state == AWM_MAP_STATE_VIEWABLE ||
+		    getstate(wins[i]) == AWM_WM_STATE_ICONIC) {
 			/* Skip XEMBED clients (systray icons reparented back to
 			 * root when the systray container was destroyed on restart) */
-			xcb_get_property_reply_t *xer =
-			    g_wm_backend->get_prop_raw(&g_plat, wins[i],
-			        (xcb_atom_t) g_plat.xatom[XembedInfo], XCB_ATOM_ANY, 2);
-			int is_xembed = xer && xer->length > 0;
+			xcb_get_property_reply_t *xer = g_wm_backend->get_prop_raw(&g_plat,
+			    wins[i], (AtomId) g_plat.xatom[XembedInfo], AWM_ATOM_ANY, 2);
+			int                       is_xembed = xer && xer->length > 0;
 			free(xer);
 			if (is_xembed)
 				continue;
@@ -1128,16 +1080,14 @@ scan(void)
 		if (!g_wm_backend->get_window_attributes(
 		        &g_plat, wins[i], &override, &map_state))
 			continue;
-		xcb_window_t trans =
-		    g_wm_backend->get_wm_transient_for(&g_plat, wins[i]);
-		if (trans != XCB_WINDOW_NONE &&
-		    (map_state == XCB_MAP_STATE_VIEWABLE ||
-		        getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC)) {
+		WinId trans = g_wm_backend->get_wm_transient_for(&g_plat, wins[i]);
+		if (trans != WIN_NONE &&
+		    (map_state == AWM_MAP_STATE_VIEWABLE ||
+		        getstate(wins[i]) == AWM_WM_STATE_ICONIC)) {
 			/* Skip XEMBED clients here too */
-			xcb_get_property_reply_t *xer =
-			    g_wm_backend->get_prop_raw(&g_plat, wins[i],
-			        (xcb_atom_t) g_plat.xatom[XembedInfo], XCB_ATOM_ANY, 2);
-			int is_xembed = xer && xer->length > 0;
+			xcb_get_property_reply_t *xer = g_wm_backend->get_prop_raw(&g_plat,
+			    wins[i], (AtomId) g_plat.xatom[XembedInfo], AWM_ATOM_ANY, 2);
+			int                       is_xembed = xer && xer->length > 0;
 			free(xer);
 			if (is_xembed)
 				continue;
@@ -1161,7 +1111,7 @@ intern_atoms(void)
 {
 	/* Each entry maps one atom name to the Atom* that should receive it. */
 	static const struct {
-		xcb_atom_t *dest;
+		AtomId     *dest;
 		const char *name;
 	} tbl[] = {
 		{ &g_plat.utf8string_atom, "UTF8_STRING" },
@@ -1224,7 +1174,7 @@ intern_atoms(void)
 
 	{
 		const char **names;
-		xcb_atom_t  *atoms;
+		AtomId      *atoms;
 		int          i;
 
 		names = ecalloc((size_t) N, sizeof *names);
@@ -1315,25 +1265,25 @@ setup(void)
 		uint32_t win32 = (uint32_t) g_plat.wmcheckwin;
 
 		g_wm_backend->change_prop(&g_plat, g_plat.wmcheckwin,
-		    g_plat.netatom[NetWMCheck], XCB_ATOM_WINDOW, 32,
-		    XCB_PROP_MODE_REPLACE, 1, &win32);
+		    g_plat.netatom[NetWMCheck], AWM_ATOM_WINDOW, 32,
+		    AWM_PROP_MODE_REPLACE, 1, &win32);
 		g_wm_backend->change_prop(&g_plat, g_plat.wmcheckwin,
 		    g_plat.netatom[NetWMName], g_plat.utf8string_atom, 8,
-		    XCB_PROP_MODE_REPLACE, 3, "awm");
+		    AWM_PROP_MODE_REPLACE, 3, "awm");
 		g_wm_backend->change_prop(&g_plat, g_plat.root,
-		    g_plat.netatom[NetWMCheck], XCB_ATOM_WINDOW, 32,
-		    XCB_PROP_MODE_REPLACE, 1, &win32);
+		    g_plat.netatom[NetWMCheck], AWM_ATOM_WINDOW, 32,
+		    AWM_PROP_MODE_REPLACE, 1, &win32);
 
 		/* EWMH support per view — netatom[] is Atom=unsigned long, need
 		 * uint32_t array for XCB format-32 */
 		{
-			xcb_atom_t supported[NetLast];
-			int        k;
+			AtomId supported[NetLast];
+			int    k;
 			for (k = 0; k < NetLast; k++)
-				supported[k] = (xcb_atom_t) g_plat.netatom[k];
+				supported[k] = (AtomId) g_plat.netatom[k];
 			g_wm_backend->change_prop(&g_plat, g_plat.root,
-			    g_plat.netatom[NetSupported], XCB_ATOM_ATOM, 32,
-			    XCB_PROP_MODE_REPLACE, NetLast, supported);
+			    g_plat.netatom[NetSupported], AWM_ATOM_ATOM, 32,
+			    AWM_PROP_MODE_REPLACE, NetLast, supported);
 		}
 
 		g_wm_backend->delete_prop(
@@ -1349,11 +1299,11 @@ setup(void)
 	/* select events */
 	{
 
-		uint32_t evmask = XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT |
-		    XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS |
-		    XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_ENTER_WINDOW |
-		    XCB_EVENT_MASK_LEAVE_WINDOW | XCB_EVENT_MASK_STRUCTURE_NOTIFY |
-		    XCB_EVENT_MASK_PROPERTY_CHANGE;
+		uint32_t evmask = AWM_EVENT_MASK_SUBSTRUCTURE_REDIRECT |
+		    AWM_EVENT_MASK_SUBSTRUCTURE_NOTIFY | AWM_EVENT_MASK_BUTTON_PRESS |
+		    AWM_EVENT_MASK_POINTER_MOTION | AWM_EVENT_MASK_ENTER_WINDOW |
+		    AWM_EVENT_MASK_LEAVE_WINDOW | AWM_EVENT_MASK_STRUCTURE_NOTIFY |
+		    AWM_EVENT_MASK_PROPERTY_CHANGE;
 		g_wm_backend->select_root_events(&g_plat, evmask);
 		g_wm_backend->set_root_cursor(&g_plat, cursor[CurNormal]->cursor);
 	}

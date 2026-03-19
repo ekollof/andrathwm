@@ -20,22 +20,21 @@
 #include "config.h"
 
 void
-buttonpress(xcb_generic_event_t *e)
+buttonpress(AwmEvent *e)
 {
-	unsigned int              i, x, click;
-	Arg                       arg = { 0 };
-	Client                   *c;
-	Monitor                  *m;
-	xcb_button_press_event_t *ev = (xcb_button_press_event_t *) e;
+	unsigned int i, x, click;
+	Arg          arg = { 0 };
+	Client      *c;
+	Monitor     *m;
 
 	click = ClkRootWin;
 	/* focus monitor if necessary */
-	if ((m = wintomon(ev->event)) && m != g_awm_selmon) {
+	if ((m = wintomon(e->window)) && m != g_awm_selmon) {
 		unfocus(g_awm_selmon->sel, 1);
 		g_awm_set_selmon(m);
 		focus(NULL);
 	}
-	if (ev->event == g_awm_selmon->barwin) {
+	if (e->window == g_awm_selmon->barwin) {
 		int stw = 0; /* systray width — 0 on non-X11 */
 #ifdef BACKEND_X11
 		stw = (int) getsystraywidth();
@@ -55,18 +54,19 @@ buttonpress(xcb_generic_event_t *e)
 				continue;
 
 			int tw = TEXTW(tags[i]);
-			if (ev->event_x < x + tw) {
+			if (e->button.event_x < (int) (x + (unsigned int) tw)) {
 				click  = ClkTagBar;
 				arg.ui = 1 << i;
 				break;
 			}
-			x += tw;
+			x += (unsigned int) tw;
 		}
 
 		if (i >= LENGTH(tags) &&
-		    ev->event_x < x + TEXTW(g_awm_selmon->ltsymbol))
+		    e->button.event_x <
+		        (int) (x + (unsigned int) TEXTW(g_awm_selmon->ltsymbol)))
 			click = ClkLtSymbol;
-		else if (ev->event_x > g_awm_selmon->ww -
+		else if (e->button.event_x > g_awm_selmon->ww -
 		        g_render_backend->draw_statusd(drw, 0, 0, 0, 0, stext) - stw)
 			click = ClkStatusText;
 		else if (i >= LENGTH(tags)) {
@@ -75,7 +75,7 @@ buttonpress(xcb_generic_event_t *e)
 			c     = NULL;
 
 			/* Add layout symbol width to x position */
-			x += TEXTW(g_awm_selmon->ltsymbol);
+			x += (unsigned int) TEXTW(g_awm_selmon->ltsymbol);
 
 			int n = 0;
 			for (Client *t = g_awm.clients_head; t; t = t->next)
@@ -85,14 +85,15 @@ buttonpress(xcb_generic_event_t *e)
 			if (n > 0) {
 				int tw =
 				    g_render_backend->draw_statusd(drw, 0, 0, 0, 0, stext);
-				int remainder = m->ww - tw - stw - x;
+				int remainder = m->ww - tw - stw - (int) x;
 				int tabw      = remainder / n;
-				int cx        = x;
+				int cx        = (int) x;
 
 				for (Client *t = g_awm.clients_head; t; t = t->next) {
 					if (!(t->tags & m->tagset[m->seltags]))
 						continue;
-					if (ev->event_x >= cx && ev->event_x < cx + tabw) {
+					if (e->button.event_x >= cx &&
+					    e->button.event_x < cx + tabw) {
 						c = t;
 						break;
 					}
@@ -103,18 +104,18 @@ buttonpress(xcb_generic_event_t *e)
 			if (c)
 				arg.v = c;
 		}
-	} else if ((c = wintoclient(ev->event))) {
+	} else if ((c = wintoclient(e->window))) {
 		focus(c);
 		restack(g_awm_selmon);
 		g_wm_backend->allow_events(
-		    &g_plat, XCB_ALLOW_REPLAY_POINTER, XCB_CURRENT_TIME);
+		    &g_plat, AWM_ALLOW_REPLAY_POINTER, WM_CURRENT_TIME);
 		g_wm_backend->flush(&g_plat);
 		click = ClkClientWin;
 	}
 #ifdef STATUSNOTIFIER
 	/* Check if click is on SNI icon */
 	else {
-		SNIItem *sni_item = sni_find_item_by_window(ev->event);
+		SNIItem *sni_item = sni_find_item_by_window(e->window);
 		if (sni_item) {
 			/* Release the passive-grab pointer sync before handing off to
 			 * GTK — without this the X server keeps the pointer frozen and
@@ -125,18 +126,18 @@ buttonpress(xcb_generic_event_t *e)
 			 * g_plat.root, which would cause a grab race with GTK's menu
 			 * seat-grab. */
 			g_wm_backend->allow_events(
-			    &g_plat, XCB_ALLOW_ASYNC_POINTER, ev->time);
+			    &g_plat, AWM_ALLOW_ASYNC_POINTER, e->button.time);
 			g_wm_backend->flush(&g_plat);
-			sni_handle_click(
-			    ev->event, ev->detail, ev->root_x, ev->root_y, ev->time);
+			sni_handle_click(e->window, e->button.button, e->button.root_x,
+			    e->button.root_y, e->button.time);
 			return; /* Don't process further */
 		}
 	}
 #endif
 	for (i = 0; i < LENGTH(buttons); i++)
 		if (click == buttons[i].click && buttons[i].func &&
-		    buttons[i].button == ev->detail &&
-		    CLEANMASK(buttons[i].mask) == CLEANMASK(ev->state))
+		    buttons[i].button == e->button.button &&
+		    CLEANMASK(buttons[i].mask) == CLEANMASK(e->button.state))
 			buttons[i].func((click == ClkTagBar && buttons[i].arg.i == 0) ||
 			            click == ClkWinTitle
 			        ? &arg
@@ -150,20 +151,19 @@ checkotherwm(void)
 }
 
 void
-clientmessage(xcb_generic_event_t *e)
+clientmessage(AwmEvent *e)
 {
-	xcb_client_message_event_t *cme = (xcb_client_message_event_t *) e;
-	Client                     *c   = wintoclient(cme->window);
-	unsigned int                i;
+	Client      *c = wintoclient(e->window);
+	unsigned int i;
 
 #ifdef BACKEND_X11
-	if (showsystray && systray && cme->window == systray->win &&
-	    cme->type == g_plat.netatom[NetSystemTrayOP]) {
+	if (showsystray && systray && e->window == systray->win &&
+	    e->client_message.msg_type == g_plat.netatom[NetSystemTrayOP]) {
 		/* add systray icons */
-		if (cme->data.data32[1] == SYSTEM_TRAY_REQUEST_DOCK) {
+		if (e->client_message.data[1] == SYSTEM_TRAY_REQUEST_DOCK) {
 			if (!(c = (Client *) calloc(1, sizeof(Client))))
 				die("fatal: could not malloc() %u bytes\n", sizeof(Client));
-			if (!(c->win = cme->data.data32[2])) {
+			if (!(c->win = (WinId) e->client_message.data[2])) {
 				free(c);
 				return;
 			}
@@ -192,28 +192,28 @@ clientmessage(xcb_generic_event_t *e)
 			updatesystrayicongeom(c, c->w, c->h);
 			g_wm_backend->change_save_set(&g_plat, c->win, 1);
 			{
-				uint32_t mask = XCB_EVENT_MASK_STRUCTURE_NOTIFY |
-				    XCB_EVENT_MASK_PROPERTY_CHANGE |
-				    XCB_EVENT_MASK_RESIZE_REDIRECT;
+				uint32_t mask = AWM_EVENT_MASK_STRUCTURE_NOTIFY |
+				    AWM_EVENT_MASK_PROPERTY_CHANGE |
+				    AWM_EVENT_MASK_RESIZE_REDIRECT;
 				g_wm_backend->change_attr(
-				    &g_plat, c->win, XCB_CW_EVENT_MASK, &mask);
+				    &g_plat, c->win, AWM_CW_EVENT_MASK, &mask);
 			}
 			g_wm_backend->reparent_window(&g_plat, c->win, systray->win, 0, 0);
 			/* use bar background so icon blends with the bar */
 			{
 				uint32_t bg = clr_to_argb(&scheme[SchemeNorm][ColBg]);
 				g_wm_backend->change_attr(
-				    &g_plat, c->win, XCB_CW_BACK_PIXEL, &bg);
+				    &g_plat, c->win, AWM_CW_BACK_PIXEL, &bg);
 			}
 			/* Send XEMBED_EMBEDDED_NOTIFY to complete embedding per spec.
 			 * data1 = embedder window, data2 = protocol version */
 			sendevent(c->win, g_plat.xatom[Xembed],
-			    XCB_EVENT_MASK_STRUCTURE_NOTIFY, XCB_CURRENT_TIME,
+			    AWM_EVENT_MASK_STRUCTURE_NOTIFY, WM_CURRENT_TIME,
 			    XEMBED_EMBEDDED_NOTIFY, 0, systray->win, XEMBED_VERSION);
 			g_wm_backend->flush(&g_plat);
 			resizebarwin(g_awm_selmon);
 			updatesystray();
-			setclientstate(c, XCB_ICCCM_WM_STATE_NORMAL);
+			setclientstate(c, AWM_WM_STATE_NORMAL);
 		}
 		return;
 	}
@@ -221,14 +221,15 @@ clientmessage(xcb_generic_event_t *e)
 
 	if (!c)
 		return;
-	if (cme->type == g_plat.netatom[NetWMState]) {
-		if (cme->data.data32[1] == g_plat.netatom[NetWMFullscreen] ||
-		    cme->data.data32[2] == g_plat.netatom[NetWMFullscreen])
+	if (e->client_message.msg_type == g_plat.netatom[NetWMState]) {
+		if (e->client_message.data[1] == g_plat.netatom[NetWMFullscreen] ||
+		    e->client_message.data[2] == g_plat.netatom[NetWMFullscreen])
 			setfullscreen(c,
-			    (cme->data.data32[0] == 1 /* _NET_WM_STATE_ADD    */
-			        || (cme->data.data32[0] == 2 /* _NET_WM_STATE_TOGGLE */ &&
-			               !c->isfullscreen)));
-	} else if (cme->type == g_plat.netatom[NetActiveWindow]) {
+			    (e->client_message.data[0] == 1 /* _NET_WM_STATE_ADD    */
+			        ||
+			        (e->client_message.data[0] == 2 /* _NET_WM_STATE_TOGGLE */
+			            && !c->isfullscreen)));
+	} else if (e->client_message.msg_type == g_plat.netatom[NetActiveWindow]) {
 		for (i = 0; i < LENGTH(tags) && !((1 << i) & c->tags); i++)
 			;
 		if (i < LENGTH(tags)) {
@@ -238,37 +239,41 @@ clientmessage(xcb_generic_event_t *e)
 			focus(c);
 			restack(g_awm_selmon);
 		}
-	} else if (cme->type == g_plat.netatom[NetCloseWindow]) {
+	} else if (e->client_message.msg_type == g_plat.netatom[NetCloseWindow]) {
 		/* _NET_CLOSE_WINDOW client message */
 		if (!wmprop_send_event(c->win, g_plat.wmatom[WMDelete], 0,
-		        g_plat.wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
+		        g_plat.wmatom[WMDelete], WM_CURRENT_TIME, 0, 0, 0)) {
 			g_wm_backend->kill_client_hard(&g_plat, c->win);
 		}
 		g_wm_backend->flush(&g_plat);
-	} else if (cme->type == g_plat.netatom[NetMoveResizeWindow]) {
+	} else if (e->client_message.msg_type ==
+	    g_plat.netatom[NetMoveResizeWindow]) {
 		/* _NET_MOVERESIZE_WINDOW client message */
 		int          x, y, w, h;
-		unsigned int gravity_flags = cme->data.data32[0];
+		unsigned int gravity_flags = e->client_message.data[0];
 
-		x = (gravity_flags & (1 << 8)) ? (int) cme->data.data32[1] : c->x;
-		y = (gravity_flags & (1 << 9)) ? (int) cme->data.data32[2] : c->y;
-		w = (gravity_flags & (1 << 10)) ? (int) cme->data.data32[3] : c->w;
-		h = (gravity_flags & (1 << 11)) ? (int) cme->data.data32[4] : c->h;
+		x = (gravity_flags & (1 << 8)) ? (int) e->client_message.data[1]
+		                               : c->x;
+		y = (gravity_flags & (1 << 9)) ? (int) e->client_message.data[2]
+		                               : c->y;
+		w = (gravity_flags & (1 << 10)) ? (int) e->client_message.data[3]
+		                                : c->w;
+		h = (gravity_flags & (1 << 11)) ? (int) e->client_message.data[4]
+		                                : c->h;
 
 		resize(c, x, y, w, h, 1);
 	}
 }
 
 void
-configurenotify(xcb_generic_event_t *e)
+configurenotify(AwmEvent *e)
 {
-	Monitor                      *m;
-	Client                       *c;
-	xcb_configure_notify_event_t *ev = (xcb_configure_notify_event_t *) e;
+	Monitor *m;
+	Client  *c;
 
-	if (ev->window == g_plat.root) {
-		g_plat.sw = ev->width;
-		g_plat.sh = ev->height;
+	if (e->window == g_plat.root) {
+		g_plat.sw = e->configure.w;
+		g_plat.sh = e->configure.h;
 		if (updategeom()) {
 			g_render_backend->resize(drw, g_plat.sw, g_plat.bh);
 			updatebars();
@@ -286,9 +291,8 @@ configurenotify(xcb_generic_event_t *e)
 							(uint32_t) m->mh,
 						};
 						g_wm_backend->configure_win(&g_plat, c->win,
-						    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
-						        XCB_CONFIG_WINDOW_WIDTH |
-						        XCB_CONFIG_WINDOW_HEIGHT,
+						    AWM_CONFIG_WIN_X | AWM_CONFIG_WIN_Y |
+						        AWM_CONFIG_WIN_WIDTH | AWM_CONFIG_WIN_HEIGHT,
 						    vals);
 						c->x = m->mx;
 						c->y = m->my;
@@ -311,13 +315,12 @@ configurenotify(xcb_generic_event_t *e)
 }
 
 void
-configurerequest(xcb_generic_event_t *e)
+configurerequest(AwmEvent *e)
 {
-	Client                        *c;
-	Monitor                       *m;
-	xcb_configure_request_event_t *ev = (xcb_configure_request_event_t *) e;
+	Client  *c;
+	Monitor *m;
 
-	if ((c = wintoclient(ev->window))) {
+	if ((c = wintoclient(e->window))) {
 		if (c->isfullscreen) {
 			/* Don't let clients move/resize themselves while fullscreen;
 			 * just echo back the current geometry so they don't hang. */
@@ -325,28 +328,28 @@ configurerequest(xcb_generic_event_t *e)
 			g_wm_backend->flush(&g_plat);
 			return;
 		}
-		if (ev->value_mask & XCB_CONFIG_WINDOW_BORDER_WIDTH)
-			c->bw = ev->border_width;
+		if (e->configure_req.value_mask & AWM_CONFIG_WIN_BORDER_WIDTH)
+			c->bw = e->configure_req.bw;
 		else if (c->isfloating ||
 		    !g_awm_selmon->lt[g_awm_selmon->sellt]->arrange) {
 			m = c->mon;
 			if (!c->issteam) {
-				if (ev->value_mask & XCB_CONFIG_WINDOW_X) {
+				if (e->configure_req.value_mask & AWM_CONFIG_WIN_X) {
 					c->oldx = c->x;
-					c->x    = m->mx + ev->x;
+					c->x    = m->mx + e->configure_req.x;
 				}
-				if (ev->value_mask & XCB_CONFIG_WINDOW_Y) {
+				if (e->configure_req.value_mask & AWM_CONFIG_WIN_Y) {
 					c->oldy = c->y;
-					c->y    = m->my + ev->y;
+					c->y    = m->my + e->configure_req.y;
 				}
 			}
-			if (ev->value_mask & XCB_CONFIG_WINDOW_WIDTH) {
+			if (e->configure_req.value_mask & AWM_CONFIG_WIN_WIDTH) {
 				c->oldw = c->w;
-				c->w    = ev->width;
+				c->w    = e->configure_req.w;
 			}
-			if (ev->value_mask & XCB_CONFIG_WINDOW_HEIGHT) {
+			if (e->configure_req.value_mask & AWM_CONFIG_WIN_HEIGHT) {
 				c->oldh = c->h;
-				c->h    = ev->height;
+				c->h    = e->configure_req.h;
 			}
 			if ((c->x + c->w) > m->mx + m->mw && c->isfloating)
 				c->x = m->mx +
@@ -354,10 +357,10 @@ configurerequest(xcb_generic_event_t *e)
 			if ((c->y + c->h) > m->my + m->mh && c->isfloating)
 				c->y = m->my +
 				    (m->mh / 2 - HEIGHT(c) / 2); /* center in y direction */
-			if ((ev->value_mask &
-			        (XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y)) &&
-			    !(ev->value_mask &
-			        (XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT)))
+			if ((e->configure_req.value_mask &
+			        (AWM_CONFIG_WIN_X | AWM_CONFIG_WIN_Y)) &&
+			    !(e->configure_req.value_mask &
+			        (AWM_CONFIG_WIN_WIDTH | AWM_CONFIG_WIN_HEIGHT)))
 				configure(c);
 			if (ISVISIBLE(c, m)) {
 				uint32_t xywh[4] = {
@@ -367,48 +370,47 @@ configurerequest(xcb_generic_event_t *e)
 					(uint32_t) c->h,
 				};
 				g_wm_backend->configure_win(&g_plat, c->win,
-				    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
-				        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+				    AWM_CONFIG_WIN_X | AWM_CONFIG_WIN_Y |
+				        AWM_CONFIG_WIN_WIDTH | AWM_CONFIG_WIN_HEIGHT,
 				    xywh);
 			}
 		} else
 			configure(c);
 	} else {
 		/* Pass unmanaged window configure requests straight through.
-		 * Build the XCB value array in ascending bit-position order. */
+		 * Build the value array in ascending bit-position order. */
 		uint32_t vals[7];
 		int      n = 0;
-		if (ev->value_mask & XCB_CONFIG_WINDOW_X)
-			vals[n++] = (uint32_t) (int32_t) ev->x;
-		if (ev->value_mask & XCB_CONFIG_WINDOW_Y)
-			vals[n++] = (uint32_t) (int32_t) ev->y;
-		if (ev->value_mask & XCB_CONFIG_WINDOW_WIDTH)
-			vals[n++] = (uint32_t) ev->width;
-		if (ev->value_mask & XCB_CONFIG_WINDOW_HEIGHT)
-			vals[n++] = (uint32_t) ev->height;
-		if (ev->value_mask & XCB_CONFIG_WINDOW_BORDER_WIDTH)
-			vals[n++] = (uint32_t) ev->border_width;
-		if (ev->value_mask & XCB_CONFIG_WINDOW_SIBLING)
-			vals[n++] = (uint32_t) ev->sibling;
-		if (ev->value_mask & XCB_CONFIG_WINDOW_STACK_MODE)
-			vals[n++] = (uint32_t) ev->stack_mode;
+		if (e->configure_req.value_mask & AWM_CONFIG_WIN_X)
+			vals[n++] = (uint32_t) (int32_t) e->configure_req.x;
+		if (e->configure_req.value_mask & AWM_CONFIG_WIN_Y)
+			vals[n++] = (uint32_t) (int32_t) e->configure_req.y;
+		if (e->configure_req.value_mask & AWM_CONFIG_WIN_WIDTH)
+			vals[n++] = (uint32_t) e->configure_req.w;
+		if (e->configure_req.value_mask & AWM_CONFIG_WIN_HEIGHT)
+			vals[n++] = (uint32_t) e->configure_req.h;
+		if (e->configure_req.value_mask & AWM_CONFIG_WIN_BORDER_WIDTH)
+			vals[n++] = (uint32_t) e->configure_req.bw;
+		if (e->configure_req.value_mask & AWM_CONFIG_WIN_SIBLING)
+			vals[n++] = (uint32_t) e->configure_req.sibling;
+		if (e->configure_req.value_mask & AWM_CONFIG_WIN_STACK_MODE)
+			vals[n++] = (uint32_t) e->configure_req.stack_mode;
 		if (n > 0)
 			g_wm_backend->configure_win(
-			    &g_plat, ev->window, ev->value_mask, vals);
+			    &g_plat, e->window, e->configure_req.value_mask, vals);
 	}
 	g_wm_backend->flush(&g_plat);
 }
 
 void
-destroynotify(xcb_generic_event_t *e)
+destroynotify(AwmEvent *e)
 {
-	Client                     *c;
-	xcb_destroy_notify_event_t *ev = (xcb_destroy_notify_event_t *) e;
+	Client *c;
 
-	if ((c = wintoclient(ev->window)))
+	if ((c = wintoclient(e->window)))
 		unmanage(c, 1);
 #ifdef BACKEND_X11
-	else if ((c = wintosystrayicon(ev->window))) {
+	else if ((c = wintosystrayicon(e->window))) {
 		removesystrayicon(c);
 		resizebarwin(g_awm_selmon);
 		updatesystray();
@@ -417,15 +419,14 @@ destroynotify(xcb_generic_event_t *e)
 }
 
 void
-enternotify(xcb_generic_event_t *e)
+enternotify(AwmEvent *e)
 {
-	Client                   *c;
-	Monitor                  *m;
-	xcb_enter_notify_event_t *ev = (xcb_enter_notify_event_t *) e;
+	Client  *c;
+	Monitor *m;
 
-	if ((ev->mode != XCB_NOTIFY_MODE_NORMAL ||
-	        ev->detail == XCB_NOTIFY_DETAIL_INFERIOR) &&
-	    ev->event != g_plat.root)
+	if ((e->enter_leave_focus.mode != AWM_NOTIFY_MODE_NORMAL ||
+	        e->enter_leave_focus.detail == AWM_NOTIFY_DETAIL_INFERIOR) &&
+	    e->window != g_plat.root)
 		return;
 
 	/* While the launcher is open it owns keyboard focus; suppress
@@ -440,14 +441,14 @@ enternotify(xcb_generic_event_t *e)
 	/* Bar hover — trigger window preview popup */
 	FOR_EACH_MON(m)
 	{
-		if (ev->event == m->barwin) {
+		if (e->window == m->barwin) {
 			bar_hover_enter(m);
 			return;
 		}
 	}
 
-	c = wintoclient(ev->event);
-	m = c ? c->mon : wintomon(ev->event);
+	c = wintoclient(e->window);
+	m = c ? c->mon : wintomon(e->window);
 	if (m != g_awm_selmon) {
 		unfocus(g_awm_selmon->sel, 1);
 		g_awm_set_selmon(m);
@@ -458,12 +459,11 @@ enternotify(xcb_generic_event_t *e)
 }
 
 void
-leavenotify(xcb_generic_event_t *e)
+leavenotify(AwmEvent *e)
 {
-	Monitor                  *m;
-	xcb_leave_notify_event_t *ev = (xcb_leave_notify_event_t *) e;
+	Monitor *m;
 
-	if (ev->mode != XCB_NOTIFY_MODE_NORMAL)
+	if (e->enter_leave_focus.mode != AWM_NOTIFY_MODE_NORMAL)
 		return;
 
 	/* Bar un-hover — hide window preview popup.
@@ -475,7 +475,7 @@ leavenotify(xcb_generic_event_t *e)
 
 	FOR_EACH_MON(m)
 	{
-		if (ev->event == m->barwin) {
+		if (e->window == m->barwin) {
 			bar_hover_leave();
 			return;
 		}
@@ -483,12 +483,11 @@ leavenotify(xcb_generic_event_t *e)
 }
 
 void
-expose(xcb_generic_event_t *e)
+expose(AwmEvent *e)
 {
-	Monitor            *m;
-	xcb_expose_event_t *ev = (xcb_expose_event_t *) e;
+	Monitor *m;
 
-	if (ev->count == 0 && (m = wintomon(ev->window))) {
+	if (e->expose.count == 0 && (m = wintomon(e->window))) {
 		drawbar(m);
 #ifdef BACKEND_X11
 		if (m == g_awm_selmon)
@@ -499,16 +498,14 @@ expose(xcb_generic_event_t *e)
 
 /* there are some broken focus acquiring clients needing extra handling */
 void
-focusin(xcb_generic_event_t *e)
+focusin(AwmEvent *e)
 {
-	xcb_focus_in_event_t *ev = (xcb_focus_in_event_t *) e;
-
 	/* While the switcher is visible it must keep keyboard focus; prevent awm
 	 * from stealing it back to the previously focused client. */
 	if (switcher_active())
 		return;
 
-	if (!g_awm_selmon->sel || ev->event == g_awm_selmon->sel->win)
+	if (!g_awm_selmon->sel || e->window == g_awm_selmon->sel->win)
 		return;
 
 	/* Allow focus to move to a child window of the currently focused client
@@ -516,7 +513,7 @@ focusin(xcb_generic_event_t *e)
 	 * browser window).  Without this guard, focusin() would steal focus back
 	 * to the top-level client window, making those widgets unreachable. */
 	if (g_wm_backend->is_window_descendant(
-	        &g_plat, ev->event, g_awm_selmon->sel->win))
+	        &g_plat, e->window, g_awm_selmon->sel->win))
 		return;
 
 	/* Allow focus to move to override-redirect windows (e.g. the launcher).
@@ -524,7 +521,7 @@ focusin(xcb_generic_event_t *e)
 	 * make them permanently unfocusable. */
 	{
 		int or = 0;
-		if (g_wm_backend->get_override_redirect(&g_plat, ev->event, & or) &&
+		if (g_wm_backend->get_override_redirect(&g_plat, e->window, & or) &&
 		    or)
 			return;
 	}
@@ -539,32 +536,29 @@ grabkeys(void)
 }
 
 void
-keypress(xcb_generic_event_t *e)
+keypress(AwmEvent *e)
 {
-	unsigned int           i;
-	xcb_keysym_t           keysym;
-	xcb_key_press_event_t *ev;
+	unsigned int i;
+	KeySym       keysym;
 
-	ev              = (xcb_key_press_event_t *) e;
-	last_event_time = ev->time;
-	keysym = g_wm_backend->get_keysym(&g_plat, (xcb_keycode_t) ev->detail, 0);
+	last_event_time = e->key.time;
+	keysym = g_wm_backend->get_keysym(&g_plat, (WmKeycode) e->key.keycode, 0);
 
 	/* While the switcher is open, handle Tab/Escape/Return directly here
 	 * and suppress the normal keybinding dispatch.  The switcher GTK window
 	 * cannot receive key events because awm holds the X passive grab. */
 	if (switcher_active()) {
-		if ((KeySym) keysym == XKB_KEY_Escape) {
+		if (keysym == XKB_KEY_Escape) {
 			switcher_cancel_xkb(NULL);
 			return;
 		}
-		if ((KeySym) keysym == XKB_KEY_Return ||
-		    (KeySym) keysym == XKB_KEY_KP_Enter) {
+		if (keysym == XKB_KEY_Return || keysym == XKB_KEY_KP_Enter) {
 			switcher_confirm_xkb(NULL);
 			return;
 		}
-		if ((KeySym) keysym == XKB_KEY_Tab) {
+		if (keysym == XKB_KEY_Tab) {
 			/* Shift+Tab — state has Shift modifier */
-			if (ev->state & XCB_MOD_MASK_SHIFT)
+			if (e->key.state & WM_MOD_SHIFT)
 				switcher_prev(NULL);
 			else
 				switcher_next(NULL);
@@ -575,24 +569,21 @@ keypress(xcb_generic_event_t *e)
 	}
 
 	for (i = 0; i < LENGTH(keys); i++)
-		if ((KeySym) keysym == keys[i].keysym &&
-		    CLEANMASK(keys[i].mod) == CLEANMASK(ev->state) && keys[i].func)
+		if (keysym == keys[i].keysym &&
+		    CLEANMASK(keys[i].mod) == CLEANMASK(e->key.state) && keys[i].func)
 			keys[i].func(&(keys[i].arg));
 }
 
 void
-keyrelease(xcb_generic_event_t *e)
+keyrelease(AwmEvent *e)
 {
-	xcb_key_release_event_t *ev = (xcb_key_release_event_t *) e;
-	xcb_keysym_t             keysym =
-	    g_wm_backend->get_keysym(&g_plat, (xcb_keycode_t) ev->detail, 0);
+	KeySym keysym =
+	    g_wm_backend->get_keysym(&g_plat, (WmKeycode) e->key.keycode, 0);
 
 	/* Confirm the switcher when the modifier that opened it is released */
 	if (switcher_active()) {
-		if ((KeySym) keysym == XKB_KEY_Alt_L ||
-		    (KeySym) keysym == XKB_KEY_Alt_R ||
-		    (KeySym) keysym == XKB_KEY_Super_L ||
-		    (KeySym) keysym == XKB_KEY_Super_R) {
+		if (keysym == XKB_KEY_Alt_L || keysym == XKB_KEY_Alt_R ||
+		    keysym == XKB_KEY_Super_L || keysym == XKB_KEY_Super_R) {
 			switcher_confirm_xkb(NULL);
 		}
 	}
@@ -608,7 +599,7 @@ fake_signal(void)
 	size_t len_fsignal, len_indicator = strlen(indicator);
 
 	/* Get root name property */
-	if (gettextprop(g_plat.root, XCB_ATOM_WM_NAME, fsignal, sizeof(fsignal))) {
+	if (gettextprop(g_plat.root, AWM_ATOM_WM_NAME, fsignal, sizeof(fsignal))) {
 		len_fsignal = strlen(fsignal);
 
 		/* Check if this is indeed a fake signal */
@@ -621,7 +612,7 @@ fake_signal(void)
 			str_signum[siglen] = '\0';
 
 			/* Convert string value into manageable integer */
-			for (i = signum = 0; i < strlen(str_signum); i++) {
+			for (i = signum = 0; i < (int) strlen(str_signum); i++) {
 				v = str_signum[i] - '0';
 				if (v >= 0 && v <= 9) {
 					signum = signum * 10 + v;
@@ -644,56 +635,54 @@ fake_signal(void)
 }
 
 void
-mappingnotify(xcb_generic_event_t *e)
+mappingnotify(AwmEvent *e)
 {
-	xcb_mapping_notify_event_t *ev = (xcb_mapping_notify_event_t *) e;
-
-	g_wm_backend->refresh_keyboard_mapping(&g_plat, ev);
-	if (ev->request == XCB_MAPPING_KEYBOARD)
+	g_wm_backend->refresh_keyboard_mapping(&g_plat, e);
+	if (e->mapping.request == AWM_MAPPING_KEYBOARD)
 		grabkeys();
 }
 
 void
-maprequest(xcb_generic_event_t *e)
+maprequest(AwmEvent *e)
 {
-	xcb_map_request_event_t *ev = (xcb_map_request_event_t *) e;
-
 	Client *i;
 #ifdef BACKEND_X11
-	if ((i = wintosystrayicon(ev->window))) {
+	if ((i = wintosystrayicon(e->window))) {
 		/* Systray icon requested mapping - handle via updatesystray */
 		resizebarwin(g_awm_selmon);
 		updatesystray();
 		return;
 	}
+#else
+	(void) i;
 #endif /* BACKEND_X11 */
 
 	{
 		int override = 0;
 		if (!g_wm_backend->get_override_redirect(
-		        &g_plat, ev->window, &override))
+		        &g_plat, e->window, &override))
 			return;
 		if (override)
 			return;
 	}
-	if (!wintoclient(ev->window)) {
+	if (!wintoclient(e->window)) {
 		int gx, gy, gw, gh, gbw;
 		if (g_wm_backend->get_geometry(
-		        &g_plat, ev->window, &gx, &gy, &gw, &gh, &gbw))
-			manage(ev->window, gx, gy, gw, gh, gbw);
+		        &g_plat, e->window, &gx, &gy, &gw, &gh, &gbw))
+			manage(e->window, gx, gy, gw, gh, gbw);
 	}
 }
 
 void
-motionnotify(xcb_generic_event_t *e)
+motionnotify(AwmEvent *e)
 {
-	static Monitor            *mon = NULL;
-	Monitor                   *m;
-	xcb_motion_notify_event_t *ev = (xcb_motion_notify_event_t *) e;
+	static Monitor *mon = NULL;
+	Monitor        *m;
 
-	if (ev->event != g_plat.root)
+	if (e->window != g_plat.root)
 		return;
-	if ((m = recttomon(ev->root_x, ev->root_y, 1, 1)) != mon && mon) {
+	if ((m = recttomon(e->motion.root_x, e->motion.root_y, 1, 1)) != mon &&
+	    mon) {
 		unfocus(g_awm_selmon->sel, 1);
 		g_awm_set_selmon(m);
 		focus(NULL);
@@ -703,63 +692,62 @@ motionnotify(xcb_generic_event_t *e)
 }
 
 void
-propertynotify(xcb_generic_event_t *e)
+propertynotify(AwmEvent *e)
 {
-	Client                      *c;
-	xcb_window_t                 trans;
-	xcb_property_notify_event_t *ev = (xcb_property_notify_event_t *) e;
+	Client *c;
+	WinId   trans;
 
 #ifdef BACKEND_X11
-	if ((c = wintosystrayicon(ev->window))) {
-		if (ev->atom == XCB_ATOM_WM_NORMAL_HINTS) {
+	if ((c = wintosystrayicon(e->window))) {
+		if (e->property.atom == AWM_ATOM_WM_NORMAL_HINTS) {
 			updatesizehints(c);
 			updatesystrayicongeom(c, c->w, c->h);
 		} else
-			updatesystrayiconstate(c, ev);
+			updatesystrayiconstate(c, e->property.atom);
 		resizebarwin(g_awm_selmon);
 		updatesystray();
 	}
 #endif /* BACKEND_X11 */
 
-	if ((ev->window == g_plat.root) && (ev->atom == XCB_ATOM_WM_NAME)) {
+	if ((e->window == g_plat.root) && (e->property.atom == AWM_ATOM_WM_NAME)) {
 		(void) fake_signal();
 		return;
-	} else if (ev->state == XCB_PROPERTY_DELETE)
+	} else if (e->property.state == AWM_PROPERTY_DELETE)
 		return; /* ignore */
-	else if ((c = wintoclient(ev->window))) {
-		switch (ev->atom) {
+	else if ((c = wintoclient(e->window))) {
+		switch (e->property.atom) {
 		default:
 			break;
-		case XCB_ATOM_WM_TRANSIENT_FOR:
+		case AWM_ATOM_WM_TRANSIENT_FOR:
 			if (!c->isfloating &&
 			    (trans = g_wm_backend->get_wm_transient_for(
-			         &g_plat, c->win)) != XCB_WINDOW_NONE &&
+			         &g_plat, c->win)) != WIN_NONE &&
 			    (c->isfloating = (wintoclient(trans)) != NULL))
 				arrange(c->mon);
 			break;
-		case XCB_ATOM_WM_NORMAL_HINTS:
+		case AWM_ATOM_WM_NORMAL_HINTS:
 			c->hintsvalid = 0;
 			break;
-		case XCB_ATOM_WM_HINTS:
+		case AWM_ATOM_WM_HINTS:
 			updatewmhints(c);
 			barsdirty = 1; /* defer redraw */
 			break;
 		}
-		if (ev->atom == XCB_ATOM_WM_NAME ||
-		    ev->atom == g_plat.netatom[NetWMName]) {
+		if (e->property.atom == AWM_ATOM_WM_NAME ||
+		    e->property.atom == g_plat.netatom[NetWMName]) {
 			updatetitle(c);
 			if (c == c->mon->sel)
 				barsdirty = 1; /* defer redraw */
 		}
-		if (ev->atom == g_plat.netatom[NetWMWindowType])
+		if (e->property.atom == g_plat.netatom[NetWMWindowType])
 			updatewindowtype(c);
 #ifdef COMPOSITOR
-		if (ev->atom == g_plat.netatom[NetWMWindowOpacity]) {
+		if (e->property.atom == g_plat.netatom[NetWMWindowOpacity]) {
 			unsigned long raw = (unsigned long) getatomprop(
 			    c, g_plat.netatom[NetWMWindowOpacity]);
 			compositor_set_opacity(c, raw);
 		}
-		if (ev->atom == g_plat.netatom[NetWMBypassCompositor]) {
+		if (e->property.atom == g_plat.netatom[NetWMBypassCompositor]) {
 			int hint =
 			    (int) getatomprop(c, g_plat.netatom[NetWMBypassCompositor]);
 			if (hint != c->bypass_compositor) {
@@ -773,14 +761,13 @@ propertynotify(xcb_generic_event_t *e)
 }
 
 void
-resizerequest(xcb_generic_event_t *e)
+resizerequest(AwmEvent *e)
 {
-	xcb_resize_request_event_t *ev = (xcb_resize_request_event_t *) e;
-	Client                     *i;
+	Client *i;
 
 #ifdef BACKEND_X11
-	if ((i = wintosystrayicon(ev->window))) {
-		updatesystrayicongeom(i, ev->width, ev->height);
+	if ((i = wintosystrayicon(e->window))) {
+		updatesystrayicongeom(i, e->resize_request.w, e->resize_request.h);
 		resizebarwin(g_awm_selmon);
 		updatesystray();
 	}
@@ -790,25 +777,24 @@ resizerequest(xcb_generic_event_t *e)
 }
 
 void
-unmapnotify(xcb_generic_event_t *e)
+unmapnotify(AwmEvent *e)
 {
-	Client                   *c;
-	xcb_unmap_notify_event_t *ev = (xcb_unmap_notify_event_t *) e;
+	Client *c;
 
-	if ((c = wintoclient(ev->window))) {
-		if (e->response_type & 0x80)
-			setclientstate(c, XCB_ICCCM_WM_STATE_WITHDRAWN);
+	if ((c = wintoclient(e->window))) {
+		if (e->unmap_destroy.is_send_event)
+			setclientstate(c, AWM_WM_STATE_WITHDRAWN);
 		else
 			unmanage(c, 0);
 #ifdef BACKEND_X11
-	} else if ((c = wintosystrayicon(ev->window))) {
+	} else if ((c = wintosystrayicon(e->window))) {
 		/* KLUDGE! sometimes icons occasionally unmap their windows, but do
 		 * _not_ destroy them. We map those windows back */
 		{
-			uint32_t above = XCB_STACK_MODE_ABOVE;
+			uint32_t above = AWM_STACK_MODE_ABOVE;
 			g_wm_backend->map(&g_plat, c->win);
 			g_wm_backend->configure_win(
-			    &g_plat, c->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+			    &g_plat, c->win, AWM_CONFIG_WIN_STACK_MODE, &above);
 		}
 		updatesystray();
 #endif /* BACKEND_X11 */

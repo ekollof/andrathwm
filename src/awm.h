@@ -6,9 +6,11 @@
 
 #include "x11_constants.h"
 #include <xkbcommon/xkbcommon-keysyms.h>
+#ifdef BACKEND_X11
 #include <xcb/randr.h>
 #include <xcb/xcb_icccm.h>
 #include <xcb/xcb_keysyms.h>
+#endif /* BACKEND_X11 */
 #include <cairo/cairo.h>
 #include <errno.h>
 #include <glib.h>
@@ -24,7 +26,9 @@
 #include <unistd.h>
 #ifdef XINERAMA
 /* <X11/extensions/Xinerama.h> removed — xcb-xinerama used exclusively */
+#ifdef BACKEND_X11
 #include <xcb/xinerama.h>
+#endif /* BACKEND_X11 */
 #endif /* XINERAMA */
 #ifdef XRANDR
 /* <X11/extensions/Xrandr.h> removed — XCB randr used exclusively */
@@ -44,18 +48,17 @@
 
 /* macros */
 #define BUTTONMASK \
-	(XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE)
-#define CLEANMASK(mask)                                               \
-	(mask & ~(g_plat.numlockmask | XCB_MOD_MASK_LOCK) &               \
-	    (XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_CONTROL | XCB_MOD_MASK_1 | \
-	        XCB_MOD_MASK_2 | XCB_MOD_MASK_3 | XCB_MOD_MASK_4 |        \
-	        XCB_MOD_MASK_5))
+	(AWM_EVENT_MASK_BUTTON_PRESS | AWM_EVENT_MASK_BUTTON_RELEASE)
+#define CLEANMASK(mask)                                             \
+	(mask & ~(g_plat.numlockmask | WM_MOD_CAPS) &                   \
+	    (WM_MOD_SHIFT | WM_MOD_CTRL | WM_MOD_ALT | WM_MOD_NUMLOCK | \
+	        WM_MOD_MOD3 | WM_MOD_LOGO | WM_MOD_MOD5))
 #define INTERSECT(x, y, w, h, m)                                     \
 	(MAX(0, MIN((x) + (w), (m)->mx + (m)->mw) - MAX((x), (m)->mx)) * \
 	    MAX(0, MIN((y) + (h), (m)->my + (m)->mh) - MAX((y), (m)->my)))
 #define ISVISIBLE(C, M) ((C->tags & M->tagset[M->seltags]))
 #define LENGTH(X) (sizeof X / sizeof X[0])
-#define MOUSEMASK (BUTTONMASK | XCB_EVENT_MASK_POINTER_MOTION)
+#define MOUSEMASK (BUTTONMASK | AWM_EVENT_MASK_POINTER_MOTION)
 #define WIDTH(X) ((X)->w + 2 * (X)->bw)
 #define HEIGHT(X) ((X)->h + 2 * (X)->bw)
 #define TAGMASK ((1 << LENGTH(tags)) - 1)
@@ -191,7 +194,7 @@ struct Client {
 	Client         *next;
 	Client         *snext;
 	Monitor        *mon;
-	xcb_window_t    win;
+	WinId           win;
 	struct CompWin *cw; /* compositor back-pointer; NULL when untracked */
 };
 
@@ -250,7 +253,7 @@ struct Monitor {
 	int           showbar;
 	int           topbar;
 	Client       *sel;
-	xcb_window_t  barwin;
+	WinId         barwin;
 	const Layout *lt[2];
 	Pertag        pertag; /* inline — no heap allocation */
 };
@@ -269,10 +272,10 @@ typedef struct {
 
 typedef struct Systray Systray;
 struct Systray {
-	xcb_window_t   win;
-	Client        *icons;
-	xcb_visualid_t visual_id; /* 32-bit ARGB visual XID (0 = default) */
-	xcb_colormap_t colormap;  /* colormap matching visual_id */
+	WinId      win;
+	Client    *icons;
+	WmVisualId visual_id; /* 32-bit ARGB visual XID (0 = default) */
+	WmColormap colormap;  /* colormap matching visual_id */
 };
 
 /* extern globals — defined in awm.c */
@@ -285,19 +288,20 @@ extern char        stext[STATUS_TEXT_LEN];
 extern int         restart;
 extern int         barsdirty;
 extern int         launcher_visible; /* 1 while launcher window is open */
-extern xcb_window_t
+extern WinId
     launcher_xwin; /* X window ID of the launcher (from LAUNCHER_READY) */
-extern xcb_timestamp_t
+extern WmTimestamp
     last_event_time; /* timestamp of the most recent user event */
 /* config-derived globals referenced by dbus.c / icon.c */
 extern const unsigned int sniconsize;
 extern const unsigned int iconcachesize;
 extern const unsigned int iconcachemaxentries;
 extern const unsigned int dbustimeout;
-extern void (*handler[LASTEvent])(xcb_generic_event_t *);
+extern void (*handler[19])(AwmEvent *);
 
 /* Return the root_visual of screen number scr_num from an XCB connection.
  * Replaces XVisualIDFromVisual(DefaultVisual(dpy, screen)) everywhere. */
+#ifdef BACKEND_X11
 static inline xcb_visualid_t
 xcb_screen_root_visual(xcb_connection_t *xc, int scr_num)
 {
@@ -317,6 +321,7 @@ xcb_screen_root_depth(xcb_connection_t *xc, int scr_num)
 		xcb_screen_next(&it);
 	return it.data->root_depth;
 }
+#endif /* BACKEND_X11 */
 
 /* core WM functions (defined in awm.c) */
 void quit(const Arg *arg);

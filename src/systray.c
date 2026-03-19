@@ -77,11 +77,11 @@ updatesystrayicongeom(Client *i, int w, int h)
 }
 
 void
-updatesystrayiconstate(Client *i, xcb_property_notify_event_t *ev)
+updatesystrayiconstate(Client *i, AtomId atom)
 {
 	long flags;
 
-	if (!showsystray || !i || ev->atom != g_plat.xatom[XembedInfo] ||
+	if (!showsystray || !i || atom != g_plat.xatom[XembedInfo] ||
 	    !(flags = getembedinfo(i)))
 		return;
 
@@ -337,19 +337,19 @@ updatesystray(void)
 }
 
 Client *
-wintosystrayicon(xcb_window_t w)
+wintosystrayicon(WinId w)
 {
 	Client *i = NULL;
 
 	if (!showsystray || !systray || !w)
 		return i;
-	for (i = systray->icons; i && (xcb_window_t) i->win != w; i = i->next)
+	for (i = systray->icons; i && i->win != w; i = i->next)
 		;
 	return i;
 }
 
 void
-addsniiconsystray(xcb_window_t w, int width, int height)
+addsniiconsystray(WinId w, int width, int height)
 {
 	Client *i;
 
@@ -388,7 +388,7 @@ addsniiconsystray(xcb_window_t w, int width, int height)
 }
 
 void
-removesniiconsystray(xcb_window_t w)
+removesniiconsystray(WinId w)
 {
 	Client *i;
 

@@ -942,14 +942,16 @@ awm_event_from_xcb(xcb_generic_event_t *xe, AwmEvent *ev)
 	case XCB_BUTTON_PRESS:
 	case XCB_BUTTON_RELEASE: {
 		xcb_button_press_event_t *e = (xcb_button_press_event_t *) xe;
-		ev->type          = (type == XCB_BUTTON_PRESS) ? AWM_EV_BUTTON_PRESS
-		                                               : AWM_EV_BUTTON_RELEASE;
-		ev->window        = (WinId) e->event;
-		ev->button.button = e->detail;
-		ev->button.state  = (WmMods) e->state;
-		ev->button.time   = (WmTimestamp) e->time;
-		ev->button.root_x = e->root_x;
-		ev->button.root_y = e->root_y;
+		ev->type           = (type == XCB_BUTTON_PRESS) ? AWM_EV_BUTTON_PRESS
+		                                                : AWM_EV_BUTTON_RELEASE;
+		ev->window         = (WinId) e->event;
+		ev->button.button  = e->detail;
+		ev->button.state   = (WmMods) e->state;
+		ev->button.time    = (WmTimestamp) e->time;
+		ev->button.root_x  = e->root_x;
+		ev->button.root_y  = e->root_y;
+		ev->button.event_x = e->event_x;
+		ev->button.event_y = e->event_y;
 		break;
 	}
 	case XCB_KEY_PRESS:

@@ -7,24 +7,24 @@
 #include "awm.h"
 
 /* X event handlers */
-void buttonpress(xcb_generic_event_t *e);
+void buttonpress(AwmEvent *e);
 void checkotherwm(void);
-void clientmessage(xcb_generic_event_t *e);
-void configurenotify(xcb_generic_event_t *e);
-void configurerequest(xcb_generic_event_t *e);
-void destroynotify(xcb_generic_event_t *e);
-void enternotify(xcb_generic_event_t *e);
-void leavenotify(xcb_generic_event_t *e);
-void expose(xcb_generic_event_t *e);
-void focusin(xcb_generic_event_t *e);
-void keypress(xcb_generic_event_t *e);
-void keyrelease(xcb_generic_event_t *e);
-void mappingnotify(xcb_generic_event_t *e);
-void maprequest(xcb_generic_event_t *e);
-void motionnotify(xcb_generic_event_t *e);
-void propertynotify(xcb_generic_event_t *e);
-void resizerequest(xcb_generic_event_t *e);
-void unmapnotify(xcb_generic_event_t *e);
+void clientmessage(AwmEvent *e);
+void configurenotify(AwmEvent *e);
+void configurerequest(AwmEvent *e);
+void destroynotify(AwmEvent *e);
+void enternotify(AwmEvent *e);
+void leavenotify(AwmEvent *e);
+void expose(AwmEvent *e);
+void focusin(AwmEvent *e);
+void keypress(AwmEvent *e);
+void keyrelease(AwmEvent *e);
+void mappingnotify(AwmEvent *e);
+void maprequest(AwmEvent *e);
+void motionnotify(AwmEvent *e);
+void propertynotify(AwmEvent *e);
+void resizerequest(AwmEvent *e);
+void unmapnotify(AwmEvent *e);
 
 /* signal / fake_signal */
 int fake_signal(void);
