@@ -47,10 +47,9 @@ x11_flush(PlatformCtx *p)
  * ---------------------------------------------------------------------- */
 
 static void
-x11_configure_win(
-    PlatformCtx *p, xcb_window_t w, uint16_t mask, const uint32_t *vals)
+x11_configure_win(PlatformCtx *p, WinId w, uint16_t mask, const uint32_t *vals)
 {
-	xcb_configure_window(p->xc, w, mask, vals);
+	xcb_configure_window(p->xc, (xcb_window_t) w, mask, vals);
 }
 
 /* -------------------------------------------------------------------------
@@ -58,10 +57,9 @@ x11_configure_win(
  * ---------------------------------------------------------------------- */
 
 static void
-x11_change_attr(
-    PlatformCtx *p, xcb_window_t w, uint32_t mask, const uint32_t *vals)
+x11_change_attr(PlatformCtx *p, WinId w, uint32_t mask, const uint32_t *vals)
 {
-	xcb_change_window_attributes(p->xc, w, mask, vals);
+	xcb_change_window_attributes(p->xc, (xcb_window_t) w, mask, vals);
 }
 
 /* -------------------------------------------------------------------------
@@ -69,21 +67,21 @@ x11_change_attr(
  * ---------------------------------------------------------------------- */
 
 static void
-x11_map(PlatformCtx *p, xcb_window_t w)
+x11_map(PlatformCtx *p, WinId w)
 {
-	xcb_map_window(p->xc, w);
+	xcb_map_window(p->xc, (xcb_window_t) w);
 }
 
 static void
-x11_unmap(PlatformCtx *p, xcb_window_t w)
+x11_unmap(PlatformCtx *p, WinId w)
 {
-	xcb_unmap_window(p->xc, w);
+	xcb_unmap_window(p->xc, (xcb_window_t) w);
 }
 
 static void
-x11_destroy_win(PlatformCtx *p, xcb_window_t w)
+x11_destroy_win(PlatformCtx *p, WinId w)
 {
-	xcb_destroy_window(p->xc, w);
+	xcb_destroy_window(p->xc, (xcb_window_t) w);
 }
 
 /* -------------------------------------------------------------------------
@@ -92,15 +90,15 @@ x11_destroy_win(PlatformCtx *p, xcb_window_t w)
 
 static void
 x11_send_configure_notify(
-    PlatformCtx *p, xcb_window_t w, int x, int y, int bw, int ww, int wh)
+    PlatformCtx *p, WinId w, int x, int y, int bw, int ww, int wh)
 {
 	xcb_configure_notify_event_t ce;
 
 	ce.response_type     = XCB_CONFIGURE_NOTIFY;
 	ce.pad0              = 0;
 	ce.sequence          = 0;
-	ce.event             = w;
-	ce.window            = w;
+	ce.event             = (xcb_window_t) w;
+	ce.window            = (xcb_window_t) w;
 	ce.above_sibling     = XCB_NONE;
 	ce.x                 = (int16_t) x;
 	ce.y                 = (int16_t) y;
@@ -109,8 +107,8 @@ x11_send_configure_notify(
 	ce.border_width      = (uint16_t) bw;
 	ce.override_redirect = 0;
 	ce.pad1              = 0;
-	xcb_send_event(
-	    p->xc, 0, w, XCB_EVENT_MASK_STRUCTURE_NOTIFY, (const char *) &ce);
+	xcb_send_event(p->xc, 0, (xcb_window_t) w, XCB_EVENT_MASK_STRUCTURE_NOTIFY,
+	    (const char *) &ce);
 }
 
 /* -------------------------------------------------------------------------
@@ -118,21 +116,23 @@ x11_send_configure_notify(
  * ---------------------------------------------------------------------- */
 
 static void
-x11_set_input_focus(PlatformCtx *p, xcb_window_t w, xcb_timestamp_t t)
+x11_set_input_focus(PlatformCtx *p, WinId w, WmTimestamp t)
 {
-	xcb_set_input_focus(p->xc, XCB_INPUT_FOCUS_POINTER_ROOT, w, t);
+	xcb_set_input_focus(p->xc, XCB_INPUT_FOCUS_POINTER_ROOT, (xcb_window_t) w,
+	    (xcb_timestamp_t) t);
 }
 
 static void
-x11_warp_pointer(PlatformCtx *p, xcb_window_t dst, int16_t x, int16_t y)
+x11_warp_pointer(PlatformCtx *p, WinId dst, int16_t x, int16_t y)
 {
-	xcb_warp_pointer(p->xc, XCB_WINDOW_NONE, dst, 0, 0, 0, 0, x, y);
+	xcb_warp_pointer(
+	    p->xc, XCB_WINDOW_NONE, (xcb_window_t) dst, 0, 0, 0, 0, x, y);
 }
 
 static void
-x11_allow_events(PlatformCtx *p, int mode, xcb_timestamp_t t)
+x11_allow_events(PlatformCtx *p, int mode, WmTimestamp t)
 {
-	xcb_allow_events(p->xc, (uint8_t) mode, t);
+	xcb_allow_events(p->xc, (uint8_t) mode, (xcb_timestamp_t) t);
 }
 
 /* -------------------------------------------------------------------------
@@ -140,11 +140,11 @@ x11_allow_events(PlatformCtx *p, int mode, xcb_timestamp_t t)
  * ---------------------------------------------------------------------- */
 
 static int
-x11_grab_pointer(PlatformCtx *p, xcb_cursor_t cur)
+x11_grab_pointer(PlatformCtx *p, WmCursor cur)
 {
-	xcb_grab_pointer_cookie_t ck =
-	    xcb_grab_pointer(p->xc, 0, p->root, MOUSEMASK, XCB_GRAB_MODE_ASYNC,
-	        XCB_GRAB_MODE_ASYNC, XCB_WINDOW_NONE, cur, XCB_CURRENT_TIME);
+	xcb_grab_pointer_cookie_t ck = xcb_grab_pointer(p->xc, 0, p->root,
+	    MOUSEMASK, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, XCB_WINDOW_NONE,
+	    (xcb_cursor_t) cur, XCB_CURRENT_TIME);
 	xcb_grab_pointer_reply_t *r  = xcb_grab_pointer_reply(p->xc, ck, NULL);
 	int                       ok = r && r->status == XCB_GRAB_STATUS_SUCCESS;
 
@@ -159,9 +159,10 @@ x11_ungrab_pointer(PlatformCtx *p)
 }
 
 static void
-x11_ungrab_button(PlatformCtx *p, xcb_window_t w)
+x11_ungrab_button(PlatformCtx *p, WinId w)
 {
-	xcb_ungrab_button(p->xc, XCB_BUTTON_INDEX_ANY, w, XCB_MOD_MASK_ANY);
+	xcb_ungrab_button(
+	    p->xc, XCB_BUTTON_INDEX_ANY, (xcb_window_t) w, XCB_MOD_MASK_ANY);
 }
 
 static int
@@ -199,10 +200,10 @@ x11_ungrab_server(PlatformCtx *p)
  * ---------------------------------------------------------------------- */
 
 static int
-x11_get_override_redirect(PlatformCtx *p, xcb_window_t w, int *out)
+x11_get_override_redirect(PlatformCtx *p, WinId w, int *out)
 {
 	xcb_get_window_attributes_cookie_t ck =
-	    xcb_get_window_attributes(p->xc, w);
+	    xcb_get_window_attributes(p->xc, (xcb_window_t) w);
 	xcb_get_window_attributes_reply_t *r =
 	    xcb_get_window_attributes_reply(p->xc, ck, NULL);
 
@@ -214,10 +215,10 @@ x11_get_override_redirect(PlatformCtx *p, xcb_window_t w, int *out)
 }
 
 static int
-x11_get_event_mask(PlatformCtx *p, xcb_window_t w, uint32_t *out)
+x11_get_event_mask(PlatformCtx *p, WinId w, uint32_t *out)
 {
 	xcb_get_window_attributes_cookie_t ck =
-	    xcb_get_window_attributes(p->xc, w);
+	    xcb_get_window_attributes(p->xc, (xcb_window_t) w);
 	xcb_get_window_attributes_reply_t *r =
 	    xcb_get_window_attributes_reply(p->xc, ck, NULL);
 
@@ -234,9 +235,9 @@ x11_get_event_mask(PlatformCtx *p, xcb_window_t w, uint32_t *out)
 
 static int
 x11_get_geometry(
-    PlatformCtx *p, xcb_window_t w, int *x, int *y, int *ww, int *wh, int *bw)
+    PlatformCtx *p, WinId w, int *x, int *y, int *ww, int *wh, int *bw)
 {
-	xcb_get_geometry_cookie_t ck = xcb_get_geometry(p->xc, w);
+	xcb_get_geometry_cookie_t ck = xcb_get_geometry(p->xc, (xcb_window_t) w);
 	xcb_get_geometry_reply_t *r  = xcb_get_geometry_reply(p->xc, ck, NULL);
 
 	if (!r)
@@ -255,41 +256,43 @@ x11_get_geometry(
  * ---------------------------------------------------------------------- */
 
 static int
-x11_is_window_descendant(PlatformCtx *p, xcb_window_t w, xcb_window_t ancestor)
+x11_is_window_descendant(PlatformCtx *p, WinId w, WinId ancestor)
 {
-	while (w && w != ancestor && w != p->root) {
+	xcb_window_t xw  = (xcb_window_t) w;
+	xcb_window_t xan = (xcb_window_t) ancestor;
+
+	while (xw && xw != xan && xw != p->root) {
 		xcb_query_tree_reply_t *r =
-		    xcb_query_tree_reply(p->xc, xcb_query_tree(p->xc, w), NULL);
+		    xcb_query_tree_reply(p->xc, xcb_query_tree(p->xc, xw), NULL);
 		if (!r)
 			break;
-		w = r->parent;
+		xw = r->parent;
 		free(r);
 	}
-	return w == ancestor;
+	return xw == xan;
 }
 
 /* -------------------------------------------------------------------------
  * property reads
  * ---------------------------------------------------------------------- */
 
-static xcb_atom_t
-x11_get_atom_prop(
-    PlatformCtx *p, xcb_window_t w, xcb_atom_t prop, xcb_atom_t type)
+static AtomId
+x11_get_atom_prop(PlatformCtx *p, WinId w, AtomId prop, AtomId type)
 {
-	xcb_get_property_cookie_t ck =
-	    xcb_get_property(p->xc, 0, w, prop, type, 0, 1);
-	xcb_get_property_reply_t *r    = xcb_get_property_reply(p->xc, ck, NULL);
-	xcb_atom_t                atom = XCB_ATOM_NONE;
+	xcb_get_property_cookie_t ck = xcb_get_property(p->xc, 0, (xcb_window_t) w,
+	    (xcb_atom_t) prop, (xcb_atom_t) type, 0, 1);
+	xcb_get_property_reply_t *r  = xcb_get_property_reply(p->xc, ck, NULL);
+	AtomId                    atom = ATOM_NONE;
 
 	if (r && xcb_get_property_value_length(r) >= (int) sizeof(xcb_atom_t))
-		atom = *(xcb_atom_t *) xcb_get_property_value(r);
+		atom = (AtomId) * (xcb_atom_t *) xcb_get_property_value(r);
 	free(r);
 	return atom;
 }
 
 static int
-x11_get_text_prop(PlatformCtx *p, xcb_window_t w, xcb_atom_t atom, char *buf,
-    unsigned int size)
+x11_get_text_prop(
+    PlatformCtx *p, WinId w, AtomId atom, char *buf, unsigned int size)
 {
 	xcb_get_property_cookie_t           ck;
 	xcb_icccm_get_text_property_reply_t prop;
@@ -298,7 +301,8 @@ x11_get_text_prop(PlatformCtx *p, xcb_window_t w, xcb_atom_t atom, char *buf,
 	if (!buf || size == 0)
 		return 0;
 	buf[0] = '\0';
-	ck     = xcb_icccm_get_text_property(p->xc, w, atom);
+	ck     = xcb_icccm_get_text_property(
+        p->xc, (xcb_window_t) w, (xcb_atom_t) atom);
 	if (!xcb_icccm_get_text_property_reply(p->xc, ck, &prop, NULL))
 		return 0;
 	if (prop.name_len > 0 && prop.name) {
@@ -311,12 +315,11 @@ x11_get_text_prop(PlatformCtx *p, xcb_window_t w, xcb_atom_t atom, char *buf,
 }
 
 static int
-x11_get_wm_icon(
-    PlatformCtx *p, xcb_window_t w, uint32_t **data_out, int *nitems_out)
+x11_get_wm_icon(PlatformCtx *p, WinId w, uint32_t **data_out, int *nitems_out)
 {
-	xcb_get_property_cookie_t ck = xcb_get_property(
-	    p->xc, 0, w, p->netatom[NetWMIcon], XCB_ATOM_ANY, 0, UINT32_MAX / 4);
-	xcb_get_property_reply_t *r = xcb_get_property_reply(p->xc, ck, NULL);
+	xcb_get_property_cookie_t ck = xcb_get_property(p->xc, 0, (xcb_window_t) w,
+	    p->netatom[NetWMIcon], XCB_ATOM_ANY, 0, UINT32_MAX / 4);
+	xcb_get_property_reply_t *r  = xcb_get_property_reply(p->xc, ck, NULL);
 	int                       n;
 	uint32_t                 *copy;
 
@@ -338,12 +341,12 @@ x11_get_wm_icon(
 }
 
 static int
-x11_get_wm_class(PlatformCtx *p, xcb_window_t w, char *inst_buf,
+x11_get_wm_class(PlatformCtx *p, WinId w, char *inst_buf,
     unsigned int inst_size, char *cls_buf, unsigned int cls_size)
 {
-	xcb_get_property_cookie_t ck = xcb_get_property(
-	    p->xc, 0, w, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 0, 512);
-	xcb_get_property_reply_t *r = xcb_get_property_reply(p->xc, ck, NULL);
+	xcb_get_property_cookie_t ck = xcb_get_property(p->xc, 0, (xcb_window_t) w,
+	    XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 0, 512);
+	xcb_get_property_reply_t *r  = xcb_get_property_reply(p->xc, ck, NULL);
 
 	if (!r || xcb_get_property_value_length(r) == 0) {
 		free(r);
@@ -380,17 +383,17 @@ x11_get_wm_class(PlatformCtx *p, xcb_window_t w, char *inst_buf,
  * ---------------------------------------------------------------------- */
 
 static void
-x11_change_prop(PlatformCtx *p, xcb_window_t w, xcb_atom_t prop,
-    xcb_atom_t type, int format, uint8_t mode, int n, const void *data)
+x11_change_prop(PlatformCtx *p, WinId w, AtomId prop, AtomId type, int format,
+    uint8_t mode, int n, const void *data)
 {
-	xcb_change_property(
-	    p->xc, mode, w, prop, type, (uint8_t) format, (uint32_t) n, data);
+	xcb_change_property(p->xc, mode, (xcb_window_t) w, (xcb_atom_t) prop,
+	    (xcb_atom_t) type, (uint8_t) format, (uint32_t) n, data);
 }
 
 static void
-x11_delete_prop(PlatformCtx *p, xcb_window_t w, xcb_atom_t prop)
+x11_delete_prop(PlatformCtx *p, WinId w, AtomId prop)
 {
-	xcb_delete_property(p->xc, w, prop);
+	xcb_delete_property(p->xc, (xcb_window_t) w, (xcb_atom_t) prop);
 }
 
 /* -------------------------------------------------------------------------
@@ -398,11 +401,11 @@ x11_delete_prop(PlatformCtx *p, xcb_window_t w, xcb_atom_t prop)
  * ---------------------------------------------------------------------- */
 
 static void
-x11_kill_client_hard(PlatformCtx *p, xcb_window_t w)
+x11_kill_client_hard(PlatformCtx *p, WinId w)
 {
 	xcb_grab_server(p->xc);
 	xcb_set_close_down_mode(p->xc, XCB_CLOSE_DOWN_DESTROY_ALL);
-	xcb_kill_client(p->xc, w);
+	xcb_kill_client(p->xc, (xcb_window_t) w);
 	xcb_ungrab_server(p->xc);
 }
 
@@ -411,24 +414,24 @@ x11_kill_client_hard(PlatformCtx *p, xcb_window_t w)
  * ---------------------------------------------------------------------- */
 
 static void
-x11_change_save_set(PlatformCtx *p, xcb_window_t w, int insert)
+x11_change_save_set(PlatformCtx *p, WinId w, int insert)
 {
-	xcb_change_save_set(
-	    p->xc, insert ? XCB_SET_MODE_INSERT : XCB_SET_MODE_DELETE, w);
+	xcb_change_save_set(p->xc,
+	    insert ? XCB_SET_MODE_INSERT : XCB_SET_MODE_DELETE, (xcb_window_t) w);
 }
 
 static void
-x11_reparent_window(
-    PlatformCtx *p, xcb_window_t w, xcb_window_t parent, int x, int y)
+x11_reparent_window(PlatformCtx *p, WinId w, WinId parent, int x, int y)
 {
-	xcb_reparent_window(p->xc, w, parent, (int16_t) x, (int16_t) y);
+	xcb_reparent_window(p->xc, (xcb_window_t) w, (xcb_window_t) parent,
+	    (int16_t) x, (int16_t) y);
 }
 
 /* -------------------------------------------------------------------------
  * bar window creation
  * ---------------------------------------------------------------------- */
 
-static xcb_window_t
+static WinId
 x11_create_bar_win(
     PlatformCtx *p, int x, int y, int w, int h, int compositor_active)
 {
@@ -480,38 +483,92 @@ x11_screen_depth(PlatformCtx *p)
  * ---------------------------------------------------------------------- */
 
 static int
-x11_get_wm_normal_hints(PlatformCtx *p, xcb_window_t w, xcb_size_hints_t *out)
+x11_get_wm_normal_hints(PlatformCtx *p, WinId w, AwmSizeHints *out)
 {
-	xcb_get_property_cookie_t ck = xcb_icccm_get_wm_normal_hints(p->xc, w);
+	xcb_size_hints_t          sh;
+	xcb_get_property_cookie_t ck;
+	int                       ok;
 
-	return xcb_icccm_get_wm_normal_hints_reply(p->xc, ck, out, NULL);
+	ck = xcb_icccm_get_wm_normal_hints(p->xc, (xcb_window_t) w);
+	ok = xcb_icccm_get_wm_normal_hints_reply(p->xc, ck, &sh, NULL);
+	if (!ok)
+		return 0;
+
+	out->flags      = 0;
+	out->min_w      = sh.min_width;
+	out->min_h      = sh.min_height;
+	out->max_w      = sh.max_width;
+	out->max_h      = sh.max_height;
+	out->base_w     = sh.base_width;
+	out->base_h     = sh.base_height;
+	out->inc_w      = sh.width_inc;
+	out->inc_h      = sh.height_inc;
+	out->min_aspect = (sh.min_aspect_num && sh.min_aspect_den)
+	    ? (double) sh.min_aspect_num / (double) sh.min_aspect_den
+	    : 0.0;
+	out->max_aspect = (sh.max_aspect_num && sh.max_aspect_den)
+	    ? (double) sh.max_aspect_num / (double) sh.max_aspect_den
+	    : 0.0;
+
+	if (sh.flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE)
+		out->flags |= AWM_SIZE_P_MIN_SIZE;
+	if (sh.flags & XCB_ICCCM_SIZE_HINT_P_MAX_SIZE)
+		out->flags |= AWM_SIZE_P_MAX_SIZE;
+	if (sh.flags & XCB_ICCCM_SIZE_HINT_P_RESIZE_INC)
+		out->flags |= AWM_SIZE_P_RESIZE_INC;
+	if (sh.flags & XCB_ICCCM_SIZE_HINT_P_ASPECT)
+		out->flags |= AWM_SIZE_P_ASPECT;
+	if (sh.flags & XCB_ICCCM_SIZE_HINT_BASE_SIZE)
+		out->flags |= AWM_SIZE_P_BASE_SIZE;
+	if (sh.flags & XCB_ICCCM_SIZE_HINT_P_SIZE)
+		out->flags |= AWM_SIZE_P_SIZE;
+	return 1;
 }
 
 static int
-x11_get_wm_hints(PlatformCtx *p, xcb_window_t w, xcb_icccm_wm_hints_t *out)
+x11_get_wm_hints(PlatformCtx *p, WinId w, AwmWmHints *out)
 {
-	xcb_get_property_cookie_t ck = xcb_icccm_get_wm_hints(p->xc, w);
+	xcb_icccm_wm_hints_t      wmh;
+	xcb_get_property_cookie_t ck;
+	int                       ok;
 
-	return xcb_icccm_get_wm_hints_reply(p->xc, ck, out, NULL);
+	ck = xcb_icccm_get_wm_hints(p->xc, (xcb_window_t) w);
+	ok = xcb_icccm_get_wm_hints_reply(p->xc, ck, &wmh, NULL);
+	if (!ok)
+		return 0;
+
+	out->flags = 0;
+	out->input = wmh.input;
+	if (wmh.flags & XCB_ICCCM_WM_HINT_INPUT)
+		out->flags |= AWM_WM_HINT_INPUT;
+	if (wmh.flags & XCB_ICCCM_WM_HINT_X_URGENCY)
+		out->flags |= AWM_WM_HINT_URGENCY;
+	return 1;
 }
 
 static void
-x11_set_wm_hints(
-    PlatformCtx *p, xcb_window_t w, const xcb_icccm_wm_hints_t *hints)
+x11_set_wm_hints(PlatformCtx *p, WinId w, const AwmWmHints *hints)
 {
-	/* xcb_icccm_set_wm_hints takes a non-const pointer; cast is safe since
-	 * the function does not modify the hints struct. */
-	xcb_icccm_set_wm_hints(p->xc, w, (xcb_icccm_wm_hints_t *) hints);
+	xcb_icccm_wm_hints_t wmh;
+
+	memset(&wmh, 0, sizeof wmh);
+	wmh.flags = 0;
+	wmh.input = (uint32_t) hints->input;
+	if (hints->flags & AWM_WM_HINT_INPUT)
+		wmh.flags |= XCB_ICCCM_WM_HINT_INPUT;
+	if (hints->flags & AWM_WM_HINT_URGENCY)
+		wmh.flags |= XCB_ICCCM_WM_HINT_X_URGENCY;
+	xcb_icccm_set_wm_hints(p->xc, (xcb_window_t) w, &wmh);
 }
 
-static xcb_window_t
-x11_get_wm_transient_for(PlatformCtx *p, xcb_window_t w)
+static WinId
+x11_get_wm_transient_for(PlatformCtx *p, WinId w)
 {
 	xcb_window_t trans = XCB_WINDOW_NONE;
 
-	xcb_icccm_get_wm_transient_for_reply(
-	    p->xc, xcb_icccm_get_wm_transient_for(p->xc, w), &trans, NULL);
-	return trans;
+	xcb_icccm_get_wm_transient_for_reply(p->xc,
+	    xcb_icccm_get_wm_transient_for(p->xc, (xcb_window_t) w), &trans, NULL);
+	return (WinId) trans;
 }
 
 /* -------------------------------------------------------------------------
@@ -519,22 +576,23 @@ x11_get_wm_transient_for(PlatformCtx *p, xcb_window_t w)
  * ---------------------------------------------------------------------- */
 
 static void
-x11_grab_buttons(PlatformCtx *p, xcb_window_t w, int focused)
+x11_grab_buttons(PlatformCtx *p, WinId w, int focused)
 {
 	unsigned int i, j;
 	unsigned int modifiers[] = { 0, XCB_MOD_MASK_LOCK, p->numlockmask,
 		p->numlockmask | XCB_MOD_MASK_LOCK };
 
-	xcb_ungrab_button(p->xc, XCB_BUTTON_INDEX_ANY, w, XCB_MOD_MASK_ANY);
+	xcb_ungrab_button(
+	    p->xc, XCB_BUTTON_INDEX_ANY, (xcb_window_t) w, XCB_MOD_MASK_ANY);
 	if (!focused)
-		xcb_grab_button(p->xc, 0, w,
+		xcb_grab_button(p->xc, 0, (xcb_window_t) w,
 		    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE,
 		    XCB_GRAB_MODE_SYNC, XCB_GRAB_MODE_SYNC, XCB_WINDOW_NONE,
 		    XCB_CURSOR_NONE, XCB_BUTTON_INDEX_ANY, XCB_MOD_MASK_ANY);
 	for (i = 0; i < LENGTH(buttons); i++)
 		if (buttons[i].click == ClkClientWin)
 			for (j = 0; j < LENGTH(modifiers); j++)
-				xcb_grab_button(p->xc, 0, w,
+				xcb_grab_button(p->xc, 0, (xcb_window_t) w,
 				    XCB_EVENT_MASK_BUTTON_PRESS |
 				        XCB_EVENT_MASK_BUTTON_RELEASE,
 				    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_SYNC, XCB_WINDOW_NONE,
@@ -614,15 +672,22 @@ x11_grab_keys_full(PlatformCtx *p)
 }
 
 static void
-x11_refresh_keyboard_mapping(PlatformCtx *p, xcb_mapping_notify_event_t *ev)
+x11_refresh_keyboard_mapping(PlatformCtx *p, AwmEvent *ev)
 {
-	xcb_refresh_keyboard_mapping(p->keysyms, ev);
+	xcb_mapping_notify_event_t xme;
+
+	memset(&xme, 0, sizeof xme);
+	xme.request       = ev->mapping.request;
+	xme.first_keycode = ev->mapping.first_keycode;
+	xme.count         = ev->mapping.count;
+	xcb_refresh_keyboard_mapping(p->keysyms, &xme);
 }
 
-static xcb_keysym_t
-x11_get_keysym(PlatformCtx *p, xcb_keycode_t code, int col)
+static KeySym
+x11_get_keysym(PlatformCtx *p, WmKeycode code, int col)
 {
-	return xcb_key_symbols_get_keysym(p->keysyms, code, col);
+	return (KeySym) xcb_key_symbols_get_keysym(
+	    p->keysyms, (xcb_keycode_t) code, col);
 }
 
 static void
@@ -863,16 +928,222 @@ geom_done:
  * event loop helpers
  * ---------------------------------------------------------------------- */
 
-static xcb_generic_event_t *
-x11_poll_event(PlatformCtx *p)
+/* Translate an xcb_generic_event_t into an AwmEvent.
+ * Returns 1 if the event type is known, 0 if it should be ignored.
+ * Callers must free xe after use; the returned ev is populated in-place. */
+static int
+awm_event_from_xcb(xcb_generic_event_t *xe, AwmEvent *ev)
 {
-	return xcb_poll_for_event(p->xc);
+	uint8_t type = xe->response_type & ~0x80;
+
+	memset(ev, 0, sizeof *ev);
+
+	switch (type) {
+	case XCB_BUTTON_PRESS:
+	case XCB_BUTTON_RELEASE: {
+		xcb_button_press_event_t *e = (xcb_button_press_event_t *) xe;
+		ev->type          = (type == XCB_BUTTON_PRESS) ? AWM_EV_BUTTON_PRESS
+		                                               : AWM_EV_BUTTON_RELEASE;
+		ev->window        = (WinId) e->event;
+		ev->button.button = e->detail;
+		ev->button.state  = (WmMods) e->state;
+		ev->button.time   = (WmTimestamp) e->time;
+		ev->button.root_x = e->root_x;
+		ev->button.root_y = e->root_y;
+		break;
+	}
+	case XCB_KEY_PRESS:
+	case XCB_KEY_RELEASE: {
+		xcb_key_press_event_t *e = (xcb_key_press_event_t *) xe;
+		ev->type =
+		    (type == XCB_KEY_PRESS) ? AWM_EV_KEY_PRESS : AWM_EV_KEY_RELEASE;
+		ev->window      = (WinId) e->event;
+		ev->key.keycode = (WmKeycode) e->detail;
+		ev->key.state   = (WmMods) e->state;
+		ev->key.time    = (WmTimestamp) e->time;
+		break;
+	}
+	case XCB_ENTER_NOTIFY: {
+		xcb_enter_notify_event_t *e  = (xcb_enter_notify_event_t *) xe;
+		ev->type                     = AWM_EV_ENTER;
+		ev->window                   = (WinId) e->event;
+		ev->enter_leave_focus.mode   = e->mode;
+		ev->enter_leave_focus.detail = e->detail;
+		break;
+	}
+	case XCB_LEAVE_NOTIFY: {
+		xcb_leave_notify_event_t *e  = (xcb_leave_notify_event_t *) xe;
+		ev->type                     = AWM_EV_LEAVE;
+		ev->window                   = (WinId) e->event;
+		ev->enter_leave_focus.mode   = e->mode;
+		ev->enter_leave_focus.detail = e->detail;
+		break;
+	}
+	case XCB_FOCUS_IN: {
+		xcb_focus_in_event_t *e      = (xcb_focus_in_event_t *) xe;
+		ev->type                     = AWM_EV_FOCUS_IN;
+		ev->window                   = (WinId) e->event;
+		ev->enter_leave_focus.mode   = e->mode;
+		ev->enter_leave_focus.detail = e->detail;
+		break;
+	}
+	case XCB_EXPOSE: {
+		xcb_expose_event_t *e = (xcb_expose_event_t *) xe;
+		ev->type              = AWM_EV_EXPOSE;
+		ev->window            = (WinId) e->window;
+		ev->expose.count      = e->count;
+		break;
+	}
+	case XCB_MOTION_NOTIFY: {
+		xcb_motion_notify_event_t *e = (xcb_motion_notify_event_t *) xe;
+		ev->type                     = AWM_EV_MOTION;
+		ev->window                   = (WinId) e->event;
+		ev->motion.time              = (WmTimestamp) e->time;
+		ev->motion.root_x            = e->root_x;
+		ev->motion.root_y            = e->root_y;
+		ev->motion.detail            = e->detail;
+		break;
+	}
+	case XCB_CONFIGURE_NOTIFY: {
+		xcb_configure_notify_event_t *e = (xcb_configure_notify_event_t *) xe;
+		ev->type                        = AWM_EV_CONFIGURE_NOTIFY;
+		ev->window                      = (WinId) e->window;
+		ev->configure.x                 = e->x;
+		ev->configure.y                 = e->y;
+		ev->configure.w                 = e->width;
+		ev->configure.h                 = e->height;
+		ev->configure.bw                = e->border_width;
+		ev->configure.above             = (WinId) e->above_sibling;
+		ev->configure.is_send_event     = (xe->response_type & 0x80) ? 1 : 0;
+		break;
+	}
+	case XCB_CONFIGURE_REQUEST: {
+		xcb_configure_request_event_t *e =
+		    (xcb_configure_request_event_t *) xe;
+		ev->type                     = AWM_EV_CONFIGURE_REQUEST;
+		ev->window                   = (WinId) e->window;
+		ev->configure_req.value_mask = e->value_mask;
+		ev->configure_req.x          = e->x;
+		ev->configure_req.y          = e->y;
+		ev->configure_req.w          = e->width;
+		ev->configure_req.h          = e->height;
+		ev->configure_req.bw         = e->border_width;
+		ev->configure_req.sibling    = (WinId) e->sibling;
+		ev->configure_req.stack_mode = e->stack_mode;
+		break;
+	}
+	case XCB_MAP_REQUEST: {
+		xcb_map_request_event_t *e = (xcb_map_request_event_t *) xe;
+		ev->type                   = AWM_EV_MAP_REQUEST;
+		ev->window                 = (WinId) e->window;
+		ev->map_request.parent     = (WinId) e->parent;
+		break;
+	}
+	case XCB_UNMAP_NOTIFY: {
+		xcb_unmap_notify_event_t *e     = (xcb_unmap_notify_event_t *) xe;
+		ev->type                        = AWM_EV_UNMAP_NOTIFY;
+		ev->window                      = (WinId) e->window;
+		ev->unmap_destroy.event         = (WinId) e->event;
+		ev->unmap_destroy.is_send_event = (xe->response_type & 0x80) ? 1 : 0;
+		break;
+	}
+	case XCB_DESTROY_NOTIFY: {
+		xcb_destroy_notify_event_t *e   = (xcb_destroy_notify_event_t *) xe;
+		ev->type                        = AWM_EV_DESTROY_NOTIFY;
+		ev->window                      = (WinId) e->window;
+		ev->unmap_destroy.event         = (WinId) e->event;
+		ev->unmap_destroy.is_send_event = 0;
+		break;
+	}
+	case XCB_PROPERTY_NOTIFY: {
+		xcb_property_notify_event_t *e = (xcb_property_notify_event_t *) xe;
+		ev->type                       = AWM_EV_PROPERTY_NOTIFY;
+		ev->window                     = (WinId) e->window;
+		ev->property.atom              = (AtomId) e->atom;
+		ev->property.state             = e->state;
+		break;
+	}
+	case XCB_CLIENT_MESSAGE: {
+		xcb_client_message_event_t *e = (xcb_client_message_event_t *) xe;
+		ev->type                      = AWM_EV_CLIENT_MESSAGE;
+		ev->window                    = (WinId) e->window;
+		ev->client_message.msg_type   = (AtomId) e->type;
+		ev->client_message.data[0]    = e->data.data32[0];
+		ev->client_message.data[1]    = e->data.data32[1];
+		ev->client_message.data[2]    = e->data.data32[2];
+		ev->client_message.data[3]    = e->data.data32[3];
+		ev->client_message.data[4]    = e->data.data32[4];
+		break;
+	}
+	case XCB_RESIZE_REQUEST: {
+		xcb_resize_request_event_t *e = (xcb_resize_request_event_t *) xe;
+		ev->type                      = AWM_EV_RESIZE_REQUEST;
+		ev->window                    = (WinId) e->window;
+		ev->resize_request.w          = e->width;
+		ev->resize_request.h          = e->height;
+		break;
+	}
+	case XCB_MAPPING_NOTIFY: {
+		xcb_mapping_notify_event_t *e = (xcb_mapping_notify_event_t *) xe;
+		ev->type                      = AWM_EV_MAPPING_NOTIFY;
+		ev->window                    = WIN_NONE;
+		ev->mapping.request           = e->request;
+		ev->mapping.first_keycode     = e->first_keycode;
+		ev->mapping.count             = e->count;
+		break;
+	}
+	default:
+		return 0;
+	}
+	return 1;
 }
 
-static xcb_generic_event_t *
+static AwmEvent *
+x11_poll_event(PlatformCtx *p)
+{
+	xcb_generic_event_t *xe = xcb_poll_for_event(p->xc);
+	AwmEvent            *ev;
+
+	if (!xe)
+		return NULL;
+	ev = malloc(sizeof *ev);
+	if (!ev) {
+		free(xe);
+		return NULL;
+	}
+	if (!awm_event_from_xcb(xe, ev)) {
+		/* Unknown type: store as NONE but keep the raw type in window
+		 * field so awm.c can still index handler[] via the xcb type. */
+		ev->type   = AWM_EV_NONE;
+		ev->window = (WinId) (uintptr_t) xe; /* carry raw ptr through */
+	}
+	/* Note: xcb event is kept alive; awm.c dispatch must free *both*
+	 * the AwmEvent and the original xcb event.  For now we embed the
+	 * xcb pointer in window when type==AWM_EV_NONE so awm.c can route
+	 * it.  Proper full dispatch migration happens in Step 4. */
+	free(xe);
+	return ev;
+}
+
+static AwmEvent *
 x11_next_event(PlatformCtx *p)
 {
-	return xcb_wait_for_event(p->xc);
+	xcb_generic_event_t *xe = xcb_wait_for_event(p->xc);
+	AwmEvent            *ev;
+
+	if (!xe)
+		return NULL;
+	ev = malloc(sizeof *ev);
+	if (!ev) {
+		free(xe);
+		return NULL;
+	}
+	if (!awm_event_from_xcb(xe, ev)) {
+		ev->type   = AWM_EV_NONE;
+		ev->window = WIN_NONE;
+	}
+	free(xe);
+	return ev;
 }
 
 /* -------------------------------------------------------------------------
@@ -880,22 +1151,22 @@ x11_next_event(PlatformCtx *p)
  * ---------------------------------------------------------------------- */
 
 static void
-x11_grab_keyboard(PlatformCtx *p, xcb_window_t w, xcb_timestamp_t t)
+x11_grab_keyboard(PlatformCtx *p, WinId w, WmTimestamp t)
 {
-	xcb_grab_keyboard(
-	    p->xc, 0, w, t, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+	xcb_grab_keyboard(p->xc, 0, (xcb_window_t) w, (xcb_timestamp_t) t,
+	    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
 }
 
 static void
-x11_ungrab_keyboard(PlatformCtx *p, xcb_timestamp_t t)
+x11_ungrab_keyboard(PlatformCtx *p, WmTimestamp t)
 {
-	xcb_ungrab_keyboard(p->xc, t);
+	xcb_ungrab_keyboard(p->xc, (xcb_timestamp_t) t);
 }
 
 static void
-x11_ungrab_key(PlatformCtx *p, xcb_window_t w)
+x11_ungrab_key(PlatformCtx *p, WinId w)
 {
-	xcb_ungrab_key(p->xc, XCB_GRAB_ANY, w, XCB_MOD_MASK_ANY);
+	xcb_ungrab_key(p->xc, XCB_GRAB_ANY, (xcb_window_t) w, XCB_MOD_MASK_ANY);
 }
 
 /* -------------------------------------------------------------------------
@@ -903,7 +1174,7 @@ x11_ungrab_key(PlatformCtx *p, xcb_window_t w)
  * ---------------------------------------------------------------------- */
 
 static int
-x11_query_root_tree(PlatformCtx *p, xcb_window_t **wins_out, int *n_out)
+x11_query_root_tree(PlatformCtx *p, WinId **wins_out, int *n_out)
 {
 	xcb_query_tree_cookie_t ck = xcb_query_tree(p->xc, p->root);
 	xcb_query_tree_reply_t *tr = xcb_query_tree_reply(p->xc, ck, NULL);
@@ -913,15 +1184,17 @@ x11_query_root_tree(PlatformCtx *p, xcb_window_t **wins_out, int *n_out)
 	{
 		int           n    = xcb_query_tree_children_length(tr);
 		xcb_window_t *src  = xcb_query_tree_children(tr);
-		xcb_window_t *copy = NULL;
+		WinId        *copy = NULL;
 
 		if (n > 0) {
-			copy = malloc((size_t) n * sizeof(xcb_window_t));
+			int i;
+			copy = malloc((size_t) n * sizeof(WinId));
 			if (!copy) {
 				free(tr);
 				return 0;
 			}
-			memcpy(copy, src, (size_t) n * sizeof(xcb_window_t));
+			for (i = 0; i < n; i++)
+				copy[i] = (WinId) src[i];
 		}
 		free(tr);
 		*wins_out = copy;
@@ -935,11 +1208,11 @@ x11_query_root_tree(PlatformCtx *p, xcb_window_t **wins_out, int *n_out)
  * ---------------------------------------------------------------------- */
 
 static int
-x11_get_window_attributes(PlatformCtx *p, xcb_window_t w,
-    int *override_redirect_out, int *map_state_out)
+x11_get_window_attributes(
+    PlatformCtx *p, WinId w, int *override_redirect_out, int *map_state_out)
 {
 	xcb_get_window_attributes_cookie_t ck =
-	    xcb_get_window_attributes(p->xc, w);
+	    xcb_get_window_attributes(p->xc, (xcb_window_t) w);
 	xcb_get_window_attributes_reply_t *r =
 	    xcb_get_window_attributes_reply(p->xc, ck, NULL);
 
@@ -956,11 +1229,11 @@ x11_get_window_attributes(PlatformCtx *p, xcb_window_t w,
  * ---------------------------------------------------------------------- */
 
 static xcb_get_property_reply_t *
-x11_get_prop_raw(PlatformCtx *p, xcb_window_t w, xcb_atom_t prop,
-    xcb_atom_t type, uint32_t long_length)
+x11_get_prop_raw(
+    PlatformCtx *p, WinId w, AtomId prop, AtomId type, uint32_t long_length)
 {
-	xcb_get_property_cookie_t ck =
-	    xcb_get_property(p->xc, 0, w, prop, type, 0, long_length);
+	xcb_get_property_cookie_t ck = xcb_get_property(p->xc, 0, (xcb_window_t) w,
+	    (xcb_atom_t) prop, (xcb_atom_t) type, 0, long_length);
 	return xcb_get_property_reply(p->xc, ck, NULL);
 }
 
@@ -995,15 +1268,15 @@ x11_sync(PlatformCtx *p)
  * ---------------------------------------------------------------------- */
 
 static void
-x11_free_pixmap(PlatformCtx *p, xcb_pixmap_t pm)
+x11_free_pixmap(PlatformCtx *p, WmPixmap pm)
 {
-	xcb_free_pixmap(p->xc, pm);
+	xcb_free_pixmap(p->xc, (xcb_pixmap_t) pm);
 }
 
 static void
-x11_free_colormap(PlatformCtx *p, xcb_colormap_t cm)
+x11_free_colormap(PlatformCtx *p, WmColormap cm)
 {
-	xcb_free_colormap(p->xc, cm);
+	xcb_free_colormap(p->xc, (xcb_colormap_t) cm);
 }
 
 /* -------------------------------------------------------------------------
@@ -1012,7 +1285,7 @@ x11_free_colormap(PlatformCtx *p, xcb_colormap_t cm)
 
 static void
 x11_intern_atoms_batch(
-    PlatformCtx *p, const char **names, xcb_atom_t *atoms_out, int n)
+    PlatformCtx *p, const char **names, AtomId *atoms_out, int n)
 {
 	xcb_intern_atom_cookie_t *cookies;
 	xcb_intern_atom_reply_t  *reply;
@@ -1037,16 +1310,16 @@ x11_intern_atoms_batch(
  * generic window creation
  * ---------------------------------------------------------------------- */
 
-static xcb_window_t
-x11_create_window(PlatformCtx *p, xcb_window_t parent, int x, int y, int w,
-    int h, uint32_t val_mask, const uint32_t *vals)
+static WinId
+x11_create_window(PlatformCtx *p, WinId parent, int x, int y, int w, int h,
+    uint32_t val_mask, const uint32_t *vals)
 {
 	xcb_window_t wid = xcb_generate_id(p->xc);
 
-	xcb_create_window(p->xc, XCB_COPY_FROM_PARENT, wid, parent, (int16_t) x,
-	    (int16_t) y, (uint16_t) w, (uint16_t) h, 0,
+	xcb_create_window(p->xc, XCB_COPY_FROM_PARENT, wid, (xcb_window_t) parent,
+	    (int16_t) x, (int16_t) y, (uint16_t) w, (uint16_t) h, 0,
 	    XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, val_mask, vals);
-	return wid;
+	return (WinId) wid;
 }
 
 /* -------------------------------------------------------------------------
@@ -1060,9 +1333,10 @@ x11_select_root_events(PlatformCtx *p, uint32_t mask)
 }
 
 static void
-x11_set_root_cursor(PlatformCtx *p, xcb_cursor_t cursor)
+x11_set_root_cursor(PlatformCtx *p, WmCursor cursor)
 {
-	xcb_change_window_attributes(p->xc, p->root, XCB_CW_CURSOR, &cursor);
+	uint32_t val = (uint32_t) cursor;
+	xcb_change_window_attributes(p->xc, p->root, XCB_CW_CURSOR, &val);
 }
 
 /* -------------------------------------------------------------------------

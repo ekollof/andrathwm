@@ -21,14 +21,16 @@
 #define PLATFORM_H
 
 #include <stdint.h>
+#include "wm_types.h"
+
+#ifdef BACKEND_X11
+
 #include <xcb/xcb.h>
 #include <xcb/xcb_icccm.h>
 #include <xcb/xcb_keysyms.h>
 #ifdef XRANDR
 #include <xcb/randr.h>
 #endif
-
-#ifdef BACKEND_X11
 
 /* -------------------------------------------------------------------------
  * PlatformCtx — X11 connection state singleton
@@ -77,37 +79,36 @@ typedef struct {
 	void (*flush)(PlatformCtx *p);
 
 	/* --- window geometry & stacking ------------------------------------ */
-	/* General-purpose xcb_configure_window wrapper.  mask and vals must
-	 * be ordered by ascending XCB_CONFIG_WINDOW_* bit position. */
+	/* General-purpose configure_window wrapper.  mask and vals must
+	 * be ordered by ascending AWM_CONFIG_WIN_* bit position. */
 	void (*configure_win)(
-	    PlatformCtx *p, xcb_window_t w, uint16_t mask, const uint32_t *vals);
+	    PlatformCtx *p, WinId w, uint16_t mask, const uint32_t *vals);
 
 	/* --- window attributes --------------------------------------------- */
 	void (*change_attr)(
-	    PlatformCtx *p, xcb_window_t w, uint32_t mask, const uint32_t *vals);
+	    PlatformCtx *p, WinId w, uint32_t mask, const uint32_t *vals);
 
 	/* --- window visibility --------------------------------------------- */
-	void (*map)(PlatformCtx *p, xcb_window_t w);
-	void (*unmap)(PlatformCtx *p, xcb_window_t w);
-	void (*destroy_win)(PlatformCtx *p, xcb_window_t w);
+	void (*map)(PlatformCtx *p, WinId w);
+	void (*unmap)(PlatformCtx *p, WinId w);
+	void (*destroy_win)(PlatformCtx *p, WinId w);
 
 	/* --- window events ------------------------------------------------- */
-	/* Send a synthetic XCB_CONFIGURE_NOTIFY for a managed client. */
+	/* Send a synthetic CONFIGURE_NOTIFY for a managed client. */
 	void (*send_configure_notify)(
-	    PlatformCtx *p, xcb_window_t w, int x, int y, int bw, int ww, int wh);
+	    PlatformCtx *p, WinId w, int x, int y, int bw, int ww, int wh);
 
 	/* --- focus & input ------------------------------------------------- */
-	void (*set_input_focus)(PlatformCtx *p, xcb_window_t w, xcb_timestamp_t t);
-	void (*warp_pointer)(
-	    PlatformCtx *p, xcb_window_t dst, int16_t x, int16_t y);
-	/* Allow/replay pointer events (xcb_allow_events). */
-	void (*allow_events)(PlatformCtx *p, int mode, xcb_timestamp_t t);
+	void (*set_input_focus)(PlatformCtx *p, WinId w, WmTimestamp t);
+	void (*warp_pointer)(PlatformCtx *p, WinId dst, int16_t x, int16_t y);
+	/* Allow/replay pointer events. */
+	void (*allow_events)(PlatformCtx *p, int mode, WmTimestamp t);
 
 	/* --- pointer grab -------------------------------------------------- */
 	/* Returns 1 on success, 0 on failure. */
-	int (*grab_pointer)(PlatformCtx *p, xcb_cursor_t cursor);
+	int (*grab_pointer)(PlatformCtx *p, WmCursor cursor);
 	void (*ungrab_pointer)(PlatformCtx *p);
-	void (*ungrab_button)(PlatformCtx *p, xcb_window_t w);
+	void (*ungrab_button)(PlatformCtx *p, WinId w);
 	/* Query root pointer position.  Returns 1 on success. */
 	int (*query_pointer)(PlatformCtx *p, int *x, int *y);
 
@@ -118,73 +119,67 @@ typedef struct {
 	/* --- window attributes query --------------------------------------- */
 	/* Fetch override_redirect flag.  Returns 1 on success. */
 	int (*get_override_redirect)(
-	    PlatformCtx *p, xcb_window_t w, int *override_redirect_out);
+	    PlatformCtx *p, WinId w, int *override_redirect_out);
 	/* Fetch current event mask for a window.  Returns 1 on success. */
-	int (*get_event_mask)(
-	    PlatformCtx *p, xcb_window_t w, uint32_t *event_mask_out);
+	int (*get_event_mask)(PlatformCtx *p, WinId w, uint32_t *event_mask_out);
 
 	/* --- window geometry ----------------------------------------------- */
 	/* Fetch geometry.  Returns 1 on success. */
-	int (*get_geometry)(PlatformCtx *p, xcb_window_t w, int *x, int *y,
-	    int *ww, int *wh, int *bw);
+	int (*get_geometry)(
+	    PlatformCtx *p, WinId w, int *x, int *y, int *ww, int *wh, int *bw);
 
 	/* --- window tree --------------------------------------------------- */
 	/* Walk window parents up to root to check ancestry. */
-	int (*is_window_descendant)(
-	    PlatformCtx *p, xcb_window_t w, xcb_window_t ancestor);
+	int (*is_window_descendant)(PlatformCtx *p, WinId w, WinId ancestor);
 
 	/* --- property reads ------------------------------------------------ */
-	/* Read a single-atom property, returning XCB_ATOM_NONE on failure. */
-	xcb_atom_t (*get_atom_prop)(
-	    PlatformCtx *p, xcb_window_t w, xcb_atom_t prop, xcb_atom_t type);
+	/* Read a single-atom property, returning ATOM_NONE on failure. */
+	AtomId (*get_atom_prop)(PlatformCtx *p, WinId w, AtomId prop, AtomId type);
 	/* Read a text property into buf[size].  Returns 1 on success. */
-	int (*get_text_prop)(PlatformCtx *p, xcb_window_t w, xcb_atom_t atom,
-	    char *buf, unsigned int size);
+	int (*get_text_prop)(
+	    PlatformCtx *p, WinId w, AtomId atom, char *buf, unsigned int size);
 	/* Read _NET_WM_ICON raw pixel data.  Returns 1 on success; caller
 	 * must free(*data_out) when done. */
 	int (*get_wm_icon)(
-	    PlatformCtx *p, xcb_window_t w, uint32_t **data_out, int *nitems_out);
+	    PlatformCtx *p, WinId w, uint32_t **data_out, int *nitems_out);
 	/* Read WM_CLASS (instance + class fields).  Returns 1 on success. */
-	int (*get_wm_class)(PlatformCtx *p, xcb_window_t w, char *inst_buf,
+	int (*get_wm_class)(PlatformCtx *p, WinId w, char *inst_buf,
 	    unsigned int inst_size, char *cls_buf, unsigned int cls_size);
 
 	/* --- property writes ----------------------------------------------- */
-	void (*change_prop)(PlatformCtx *p, xcb_window_t w, xcb_atom_t prop,
-	    xcb_atom_t type, int format, uint8_t mode, int n, const void *data);
+	void (*change_prop)(PlatformCtx *p, WinId w, AtomId prop, AtomId type,
+	    int format, uint8_t mode, int n, const void *data);
 
-	void (*delete_prop)(PlatformCtx *p, xcb_window_t w, xcb_atom_t prop);
+	void (*delete_prop)(PlatformCtx *p, WinId w, AtomId prop);
 
 	/* --- kill / close -------------------------------------------------- */
-	void (*kill_client_hard)(PlatformCtx *p, xcb_window_t w);
+	void (*kill_client_hard)(PlatformCtx *p, WinId w);
 
 	/* --- save-set / reparent (systray) --------------------------------- */
-	void (*change_save_set)(PlatformCtx *p, xcb_window_t w, int insert);
+	void (*change_save_set)(PlatformCtx *p, WinId w, int insert);
 	void (*reparent_window)(
-	    PlatformCtx *p, xcb_window_t w, xcb_window_t parent, int x, int y);
+	    PlatformCtx *p, WinId w, WinId parent, int x, int y);
 
 	/* --- bar window creation ------------------------------------------- */
-	/* Creates the per-monitor bar window and returns its XID.
+	/* Creates the per-monitor bar window and returns its handle.
 	 * compositor_active selects between back_pixel and back_pixmap. */
-	xcb_window_t (*create_bar_win)(
+	WinId (*create_bar_win)(
 	    PlatformCtx *p, int x, int y, int w, int h, int compositor_active);
-	/* Screen depth helper (xcb_screen_root_depth). */
+	/* Screen depth helper. */
 	int (*screen_depth)(PlatformCtx *p);
 
 	/* --- ICCCM helpers ------------------------------------------------- */
-	int (*get_wm_normal_hints)(
-	    PlatformCtx *p, xcb_window_t w, xcb_size_hints_t *out);
+	int (*get_wm_normal_hints)(PlatformCtx *p, WinId w, AwmSizeHints *out);
 	/* Returns 1 on success, populates *out. */
-	int (*get_wm_hints)(
-	    PlatformCtx *p, xcb_window_t w, xcb_icccm_wm_hints_t *out);
-	void (*set_wm_hints)(
-	    PlatformCtx *p, xcb_window_t w, const xcb_icccm_wm_hints_t *hints);
-	/* Returns XCB_WINDOW_NONE if no transient-for is set. */
-	xcb_window_t (*get_wm_transient_for)(PlatformCtx *p, xcb_window_t w);
+	int (*get_wm_hints)(PlatformCtx *p, WinId w, AwmWmHints *out);
+	void (*set_wm_hints)(PlatformCtx *p, WinId w, const AwmWmHints *hints);
+	/* Returns WIN_NONE if no transient-for is set. */
+	WinId (*get_wm_transient_for)(PlatformCtx *p, WinId w);
 
 	/* --- compound / higher-level operations ---------------------------- */
 	/* Grab/ungrab buttons for a client window.
 	 * focused=1: per-button config grabs; focused=0: any-button grab. */
-	void (*grab_buttons)(PlatformCtx *p, xcb_window_t w, int focused);
+	void (*grab_buttons)(PlatformCtx *p, WinId w, int focused);
 
 	/* Recompute and cache g_plat.numlockmask. */
 	void (*update_numlock_mask)(PlatformCtx *p);
@@ -193,11 +188,10 @@ typedef struct {
 	void (*grab_keys_full)(PlatformCtx *p);
 
 	/* Refresh key symbol map after a MappingNotify. */
-	void (*refresh_keyboard_mapping)(
-	    PlatformCtx *p, xcb_mapping_notify_event_t *ev);
+	void (*refresh_keyboard_mapping)(PlatformCtx *p, AwmEvent *ev);
 
 	/* Look up keysym for a keycode (col=0 unshifted). */
-	xcb_keysym_t (*get_keysym)(PlatformCtx *p, xcb_keycode_t code, int col);
+	KeySym (*get_keysym)(PlatformCtx *p, WmKeycode code, int col);
 
 	/* Probe for another WM (SubstructureRedirect).  Calls die() if one
 	 * is found.  Safe to call before g_plat.root is set. */
@@ -206,36 +200,35 @@ typedef struct {
 	/* Update monitor geometry from RandR/Xinerama.  Returns 1 if dirty. */
 	int (*update_geom)(PlatformCtx *p);
 
-	/* Event loop: poll and wait variants. */
-	xcb_generic_event_t *(*poll_event)(PlatformCtx *p);
-	xcb_generic_event_t *(*next_event)(PlatformCtx *p);
+	/* Event loop: poll and wait variants.  Returns NULL when no event. */
+	AwmEvent *(*poll_event)(PlatformCtx *p);
+	AwmEvent *(*next_event)(PlatformCtx *p);
 
 	/* --- keyboard grab ------------------------------------------------- */
 	/* Grab the keyboard; owner_events=0.  Call flush() after if needed. */
-	void (*grab_keyboard)(PlatformCtx *p, xcb_window_t w, xcb_timestamp_t t);
+	void (*grab_keyboard)(PlatformCtx *p, WinId w, WmTimestamp t);
 	/* Release the keyboard grab. */
-	void (*ungrab_keyboard)(PlatformCtx *p, xcb_timestamp_t t);
+	void (*ungrab_keyboard)(PlatformCtx *p, WmTimestamp t);
 	/* Ungrab all passive key grabs on a window. */
-	void (*ungrab_key)(PlatformCtx *p, xcb_window_t w);
+	void (*ungrab_key)(PlatformCtx *p, WinId w);
 
 	/* --- root window tree ---------------------------------------------- */
 	/* Query immediate children of root.  Fills *wins_out (caller must
 	 * free(*wins_out)) and *n_out.  Returns 1 on success. */
-	int (*query_root_tree)(
-	    PlatformCtx *p, xcb_window_t **wins_out, int *n_out);
+	int (*query_root_tree)(PlatformCtx *p, WinId **wins_out, int *n_out);
 
 	/* --- window attributes batch --------------------------------------- */
 	/* Fetch override_redirect and map_state for w in one round-trip.
 	 * Returns 1 on success. */
-	int (*get_window_attributes)(PlatformCtx *p, xcb_window_t w,
+	int (*get_window_attributes)(PlatformCtx *p, WinId w,
 	    int *override_redirect_out, int *map_state_out);
 
 	/* --- raw property read --------------------------------------------- */
-	/* Generic xcb_get_property wrapper.  Returns a heap-allocated reply
+	/* Generic get_property wrapper.  Returns a heap-allocated reply
 	 * that the caller must free(), or NULL on failure.  value_len and
 	 * value pointer are accessed via the returned reply. */
-	xcb_get_property_reply_t *(*get_prop_raw)(PlatformCtx *p, xcb_window_t w,
-	    xcb_atom_t prop, xcb_atom_t type, uint32_t long_length);
+	xcb_get_property_reply_t *(*get_prop_raw)(PlatformCtx *p, WinId w,
+	    AtomId prop, AtomId type, uint32_t long_length);
 
 	/* --- connection introspection -------------------------------------- */
 	/* Return the file descriptor of the X connection (for fork pre-exec
@@ -248,25 +241,25 @@ typedef struct {
 	void (*sync)(PlatformCtx *p);
 
 	/* --- pixmap / colormap teardown ------------------------------------ */
-	void (*free_pixmap)(PlatformCtx *p, xcb_pixmap_t pm);
-	void (*free_colormap)(PlatformCtx *p, xcb_colormap_t cm);
+	void (*free_pixmap)(PlatformCtx *p, WmPixmap pm);
+	void (*free_colormap)(PlatformCtx *p, WmColormap cm);
 
 	/* --- atom interning ------------------------------------------------ */
 	/* Batch-intern N atoms in a single async round-trip.  names[] and
 	 * atoms_out[] are parallel arrays of length n. */
 	void (*intern_atoms_batch)(
-	    PlatformCtx *p, const char **names, xcb_atom_t *atoms_out, int n);
+	    PlatformCtx *p, const char **names, AtomId *atoms_out, int n);
 
 	/* --- generic window creation --------------------------------------- */
-	/* Create an input-output window; returns its XID. */
-	xcb_window_t (*create_window)(PlatformCtx *p, xcb_window_t parent, int x,
-	    int y, int w, int h, uint32_t val_mask, const uint32_t *vals);
+	/* Create an input-output window; returns its handle. */
+	WinId (*create_window)(PlatformCtx *p, WinId parent, int x, int y, int w,
+	    int h, uint32_t val_mask, const uint32_t *vals);
 
 	/* --- root event mask / cursor selection ---------------------------- */
 	/* Set the event mask on the root window. */
 	void (*select_root_events)(PlatformCtx *p, uint32_t mask);
 	/* Set the cursor on the root window. */
-	void (*set_root_cursor)(PlatformCtx *p, xcb_cursor_t cursor);
+	void (*set_root_cursor)(PlatformCtx *p, WmCursor cursor);
 
 	/* --- RandR setup --------------------------------------------------- */
 #ifdef XRANDR
@@ -279,14 +272,14 @@ typedef struct {
 #endif
 
 	/* --- screen setup -------------------------------------------------- */
-	/* Populate sw, sh, root from the xcb_setup for the configured screen
+	/* Populate sw, sh, root from the setup for the configured screen
 	 * number.  Called once at the start of setup(). */
 	void (*init_screen)(PlatformCtx *p);
 
 	/* --- key symbol table lifecycle ------------------------------------ */
-	/* Allocate the key symbols table (xcb_key_symbols_alloc). */
+	/* Allocate the key symbols table. */
 	void (*keysyms_alloc)(PlatformCtx *p);
-	/* Free the key symbols table (xcb_key_symbols_free). */
+	/* Free the key symbols table. */
 	void (*keysyms_free)(PlatformCtx *p);
 
 	/* --- resource manager ---------------------------------------------- */
