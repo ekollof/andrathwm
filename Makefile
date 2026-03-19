@@ -8,15 +8,22 @@ include config.mk
 SRCDIR = src
 BUILDDIR = build
 
-# Drawing backend: render_cairo_xcb.c implements the RenderBackend vtable.
-# The legacy drw.c / drw_cairo.c backends have been removed.
-RENDER_SRC = render_cairo_xcb.c
+# Backend-specific sources (only compiled for the matching BACKEND).
+ifeq ($(BACKEND),X11)
+RENDER_SRC    = render_cairo_xcb.c
+PLATFORM_SRC  = platform_x11.c platform_x11_source.c
+PLATFORM_SPECIFIC = ewmh.c systray.c wm_properties_x11.c \
+	compositor.c compositor_egl.c compositor_xrender.c
+else
+RENDER_SRC    = render_stub.c
+PLATFORM_SRC  = platform_wayland_stub.c platform_source_stub.c
+PLATFORM_SPECIFIC =
+endif
 
-SRC = $(RENDER_SRC) platform_x11.c awm.c util.c menu.c dbus.c icon.c sni.c log.c \
-	client.c monitor.c events.c ewmh.c systray.c spawn.c xrdb.c \
-	status.c status_util.c status_components.c platform_x11_source.c \
-	compositor.c compositor_egl.c compositor_xrender.c switcher.c \
-	wmstate.c wm_properties_x11.c wm_properties_stub.c
+SRC = $(RENDER_SRC) $(PLATFORM_SRC) awm.c util.c menu.c dbus.c icon.c sni.c log.c \
+	client.c monitor.c events.c $(PLATFORM_SPECIFIC) spawn.c xrdb.c \
+	status.c status_util.c status_components.c switcher.c \
+	wmstate.c wm_properties_stub.c
 SRCS = $(addprefix $(SRCDIR)/,$(SRC))
 OBJ = $(addprefix $(BUILDDIR)/,$(SRC:.c=.o))
 

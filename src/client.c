@@ -551,7 +551,7 @@ hide(Client *c)
 		mask = win_em & ~(uint32_t) XCB_EVENT_MASK_STRUCTURE_NOTIFY;
 		g_wm_backend->change_attr(&g_plat, w, XCB_CW_EVENT_MASK, &mask);
 		g_wm_backend->unmap(&g_plat, w);
-		setclientstate(c, XCB_ICCCM_WM_STATE_ICONIC);
+		setclientstate(c, AWM_WM_STATE_ICONIC);
 		mask = root_em;
 		g_wm_backend->change_attr(
 		    &g_plat, g_plat.root, XCB_CW_EVENT_MASK, &mask);
@@ -585,7 +585,7 @@ show(Client *c)
 		return;
 
 	g_wm_backend->map(&g_plat, c->win);
-	setclientstate(c, XCB_ICCCM_WM_STATE_NORMAL);
+	setclientstate(c, AWM_WM_STATE_NORMAL);
 	c->ishidden = 0;
 	focus(c);
 	arrange(c->mon);
@@ -744,7 +744,7 @@ manage(xcb_window_t w, int x, int y, int ww, int wh, int bw)
 		        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
 		    vals);
 	}
-	setclientstate(c, XCB_ICCCM_WM_STATE_NORMAL);
+	setclientstate(c, AWM_WM_STATE_NORMAL);
 	if (c->mon == g_awm_selmon)
 		unfocus(g_awm_selmon->sel, 0);
 	/* Don't make a hidden scratchpad the selected client */
@@ -1195,8 +1195,11 @@ showhide(Client *c)
 			 * are hidden on that monitor.  Unhiding every visible
 			 * window here would only trigger a wasted show→hide
 			 * repaint cycle for the non-top windows. */
-			if (c->mon->lt[c->mon->sellt]->arrange != monocle)
+			if (c->mon->lt[c->mon->sellt]->arrange != monocle) {
+#ifdef COMPOSITOR
 				compositor_set_hidden(c, 0);
+#endif
+			}
 			{
 				uint32_t vals[2] = { (uint32_t) c->x, (uint32_t) c->y };
 				g_wm_backend->configure_win(&g_plat, c->win,
@@ -1215,7 +1218,10 @@ showhide(Client *c)
 	 * the original recursive implementation. */
 	for (i = nhidden - 1; i >= 0; i--) {
 		c = hidden[i];
+
+#ifdef COMPOSITOR
 		compositor_set_hidden(c, 1);
+#endif
 		{
 			uint32_t vals[2] = { (uint32_t) (int32_t) (WIDTH(c) * -2),
 				(uint32_t) c->y };
@@ -1433,7 +1439,10 @@ toggleview(const Arg *arg)
 
 			attachclients(m);
 			arrange(m);
+
+#ifdef COMPOSITOR
 			compositor_check_unredirect();
+#endif
 
 			attachclients(g_awm_selmon);
 			arrange(g_awm_selmon);
@@ -1522,7 +1531,7 @@ unmanage(Client *c, int destroyed)
 			    &g_plat, c->win, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
 		}
 		g_wm_backend->ungrab_button(&g_plat, c->win);
-		setclientstate(c, XCB_ICCCM_WM_STATE_WITHDRAWN);
+		setclientstate(c, AWM_WM_STATE_WITHDRAWN);
 		g_wm_backend->ungrab_server(&g_plat);
 		g_wm_backend->flush(&g_plat);
 	}
@@ -1627,7 +1636,7 @@ updatewmhints(Client *c)
 			g_wm_backend->set_wm_hints(&g_plat, c->win, &wmh);
 		} else
 			c->isurgent = (wmh.flags & AWM_WM_HINT_URGENCY) ? 1 : 0;
-		if (wmh.flags & XCB_ICCCM_WM_HINT_INPUT)
+		if (wmh.flags & AWM_WM_HINT_INPUT)
 			c->neverfocus = !wmh.input;
 		else
 			c->neverfocus = 0;
@@ -1736,7 +1745,10 @@ view(const Arg *arg)
 
 		attachclients(m);
 		arrange(m);
+
+#ifdef COMPOSITOR
 		compositor_check_unredirect();
+#endif
 
 		attachclients(g_awm_selmon);
 		arrange(g_awm_selmon);

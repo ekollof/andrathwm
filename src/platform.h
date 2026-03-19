@@ -24,40 +24,45 @@
 #include "wm_types.h"
 
 #ifdef BACKEND_X11
-
 #include <xcb/xcb.h>
 #include <xcb/xcb_icccm.h>
 #include <xcb/xcb_keysyms.h>
 #ifdef XRANDR
 #include <xcb/randr.h>
 #endif
+#endif /* BACKEND_X11 */
 
 /* -------------------------------------------------------------------------
- * PlatformCtx — X11 connection state singleton
+ * PlatformCtx — platform connection state singleton.
+ * Common fields are always present.  X11-specific fields are guarded.
  * ---------------------------------------------------------------------- */
 typedef struct {
+	/* --- common fields (all backends) ---------------------------------- */
+	int          sw, sh; /* screen geometry in pixels */
+	int          bh;     /* bar height */
+	int          lrpad;  /* left+right text padding */
+	WinId        root;
+	WinId        wmcheckwin;
+	AtomId       wmatom[WMLast];
+	AtomId       netatom[NetLast];
+	AtomId       xatom[XLast];
+	AtomId       utf8string_atom;
+	unsigned int numlockmask;
+	double       ui_dpi;      /* resolved screen DPI (96.0 default) */
+	double       ui_scale;    /* ui_dpi / 96.0 */
+	unsigned int ui_borderpx; /* borderpx * ui_scale */
+	unsigned int ui_snap;     /* snap     * ui_scale */
+	unsigned int ui_iconsize; /* iconsize * ui_scale */
+	unsigned int ui_gappx;    /* gappx[0] * ui_scale */
+#ifdef BACKEND_X11
+	/* --- X11-specific fields ------------------------------------------ */
 	xcb_connection_t  *xc;
-	xcb_window_t       root;
-	xcb_window_t       wmcheckwin;
 	int                screen;
-	int                sw, sh; /* screen geometry in pixels */
-	int                bh;     /* bar height */
-	int                lrpad;  /* left+right text padding */
-	xcb_atom_t         wmatom[WMLast];
-	xcb_atom_t         netatom[NetLast];
-	xcb_atom_t         xatom[XLast];
-	xcb_atom_t         utf8string_atom;
 	xcb_key_symbols_t *keysyms;
-	unsigned int       numlockmask;
-	double             ui_dpi;      /* resolved screen DPI (96.0 default) */
-	double             ui_scale;    /* ui_dpi / 96.0 */
-	unsigned int       ui_borderpx; /* borderpx * ui_scale */
-	unsigned int       ui_snap;     /* snap     * ui_scale */
-	unsigned int       ui_iconsize; /* iconsize * ui_scale */
-	unsigned int       ui_gappx;    /* gappx[0] * ui_scale */
 #ifdef XRANDR
 	int randrbase, rrerrbase;
 #endif
+#endif /* BACKEND_X11 */
 } PlatformCtx;
 
 extern PlatformCtx g_plat;
@@ -227,8 +232,10 @@ typedef struct {
 	/* Generic get_property wrapper.  Returns a heap-allocated reply
 	 * that the caller must free(), or NULL on failure.  value_len and
 	 * value pointer are accessed via the returned reply. */
+#ifdef BACKEND_X11
 	xcb_get_property_reply_t *(*get_prop_raw)(PlatformCtx *p, WinId w,
 	    AtomId prop, AtomId type, uint32_t long_length);
+#endif
 
 	/* --- connection introspection -------------------------------------- */
 	/* Return the file descriptor of the X connection (for fork pre-exec
@@ -290,12 +297,12 @@ typedef struct {
 } WmBackend;
 
 extern WmBackend *g_wm_backend;
-extern WmBackend  wm_backend_x11;
+#ifdef BACKEND_X11
+extern WmBackend wm_backend_x11;
 
 /* XCB async error handler — defined in platform_x11.c, called from
  * x_dispatch_cb() in awm.c when response_type == 0. */
 int xcb_error_handler(xcb_generic_error_t *e);
-
 #endif /* BACKEND_X11 */
 
 #endif /* PLATFORM_H */

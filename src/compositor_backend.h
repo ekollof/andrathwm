@@ -214,10 +214,15 @@ extern CompShared comp;
 static inline void
 comp_dirty_clear(void)
 {
+#ifdef BACKEND_X11
 	xcb_xfixes_set_region(g_plat.xc, comp.dirty, 0, NULL);
 	comp.dirty_bbox_valid = 0;
 	comp.dirty_x1 = comp.dirty_y1 = 0;
 	comp.dirty_x2 = comp.dirty_y2 = 0;
+#else
+	/* Non-X11 backends do not build the compositor. */
+	return;
+#endif
 }
 
 #endif /* COMPOSITOR */

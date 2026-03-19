@@ -115,8 +115,9 @@ spawn(const Arg *arg)
 	if (arg->v == dmenucmd)
 		dmenumon[0] = '0' + g_awm_selmon->num;
 	if (fork() == 0) {
-		if (g_plat.xc)
-			close(g_wm_backend->get_connection_fd(&g_plat));
+#ifdef BACKEND_X11
+		close(g_wm_backend->get_connection_fd(&g_plat));
+#endif
 		setsid();
 
 		sigemptyset(&sa.sa_mask);
@@ -136,8 +137,9 @@ spawnscratch(const Arg *arg)
 	assert(arg->v != NULL);
 	assert(((char **) arg->v)[1] != NULL);
 	if (fork() == 0) {
-		if (g_plat.xc)
-			close(g_wm_backend->get_connection_fd(&g_plat));
+#ifdef BACKEND_X11
+		close(g_wm_backend->get_connection_fd(&g_plat));
+#endif
 		setsid();
 		execvp(((char **) arg->v)[1], ((char **) arg->v) + 1);
 		awm_error(

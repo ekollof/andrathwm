@@ -375,7 +375,9 @@ monocle(Monitor *m)
 		 * window was previously shown in monocle and then hidden via
 		 * XMoveWindow (which moves the window off-screen without updating
 		 * c->x).  The window would stay off-screen. */
+#ifdef COMPOSITOR
 		compositor_set_hidden(c, 0);
+#endif
 		if (m->pertag.drawwithgaps[m->pertag.curtag]) {
 			unsigned int gp = m->pertag.gappx[m->pertag.curtag];
 			resizeclient(c, m->wx + gp, m->wy + gp, m->ww - 2 * gp - 2 * c->bw,
@@ -387,7 +389,10 @@ monocle(Monitor *m)
 	}
 	for (; c; c = c->snext)
 		if (!c->isfloating && ISVISIBLE(c, m)) {
+
+#ifdef COMPOSITOR
 			compositor_set_hidden(c, 1);
+#endif
 			uint32_t xy[2] = { (uint32_t) (int32_t) (WIDTH(c) * -2),
 				(uint32_t) (int32_t) c->y };
 			g_wm_backend->configure_win(&g_plat, c->win,
@@ -413,10 +418,11 @@ void
 resizebarwin(Monitor *m)
 {
 	unsigned int w = m->ww;
-	if (showsystray && m == systraytomon(m) && !systrayonleft)
+	if (showsystray && m == systraytomon(m) && !systrayonleft) {
 #ifdef BACKEND_X11
 		w -= getsystraywidth();
 #endif
+	}
 	uint32_t xywh[4] = { (uint32_t) (int32_t) m->wx,
 		(uint32_t) (int32_t) m->by, w, (uint32_t) g_plat.bh };
 	g_wm_backend->configure_win(&g_plat, m->barwin,

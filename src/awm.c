@@ -36,11 +36,13 @@
 #ifndef SYS_memfd_create
 #include <asm/unistd.h>
 #endif
+#ifdef COMPOSITOR
 static int
 awm_memfd_create(const char *name, unsigned int flags)
 {
 	return (int) syscall(SYS_memfd_create, name, flags);
 }
+#endif
 #endif
 
 #include <glib-unix.h>
@@ -139,7 +141,9 @@ cleanup(void)
 	g_awm_selmon->lt[g_awm_selmon->sellt] = &foo;
 	while (g_awm.stack_head)
 		unmanage(g_awm.stack_head, 0);
+#ifdef BACKEND_X11
 	g_wm_backend->ungrab_key(&g_plat, g_plat.root);
+#endif
 	assert(g_awm.n_monitors >= 0);
 	while (g_awm.n_monitors)
 		cleanupmon(&g_awm.monitors[0]);
@@ -180,14 +184,18 @@ cleanup(void)
 	for (i = 0; i < LENGTH(colors); i++)
 		free(scheme[i]);
 	free(scheme);
+#ifdef BACKEND_X11
 	g_wm_backend->destroy_win(&g_plat, g_plat.wmcheckwin);
+#endif
 	g_render_backend->free(drw);
 	g_wm_backend->keysyms_free(&g_plat);
 	g_wm_backend->flush(&g_plat);
 	g_wm_backend->set_input_focus(
 	    &g_plat, AWM_INPUT_FOCUS_POINTER_ROOT, WM_CURRENT_TIME);
+#ifdef BACKEND_X11
 	g_wm_backend->delete_prop(
 	    &g_plat, g_plat.root, g_plat.netatom[NetActiveWindow]);
+#endif
 	if (xsource_id > 0) {
 		g_source_remove(xsource_id);
 		xsource_id = 0;
@@ -321,6 +329,7 @@ ui_send_theme(void)
  * could collide if the process is restarted under the same PID.  If
  * memfd_create is not available at runtime we fall back to a shm_open name
  * that includes both the PID and a call-site sequence counter. */
+#ifdef COMPOSITOR
 static int
 ui_send_shm(UiMsgType type, const void *base, size_t shm_size)
 {
@@ -403,6 +412,7 @@ out:
 		close(shm_fd);
 	return ret;
 }
+#endif /* COMPOSITOR */
 
 /* Build and send a UI_MSG_PREVIEW_SHOW message for bar hover on Monitor m.
  * Acquires fresh snapshot pixmaps from the compositor and transmits them
@@ -557,6 +567,7 @@ launchermenu(const Arg *arg)
 	 * after the window is mapped and positioned, and we set focus then. */
 }
 
+#ifdef BACKEND_X11
 /* ---------------------------------------------------------------------------
  * X event dispatch callback — called by the XSource on each loop iteration
  * where X events are available.
@@ -582,14 +593,13 @@ x_dispatch_cb(gpointer user_data)
 
 	if (barsdirty) {
 		drawbars();
-#ifdef BACKEND_X11
 		updatesystray();
-#endif
 		barsdirty = 0;
 	}
 
 	return G_SOURCE_CONTINUE;
 }
+#endif /* BACKEND_X11 */
 
 #ifdef STATUSNOTIFIER
 /* Forward declaration — dbus_dispatch_cb is defined after
@@ -752,10 +762,10 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 		} else if (epid == 0) {
 			struct sigaction sa;
 
-			if (g_plat.xc)
-				close(g_wm_backend->get_connection_fd(&g_plat));
+#ifdef BACKEND_X11
+			close(g_wm_backend->get_connection_fd(&g_plat));
+#endif
 			setsid();
-
 			/* setup() installs SIGCHLD=SIG_IGN|SA_NOCLDWAIT in awm so the WM
 			 * never accumulates zombies.  A forked launcher child must restore
 			 * default SIGCHLD semantics before exec'ing /bin/sh; some shells
@@ -943,8 +953,9 @@ ui_spawn(GMainContext *ctx)
 
 		/* Close the XCB connection fd so awm's X connection doesn't
 		 * leak into awm-ui.  awm-ui uses GDK's own X connection. */
-		if (g_plat.xc)
-			close(g_wm_backend->get_connection_fd(&g_plat));
+#ifdef BACKEND_X11
+		close(g_wm_backend->get_connection_fd(&g_plat));
+#endif
 
 		/* Force GDK to use the X11 backend.  If awm is running inside
 		 * a Wayland session WAYLAND_DISPLAY is set in the environment
@@ -1017,7 +1028,9 @@ run(void)
 	ui_ctx = ctx; /* store for respawn timer callback */
 
 	/* X11 source — wakes the loop whenever X events are pending */
+#ifdef BACKEND_X11
 	xsource_id = platform_source_attach(g_plat.xc, ctx, x_dispatch_cb, NULL);
+#endif
 
 #ifdef STATUSNOTIFIER
 	/* D-Bus source — use helper so reconnect can re-attach cleanly */
@@ -1060,12 +1073,17 @@ scan(void)
 		    getstate(wins[i]) == AWM_WM_STATE_ICONIC) {
 			/* Skip XEMBED clients (systray icons reparented back to
 			 * root when the systray container was destroyed on restart) */
-			xcb_get_property_reply_t *xer = g_wm_backend->get_prop_raw(&g_plat,
-			    wins[i], (AtomId) g_plat.xatom[XembedInfo], AWM_ATOM_ANY, 2);
-			int                       is_xembed = xer && xer->length > 0;
-			free(xer);
-			if (is_xembed)
-				continue;
+#ifdef BACKEND_X11
+			{
+				xcb_get_property_reply_t *xer =
+				    g_wm_backend->get_prop_raw(&g_plat, wins[i],
+				        (AtomId) g_plat.xatom[XembedInfo], AWM_ATOM_ANY, 2);
+				int is_xembed = xer && xer->length > 0;
+				free(xer);
+				if (is_xembed)
+					continue;
+			}
+#endif
 			int x, y, ww, wh, bw;
 			if (g_wm_backend->get_geometry(
 			        &g_plat, wins[i], &x, &y, &ww, &wh, &bw))
@@ -1085,12 +1103,17 @@ scan(void)
 		    (map_state == AWM_MAP_STATE_VIEWABLE ||
 		        getstate(wins[i]) == AWM_WM_STATE_ICONIC)) {
 			/* Skip XEMBED clients here too */
-			xcb_get_property_reply_t *xer = g_wm_backend->get_prop_raw(&g_plat,
-			    wins[i], (AtomId) g_plat.xatom[XembedInfo], AWM_ATOM_ANY, 2);
-			int                       is_xembed = xer && xer->length > 0;
-			free(xer);
-			if (is_xembed)
-				continue;
+#ifdef BACKEND_X11
+			{
+				xcb_get_property_reply_t *xer =
+				    g_wm_backend->get_prop_raw(&g_plat, wins[i],
+				        (AtomId) g_plat.xatom[XembedInfo], AWM_ATOM_ANY, 2);
+				int is_xembed = xer && xer->length > 0;
+				free(xer);
+				if (is_xembed)
+					continue;
+			}
+#endif
 			int x, y, ww, wh, bw;
 			if (g_wm_backend->get_geometry(
 			        &g_plat, wins[i], &x, &y, &ww, &wh, &bw))
@@ -1109,6 +1132,7 @@ scan(void)
 static void
 intern_atoms(void)
 {
+#ifdef BACKEND_X11
 	/* Each entry maps one atom name to the Atom* that should receive it. */
 	static const struct {
 		AtomId     *dest;
@@ -1187,6 +1211,7 @@ intern_atoms(void)
 		free(names);
 		free(atoms);
 	}
+#endif /* BACKEND_X11 */
 }
 
 void
@@ -1195,7 +1220,9 @@ setup(void)
 	int              i;
 	struct sigaction sa;
 
+#ifdef BACKEND_X11
 	g_wm_backend = &wm_backend_x11;
+#endif
 
 	/* do not transform children into zombies when they terminate */
 	sigemptyset(&sa.sa_mask);
@@ -1211,6 +1238,7 @@ setup(void)
 	g_wm_backend->init_screen(&g_plat);
 	/* clients_head and stack_head are inline zero-initialised in g_awm */
 	/* Initialise the render backend before creating the draw surface. */
+#ifdef BACKEND_X11
 	g_render_backend = &render_backend_cairo_xcb;
 	/* drw uses a dedicated bare xcb_connection_t (opened inside render_create)
 	 * for all cairo rendering, keeping its XCB traffic off xc. */
@@ -1219,6 +1247,12 @@ setup(void)
 	assert(drw != NULL);
 	if (!g_render_backend->fontset_create(drw, fonts, LENGTH(fonts)))
 		die("no fonts could be loaded.");
+#else
+	g_render_backend = &render_backend_stub;
+	drw              = g_render_backend->create(NULL, 0, WIN_NONE, 0, 0);
+	if (!g_render_backend->fontset_create(drw, fonts, LENGTH(fonts)))
+		die("no fonts could be loaded.");
+#endif
 	g_plat.lrpad = (int) render_surface_font_height(drw);
 	g_plat.bh    = (int) render_surface_font_height(drw) + 2;
 	/* Scale pixel geometry constants by the resolved DPI factor */
@@ -1257,6 +1291,7 @@ setup(void)
 	updatebars();
 	updatestatus();
 	/* supporting window for NetWMCheck */
+#ifdef BACKEND_X11
 	{
 		g_plat.wmcheckwin = g_wm_backend->create_window(
 		    &g_plat, g_plat.root, 0, 0, 1, 1, 0, NULL);
@@ -1289,6 +1324,7 @@ setup(void)
 		g_wm_backend->delete_prop(
 		    &g_plat, g_plat.root, g_plat.netatom[NetClientList]);
 	}
+#endif /* BACKEND_X11 */
 	wmprop_setup();
 	/* Update workarea for all monitors */
 	{
@@ -1313,10 +1349,12 @@ setup(void)
 	icon_init();
 #ifdef STATUSNOTIFIER
 	/* Initialize StatusNotifier support */
+#ifdef BACKEND_X11
 	if (!sni_init(g_plat.xc, g_plat.xc, render_surface_xcb_visual(drw),
 	        g_plat.root, drw, scheme,
 	        (unsigned int) (sniconsize * g_plat.ui_scale + 0.5)))
 		awm_warn("Failed to initialize StatusNotifier support");
+#endif /* BACKEND_X11 */
 #endif
 #ifdef COMPOSITOR
 	if (compositor_init(g_main_context_default()) < 0)
@@ -1385,9 +1423,11 @@ main(int argc, char *argv[])
 		die("usage: awm [-v] [-s]");
 	if (!setlocale(LC_CTYPE, ""))
 		awm_warn("no locale support");
+#ifdef BACKEND_X11
 	g_plat.xc = xcb_connect(NULL, &g_plat.screen);
 	if (!g_plat.xc || xcb_connection_has_error(g_plat.xc))
 		die("awm: cannot open X display");
+#endif
 	/* Initialise GTK on the same X display.  GTK uses the DISPLAY env var
 	 * which must already be set (awm opens xc successfully just above).
 	 * We force GDK_BACKEND=x11 so GTK doesn't pick Wayland when run inside
@@ -1396,8 +1436,10 @@ main(int argc, char *argv[])
 	 * from the very first gtk_init() call. */
 	unsetenv("WAYLAND_DISPLAY");
 	setenv("GDK_BACKEND", "x11", 1);
+#ifdef BACKEND_X11
 	g_wm_backend = &wm_backend_x11;
 	g_wm_backend->init_screen(&g_plat);
+#endif
 	loadxrdb();
 	resolve_dpi();
 	{
@@ -1453,6 +1495,8 @@ main(int argc, char *argv[])
 	}
 	cleanup();
 	log_cleanup();
+#ifdef BACKEND_X11
 	xcb_disconnect(g_plat.xc);
+#endif
 	return EXIT_SUCCESS;
 }

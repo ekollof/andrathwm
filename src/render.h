@@ -87,6 +87,7 @@ extern RenderBackend *g_render_backend;
 
 /* The single concrete render backend for X11+Cairo. */
 extern RenderBackend render_backend_cairo_xcb;
+extern RenderBackend render_backend_stub;
 
 /* Accessors for opaque AwmSurface fields needed by callers that cannot
  * include the concrete struct definition (render_cairo_xcb.c only). */

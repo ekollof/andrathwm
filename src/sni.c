@@ -29,12 +29,22 @@
 /* globals from awm.c needed here */
 #include "awm.h"
 static inline uint8_t
-xcb_screen_root_depth_sni(xcb_connection_t *conn, int scr_num)
+xcb_screen_root_depth_sni(xcb_connection_t *conn, xcb_window_t root)
 {
 	xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(conn));
-	for (int i = 0; i < scr_num; i++)
+
+	while (it.rem) {
+		if (it.data->root == root)
+			return it.data->root_depth;
 		xcb_screen_next(&it);
-	return it.data->root_depth;
+	}
+
+	/* Fallback: first screen depth if root lookup failed. */
+	it = xcb_setup_roots_iterator(xcb_get_setup(conn));
+	if (it.data)
+		return it.data->root_depth;
+
+	return 0;
 }
 
 /* Forward declaration for awm integration */
@@ -1138,8 +1148,7 @@ sni_render_item(SNIItem *item)
 
 	{
 		xcb_pixmap_t xcb_pm = xcb_generate_id(sni_cairo_xcb);
-		uint8_t      depth =
-		    (uint8_t) xcb_screen_root_depth_sni(sni_xc, g_plat.screen);
+		uint8_t depth = (uint8_t) xcb_screen_root_depth_sni(sni_xc, sni_root);
 		xcb_create_pixmap(sni_cairo_xcb, depth, xcb_pm,
 		    (xcb_drawable_t) item->win, (uint16_t) sni_iconsize,
 		    (uint16_t) sni_iconsize);
@@ -1220,7 +1229,7 @@ sni_icon_render(SNIItem *item, cairo_surface_t *surface)
 	if (!item || !item->win || !surface || !sni_cairo_xcb || !sni_xcb_visual)
 		return;
 
-	depth = (uint8_t) xcb_screen_root_depth_sni(sni_xc, g_plat.screen);
+	depth = (uint8_t) xcb_screen_root_depth_sni(sni_xc, sni_root);
 
 	pixmap = xcb_generate_id(sni_cairo_xcb);
 	xcb_create_pixmap(sni_cairo_xcb, depth, pixmap, (xcb_drawable_t) item->win,
@@ -1987,4 +1996,6 @@ sni_show_menu(SNIItem *item, int x, int y, xcb_timestamp_t event_time)
 	/* pending is unref'd inside sni_get_layout_notify when reply arrives */
 }
 
+#else
+int sni_stub_translation_unit;
 #endif /* STATUSNOTIFIER */
