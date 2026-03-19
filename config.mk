@@ -43,11 +43,12 @@ MANPREFIX = ${PREFIX}/man
 INCS = -I. -Isrc -Ithird_party ${PANGOINC} ${SNIINC} ${XCBINC}
 LIBS = ${XINERAMALIBS} ${RANDRLIBS} ${XSSLIBS} ${PANGOLIBS} ${SNILIBS} ${COMPOSITORLIBS} ${XCBLIBS}
 
-# Backend selection: X11 is the only supported backend for now.
+# Backend selection: X11 is the only fully-implemented backend.
+# Set BACKEND=wayland on the command line to compile a wayland stub build.
 BACKEND ?= X11
 
 # flags
-CPPFLAGS = -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_XOPEN_SOURCE=700L -DVERSION=\"${VERSION}\" -DBACKEND_X11 ${XINERAMAFLAGS} ${RANDRFLAGS} ${XSSFLAGS} ${SNIFLAGS} ${COMPOSITORFLAGS}
+CPPFLAGS = -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_XOPEN_SOURCE=700L -DVERSION=\"${VERSION}\" -DBACKEND_${BACKEND} ${XINERAMAFLAGS} ${RANDRFLAGS} ${XSSFLAGS} ${SNIFLAGS} ${COMPOSITORFLAGS}
 # FreeBSD: Ensure BSD extensions (CMSG_*, etc.) remain visible with _XOPEN_SOURCE
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),FreeBSD)

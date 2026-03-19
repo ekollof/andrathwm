@@ -635,11 +635,11 @@ switcher_show_internal(int all_monitors, int start_prev)
 	{
 		GdkWindow *gwin = gtk_widget_get_window(sw_win);
 		if (gwin) {
-			xcb_window_t xwin = (xcb_window_t) gdk_x11_window_get_xid(gwin);
+			WinId xwin = (WinId) gdk_x11_window_get_xid(gwin);
 			if (xwin) {
-				uint32_t stack_above = XCB_STACK_MODE_ABOVE;
+				uint32_t stack_above = AWM_STACK_MODE_ABOVE;
 				g_wm_backend->configure_win(
-				    &g_plat, xwin, XCB_CONFIG_WINDOW_STACK_MODE, &stack_above);
+				    &g_plat, xwin, AWM_CONFIG_WIN_STACK_MODE, &stack_above);
 				g_wm_backend->flush(&g_plat);
 			}
 		}

@@ -3,8 +3,7 @@
  * Reusable menu system for awm — GTK backend
  *
  * Provides GTK-based popup menus with keyboard and mouse support.
- * All XCB dependencies have been removed; xcb_timestamp_t is typedef'd as
- * uint32_t in menu.h for the event_time parameter used by menu_show().
+ * event_time uses WmTimestamp (uint32_t) from wm_types.h.
  */
 
 #include <errno.h>
@@ -185,7 +184,7 @@ menu_set_items(Menu *menu, MenuItem *items)
 
 void
 menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
-    xcb_timestamp_t event_time)
+    WmTimestamp event_time)
 {
 	if (!menu || !menu->items)
 		return;

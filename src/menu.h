@@ -10,13 +10,7 @@
 #include <gtk/gtk.h>
 #include <stdint.h>
 
-/* xcb_timestamp_t is just uint32_t; define a compat alias so menu_show's
- * event_time parameter keeps a meaningful type without pulling in xcb headers
- * in awm-ui (which has no XCB connection).  If xcb/xcb.h is already included
- * (e.g. in sni.c) this typedef is skipped to avoid a redefinition warning. */
-#ifndef __XCB_H__
-typedef uint32_t xcb_timestamp_t;
-#endif
+#include "wm_types.h"
 
 /* Toggle types for DBusMenu checkbox/radio items */
 typedef enum {
@@ -67,7 +61,7 @@ Menu *menu_create(void);
 void  menu_free(Menu *menu);
 void  menu_set_items(Menu *menu, MenuItem *items);
 void  menu_show(Menu *menu, int x, int y, MenuCallback callback, void *data,
-     xcb_timestamp_t event_time);
+     WmTimestamp event_time);
 void  menu_hide(Menu *menu);
 
 /* Menu item helpers */
