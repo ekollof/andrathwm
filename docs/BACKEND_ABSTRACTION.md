@@ -571,9 +571,9 @@ Before opening a pull request from `feature/backend-abstraction` to `master`:
 - [x] No `drw_*` outside `render_cairo_xcb.c` (grep clean)
 - [x] No `#include "xsource.h"` anywhere
 - [x] `systray.c` and `ewmh.c` wrapped in `#ifdef BACKEND_X11`
-- [ ] `config.h` is last `#include` in every `.c` that uses it
+- [x] `config.h` is last `#include` in every `.c` that uses it
 - [x] Inline XRender path removed from `switcher.c`; `thumb_pict` and
       `thumb_pixmap` fields removed from `SwitcherEntry`
 - [x] All `awm_*` logging macros used — no bare `printf`/`fprintf`
-- [ ] `AGENTS.md` constraints checklist satisfied in full
-- [ ] Tested in Xephyr: `Xephyr :1 -screen 1280x720 && DISPLAY=:1 ./awm -s`
+- [x] `AGENTS.md` constraints checklist satisfied in full
+- [x] Tested in Xephyr: `Xephyr :1 -screen 1280x720 && DISPLAY=:1 ./awm -s`
