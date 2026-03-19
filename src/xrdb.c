@@ -4,9 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <xcb/xcb.h>
-#include <xcb/xproto.h>
-
 #include "xrdb.h"
 #include "awm.h"
 #include "client.h"
@@ -160,66 +157,10 @@ xrdb_lookup(const char *resm, const char *key, char *dest)
 void
 loadxrdb(void)
 {
-	xcb_connection_t         *xc;
-	xcb_screen_t             *scr;
-	xcb_intern_atom_cookie_t  ack;
-	xcb_intern_atom_reply_t  *ar;
-	xcb_atom_t                res_mgr;
-	xcb_get_property_cookie_t pck;
-	xcb_get_property_reply_t *pr;
-	char                     *resm;
-	int                       scrnum = 0;
+	char *resm = g_wm_backend->get_resource_manager(&g_plat);
 
-	xc = xcb_connect(NULL, &scrnum);
-	if (xcb_connection_has_error(xc)) {
-		xcb_disconnect(xc);
+	if (!resm)
 		return;
-	}
-
-	/* Get root window for the default screen */
-	{
-		xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(xc));
-		for (int i = 0; i < scrnum; i++)
-			xcb_screen_next(&it);
-		scr = it.data;
-	}
-
-	/* Intern RESOURCE_MANAGER */
-	ack =
-	    xcb_intern_atom(xc, 1, strlen("RESOURCE_MANAGER"), "RESOURCE_MANAGER");
-	ar = xcb_intern_atom_reply(xc, ack, NULL);
-	if (!ar || ar->atom == XCB_ATOM_NONE) {
-		free(ar);
-		xcb_disconnect(xc);
-		return;
-	}
-	res_mgr = ar->atom;
-	free(ar);
-
-	/* Fetch RESOURCE_MANAGER from root window (STRING, format 8).
-	 * 65536 longs = 256 KiB — far larger than any real xrdb database. */
-	pck =
-	    xcb_get_property(xc, 0, scr->root, res_mgr, XCB_ATOM_STRING, 0, 65536);
-	pr = xcb_get_property_reply(xc, pck, NULL);
-
-	if (!pr || pr->type == XCB_ATOM_NONE || pr->format != 8 ||
-	    pr->value_len == 0) {
-		free(pr);
-		xcb_disconnect(xc);
-		return;
-	}
-
-	/* Property is not NUL-terminated — make a copy that is */
-	resm = malloc(pr->value_len + 1);
-	if (!resm) {
-		free(pr);
-		xcb_disconnect(xc);
-		return;
-	}
-	memcpy(resm, xcb_get_property_value(pr), pr->value_len);
-	resm[pr->value_len] = '\0';
-	free(pr);
-	xcb_disconnect(xc);
 
 	xrdb_lookup(resm, "color2", normbordercolor);
 	xrdb_lookup(resm, "color0", normbgcolor);

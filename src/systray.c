@@ -257,7 +257,7 @@ updatesystray(void)
 				sendevent(g_plat.root, g_plat.xatom[Manager],
 				    XCB_EVENT_MASK_STRUCTURE_NOTIFY, XCB_CURRENT_TIME,
 				    g_plat.netatom[NetSystemTray], systray->win, 0, 0);
-				xflush();
+				g_wm_backend->flush(&g_plat);
 			} else {
 				awm_error("Unable to obtain system tray window");
 				free(systray);
@@ -333,7 +333,7 @@ updatesystray(void)
 	 * The window background is filled automatically from background_pixel set
 	 * at creation time whenever the server exposes previously-hidden areas,
 	 * so no explicit XClearWindow call is needed here. */
-	xflush();
+	g_wm_backend->flush(&g_plat);
 }
 
 Client *

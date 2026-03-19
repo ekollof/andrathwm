@@ -62,10 +62,6 @@
 #define TAGSLENGTH (LENGTH(tags))
 #define TEXTW(X) (g_render_backend->fontset_getwidth(drw, (X)) + g_plat.lrpad)
 
-/* Flush the X request buffer without a round-trip.
- * Prefer this over XSync(dpy, False) wherever error-draining is not needed. */
-#define xflush() xcb_flush(g_plat.xc)
-
 /* 1 when the compositor is compiled in, 0 otherwise. */
 #ifdef COMPOSITOR
 #define COMPOSITOR_ACTIVE 1

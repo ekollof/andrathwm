@@ -139,7 +139,7 @@ cleanup(void)
 	g_awm_selmon->lt[g_awm_selmon->sellt] = &foo;
 	while (g_awm.stack_head)
 		unmanage(g_awm.stack_head, 0);
-	xcb_ungrab_key(g_plat.xc, XCB_GRAB_ANY, g_plat.root, XCB_MOD_MASK_ANY);
+	g_wm_backend->ungrab_key(&g_plat, g_plat.root);
 	assert(g_awm.n_monitors >= 0);
 	while (g_awm.n_monitors)
 		cleanupmon(&g_awm.monitors[0]);
@@ -152,9 +152,9 @@ cleanup(void)
 			ic = next;
 		}
 		if (systray->colormap)
-			xcb_free_colormap(g_plat.xc, systray->colormap);
-		xcb_unmap_window(g_plat.xc, systray->win);
-		xcb_destroy_window(g_plat.xc, systray->win);
+			g_wm_backend->free_colormap(&g_plat, systray->colormap);
+		g_wm_backend->unmap(&g_plat, systray->win);
+		g_wm_backend->destroy_win(&g_plat, systray->win);
 		free(systray);
 		systray = NULL;
 	}
@@ -180,15 +180,14 @@ cleanup(void)
 	for (i = 0; i < LENGTH(colors); i++)
 		free(scheme[i]);
 	free(scheme);
-	xcb_destroy_window(g_plat.xc, g_plat.wmcheckwin);
+	g_wm_backend->destroy_win(&g_plat, g_plat.wmcheckwin);
 	g_render_backend->free(drw);
-	xcb_key_symbols_free(g_plat.keysyms);
-	g_plat.keysyms = NULL;
-	xflush();
-	xcb_set_input_focus(g_plat.xc, XCB_INPUT_FOCUS_POINTER_ROOT,
-	    XCB_INPUT_FOCUS_POINTER_ROOT, XCB_CURRENT_TIME);
-	xcb_delete_property(
-	    g_plat.xc, g_plat.root, g_plat.netatom[NetActiveWindow]);
+	g_wm_backend->keysyms_free(&g_plat);
+	g_wm_backend->flush(&g_plat);
+	g_wm_backend->set_input_focus(
+	    &g_plat, XCB_INPUT_FOCUS_POINTER_ROOT, XCB_CURRENT_TIME);
+	g_wm_backend->delete_prop(
+	    &g_plat, g_plat.root, g_plat.netatom[NetActiveWindow]);
 	if (xsource_id > 0) {
 		g_source_remove(xsource_id);
 		xsource_id = 0;
@@ -435,8 +434,8 @@ bar_hover_enter(Monitor *m)
 			unsigned int k;
 			for (k = 0; k < count; k++)
 				if (entries[k].pixmap_xid)
-					xcb_free_pixmap(
-					    g_plat.xc, (xcb_pixmap_t) entries[k].pixmap_xid);
+					g_wm_backend->free_pixmap(
+					    &g_plat, (xcb_pixmap_t) entries[k].pixmap_xid);
 		}
 		free(entries);
 		return;
@@ -456,7 +455,8 @@ bar_hover_enter(Monitor *m)
 		unsigned int    k;
 		for (k = 0; k < count; k++)
 			if (ep[k].pixmap_xid)
-				xcb_free_pixmap(g_plat.xc, (xcb_pixmap_t) ep[k].pixmap_xid);
+				g_wm_backend->free_pixmap(
+				    &g_plat, (xcb_pixmap_t) ep[k].pixmap_xid);
 	}
 	free(shm_buf);
 #else
@@ -525,17 +525,12 @@ launchermenu(const Arg *arg)
 			ly = m->wy;
 		pre_vals[0] = (uint32_t) lx;
 		pre_vals[1] = (uint32_t) ly;
-		xcb_configure_window(g_plat.xc, launcher_xwin,
+		g_wm_backend->configure_win(&g_plat, launcher_xwin,
 		    XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, pre_vals);
 		/* Synchronous round-trip: ensures the ConfigureWindow is processed
 		 * by the X server before UI_MSG_LAUNCHER_SHOW causes the MapWindow
-		 * to arrive.  xcb_get_input_focus is a cheap no-op for this. */
-		{
-			xcb_get_input_focus_cookie_t fck = xcb_get_input_focus(g_plat.xc);
-			xcb_get_input_focus_reply_t *fr =
-			    xcb_get_input_focus_reply(g_plat.xc, fck, NULL);
-			free(fr);
-		}
+		 * to arrive. */
+		g_wm_backend->sync(&g_plat);
 		awm_debug("launchermenu: pre-positioned xwin=0x%x to %d,%d"
 		          " (win=%dx%d dpi=%.1f)",
 		    (unsigned) launcher_xwin, lx, ly, win_w, win_h, g_plat.ui_dpi);
@@ -572,7 +567,7 @@ x_dispatch_cb(gpointer user_data)
 	xcb_generic_event_t *ev;
 	(void) user_data;
 
-	while ((ev = xcb_poll_for_event(g_plat.xc))) {
+	while ((ev = g_wm_backend->poll_event(&g_plat))) {
 		uint8_t type = ev->response_type & ~0x80;
 
 		/* XCB delivers async errors as packets with response_type == 0 */
@@ -803,7 +798,7 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 			struct sigaction sa;
 
 			if (g_plat.xc)
-				close(xcb_get_file_descriptor(g_plat.xc));
+				close(g_wm_backend->get_connection_fd(&g_plat));
 			setsid();
 
 			/* setup() installs SIGCHLD=SIG_IGN|SA_NOCLDWAIT in awm so the WM
@@ -846,9 +841,9 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 		 * UI_MSG_LAUNCHER_SHOW was sent, so no coordinate work is needed
 		 * here — just set input focus. */
 		if (launcher_xwin) {
-			xcb_set_input_focus(g_plat.xc, XCB_INPUT_FOCUS_POINTER_ROOT,
-			    launcher_xwin, XCB_CURRENT_TIME);
-			xcb_flush(g_plat.xc);
+			g_wm_backend->set_input_focus(
+			    &g_plat, launcher_xwin, XCB_CURRENT_TIME);
+			g_wm_backend->flush(&g_plat);
 		}
 		break;
 	case UI_MSG_PREVIEW_FOCUS: {
@@ -870,9 +865,9 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 					view(&a);
 				}
 				focus(c);
-				xcb_warp_pointer(g_plat.xc, XCB_WINDOW_NONE, c->win, 0, 0, 0,
-				    0, (int16_t) (c->w / 2), (int16_t) (c->h / 2));
-				xcb_flush(g_plat.xc);
+				g_wm_backend->warp_pointer(
+				    &g_plat, c->win, c->w / 2, c->h / 2);
+				g_wm_backend->flush(&g_plat);
 			}
 		}
 		break;
@@ -887,9 +882,10 @@ ui_handle_message(UiMsgType type, const uint8_t *payload, uint32_t len)
 			memcpy(&dp, payload, sizeof(dp));
 			for (k = 0; k < dp.count && k < 32; k++) {
 				if (dp.xids[k])
-					xcb_free_pixmap(g_plat.xc, (xcb_pixmap_t) dp.xids[k]);
+					g_wm_backend->free_pixmap(
+					    &g_plat, (xcb_pixmap_t) dp.xids[k]);
 			}
-			xcb_flush(g_plat.xc);
+			g_wm_backend->flush(&g_plat);
 		}
 		break;
 	}
@@ -994,7 +990,7 @@ ui_spawn(GMainContext *ctx)
 		/* Close the XCB connection fd so awm's X connection doesn't
 		 * leak into awm-ui.  awm-ui uses GDK's own X connection. */
 		if (g_plat.xc)
-			close(xcb_get_file_descriptor(g_plat.xc));
+			close(g_wm_backend->get_connection_fd(&g_plat));
 
 		/* Force GDK to use the X11 backend.  If awm is running inside
 		 * a Wayland session WAYLAND_DISPLAY is set in the environment
@@ -1061,7 +1057,7 @@ run(void)
 {
 	GMainContext *ctx;
 
-	xflush();
+	g_wm_backend->flush(&g_plat);
 
 	ctx    = g_main_context_default();
 	ui_ctx = ctx; /* store for respawn timer callback */
@@ -1088,93 +1084,70 @@ run(void)
 void
 scan(void)
 {
-	unsigned int i;
+	unsigned int  i;
+	xcb_window_t *wins = NULL;
+	int           num  = 0;
 
-	xcb_query_tree_cookie_t ck = xcb_query_tree(g_plat.xc, g_plat.root);
-	xcb_query_tree_reply_t *tr = xcb_query_tree_reply(g_plat.xc, ck, NULL);
-	if (!tr)
+	if (!g_wm_backend->query_root_tree(&g_plat, &wins, &num))
 		return;
-
-	int           num  = xcb_query_tree_children_length(tr);
-	xcb_window_t *wins = xcb_query_tree_children(tr);
 
 	/* first pass: non-transients */
 	for (i = 0; i < (unsigned int) num; i++) {
-		xcb_get_window_attributes_cookie_t wck =
-		    xcb_get_window_attributes(g_plat.xc, wins[i]);
-		xcb_get_window_attributes_reply_t *wr =
-		    xcb_get_window_attributes_reply(g_plat.xc, wck, NULL);
-		if (!wr)
+		int override  = 0;
+		int map_state = 0;
+
+		if (!g_wm_backend->get_window_attributes(
+		        &g_plat, wins[i], &override, &map_state))
 			continue;
-		int override  = wr->override_redirect;
-		int map_state = wr->map_state;
-		free(wr);
-		xcb_window_t trans = XCB_WINDOW_NONE;
-		if (override ||
-		    xcb_icccm_get_wm_transient_for_reply(g_plat.xc,
-		        xcb_icccm_get_wm_transient_for(g_plat.xc, wins[i]), &trans,
-		        NULL))
+		xcb_window_t trans =
+		    g_wm_backend->get_wm_transient_for(&g_plat, wins[i]);
+		if (override || trans != XCB_WINDOW_NONE)
 			continue;
 		if (map_state == XCB_MAP_STATE_VIEWABLE ||
 		    getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC) {
 			/* Skip XEMBED clients (systray icons reparented back to
 			 * root when the systray container was destroyed on restart) */
-			xcb_get_property_reply_t *xer = xcb_get_property_reply(g_plat.xc,
-			    xcb_get_property(g_plat.xc, 0, wins[i],
-			        (xcb_atom_t) g_plat.xatom[XembedInfo], XCB_ATOM_ANY, 0, 2),
-			    NULL);
-			int                       is_xembed = xer && xer->length > 0;
+			xcb_get_property_reply_t *xer =
+			    g_wm_backend->get_prop_raw(&g_plat, wins[i],
+			        (xcb_atom_t) g_plat.xatom[XembedInfo], XCB_ATOM_ANY, 2);
+			int is_xembed = xer && xer->length > 0;
 			free(xer);
 			if (is_xembed)
 				continue;
-			xcb_get_geometry_cookie_t gck =
-			    xcb_get_geometry(g_plat.xc, wins[i]);
-			xcb_get_geometry_reply_t *gr =
-			    xcb_get_geometry_reply(g_plat.xc, gck, NULL);
-			if (gr) {
-				manage(wins[i], gr->x, gr->y, gr->width, gr->height,
-				    gr->border_width);
-				free(gr);
-			}
+			int x, y, ww, wh, bw;
+			if (g_wm_backend->get_geometry(
+			        &g_plat, wins[i], &x, &y, &ww, &wh, &bw))
+				manage(wins[i], x, y, ww, wh, bw);
 		}
 	}
 	/* second pass: transients */
 	for (i = 0; i < (unsigned int) num; i++) {
-		xcb_get_window_attributes_cookie_t wck =
-		    xcb_get_window_attributes(g_plat.xc, wins[i]);
-		xcb_get_window_attributes_reply_t *wr =
-		    xcb_get_window_attributes_reply(g_plat.xc, wck, NULL);
-		if (!wr)
+		int override  = 0;
+		int map_state = 0;
+
+		if (!g_wm_backend->get_window_attributes(
+		        &g_plat, wins[i], &override, &map_state))
 			continue;
-		int map_state = wr->map_state;
-		free(wr);
-		xcb_window_t trans = XCB_WINDOW_NONE;
-		if (xcb_icccm_get_wm_transient_for_reply(g_plat.xc,
-		        xcb_icccm_get_wm_transient_for(g_plat.xc, wins[i]), &trans,
-		        NULL) &&
+		xcb_window_t trans =
+		    g_wm_backend->get_wm_transient_for(&g_plat, wins[i]);
+		if (trans != XCB_WINDOW_NONE &&
 		    (map_state == XCB_MAP_STATE_VIEWABLE ||
 		        getstate(wins[i]) == XCB_ICCCM_WM_STATE_ICONIC)) {
 			/* Skip XEMBED clients here too */
-			xcb_get_property_reply_t *xer = xcb_get_property_reply(g_plat.xc,
-			    xcb_get_property(g_plat.xc, 0, wins[i],
-			        (xcb_atom_t) g_plat.xatom[XembedInfo], XCB_ATOM_ANY, 0, 2),
-			    NULL);
-			int                       is_xembed = xer && xer->length > 0;
+			xcb_get_property_reply_t *xer =
+			    g_wm_backend->get_prop_raw(&g_plat, wins[i],
+			        (xcb_atom_t) g_plat.xatom[XembedInfo], XCB_ATOM_ANY, 2);
+			int is_xembed = xer && xer->length > 0;
 			free(xer);
 			if (is_xembed)
 				continue;
-			xcb_get_geometry_cookie_t gck =
-			    xcb_get_geometry(g_plat.xc, wins[i]);
-			xcb_get_geometry_reply_t *gr =
-			    xcb_get_geometry_reply(g_plat.xc, gck, NULL);
-			if (gr) {
-				manage(wins[i], gr->x, gr->y, gr->width, gr->height,
-				    gr->border_width);
-				free(gr);
-			}
+			int x, y, ww, wh, bw;
+			if (g_wm_backend->get_geometry(
+			        &g_plat, wins[i], &x, &y, &ww, &wh, &bw))
+				manage(wins[i], x, y, ww, wh, bw);
 		}
 	}
-	free(tr);
+	free(wins);
 }
 
 /* Batch-intern all atoms using async XCB cookies on the connection that Xlib
@@ -1249,28 +1222,21 @@ intern_atoms(void)
 	};
 	static const int N = (int) (sizeof tbl / sizeof tbl[0]);
 
-	xcb_intern_atom_cookie_t *cookies;
-	xcb_intern_atom_reply_t  *reply;
-	int                       i;
+	{
+		const char **names;
+		xcb_atom_t  *atoms;
+		int          i;
 
-	cookies = ecalloc((size_t) N, sizeof *cookies);
-
-	/* Fire all requests — no round-trip yet. */
-	for (i = 0; i < N; i++) {
-		uint16_t nlen = (uint16_t) strlen(tbl[i].name);
-		cookies[i]    = xcb_intern_atom(g_plat.xc, 0, nlen, tbl[i].name);
+		names = ecalloc((size_t) N, sizeof *names);
+		atoms = ecalloc((size_t) N, sizeof *atoms);
+		for (i = 0; i < N; i++)
+			names[i] = tbl[i].name;
+		g_wm_backend->intern_atoms_batch(&g_plat, names, atoms, N);
+		for (i = 0; i < N; i++)
+			*tbl[i].dest = atoms[i];
+		free(names);
+		free(atoms);
 	}
-
-	/* Collect replies — one round-trip covers all. */
-	for (i = 0; i < N; i++) {
-		reply = xcb_intern_atom_reply(g_plat.xc, cookies[i], NULL);
-		if (reply) {
-			*tbl[i].dest = reply->atom;
-			free(reply);
-		}
-	}
-
-	free(cookies);
 }
 
 void
@@ -1292,16 +1258,7 @@ setup(void)
 		;
 
 	/* init screen — screen number comes from xcb_connect() second arg */
-	{
-		xcb_screen_iterator_t sit =
-		    xcb_setup_roots_iterator(xcb_get_setup(g_plat.xc));
-		int i;
-		for (i = 0; i < g_plat.screen; i++)
-			xcb_screen_next(&sit);
-		g_plat.sw   = (int) sit.data->width_in_pixels;
-		g_plat.sh   = (int) sit.data->height_in_pixels;
-		g_plat.root = sit.data->root;
-	}
+	g_wm_backend->init_screen(&g_plat);
 	/* clients_head and stack_head are inline zero-initialised in g_awm */
 	/* Initialise the render backend before creating the draw surface. */
 	g_render_backend = &render_backend_cairo_xcb;
@@ -1326,21 +1283,12 @@ setup(void)
 	updategeom();
 	/* Enable RandR screen change notifications */
 #ifdef XRANDR
-	{
-		const xcb_query_extension_reply_t *ext =
-		    xcb_get_extension_data(g_plat.xc, &xcb_randr_id);
-		if (ext && ext->present) {
-			g_plat.randrbase = ext->first_event;
-			g_plat.rrerrbase = ext->first_error;
-			xcb_randr_select_input(
-			    g_plat.xc, g_plat.root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE);
-		}
-	}
+	g_wm_backend->randr_init(&g_plat);
 #endif
 	/* init atoms — all interned in a single async XCB batch */
 	intern_atoms();
 	/* init key symbols table */
-	g_plat.keysyms = xcb_key_symbols_alloc(g_plat.xc);
+	g_wm_backend->keysyms_alloc(&g_plat);
 	/* init cursors */
 	cursor[CurNormal] =
 	    g_render_backend->cur_create(drw, 68); /* XC_left_ptr */
@@ -1360,22 +1308,21 @@ setup(void)
 	updatestatus();
 	/* supporting window for NetWMCheck */
 	{
-		g_plat.wmcheckwin = xcb_generate_id(g_plat.xc);
-		xcb_create_window(g_plat.xc, XCB_COPY_FROM_PARENT, g_plat.wmcheckwin,
-		    g_plat.root, 0, 0, 1, 1, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
-		    XCB_COPY_FROM_PARENT, 0, NULL);
+		g_plat.wmcheckwin = g_wm_backend->create_window(
+		    &g_plat, g_plat.root, 0, 0, 1, 1, 0, NULL);
 	}
 	{
 		uint32_t win32 = (uint32_t) g_plat.wmcheckwin;
 
-		xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE,
-		    g_plat.wmcheckwin, g_plat.netatom[NetWMCheck], XCB_ATOM_WINDOW, 32,
-		    1, &win32);
-		xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE,
-		    g_plat.wmcheckwin, g_plat.netatom[NetWMName],
-		    g_plat.utf8string_atom, 8, 3, "awm");
-		xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, g_plat.root,
-		    g_plat.netatom[NetWMCheck], XCB_ATOM_WINDOW, 32, 1, &win32);
+		g_wm_backend->change_prop(&g_plat, g_plat.wmcheckwin,
+		    g_plat.netatom[NetWMCheck], XCB_ATOM_WINDOW, 32,
+		    XCB_PROP_MODE_REPLACE, 1, &win32);
+		g_wm_backend->change_prop(&g_plat, g_plat.wmcheckwin,
+		    g_plat.netatom[NetWMName], g_plat.utf8string_atom, 8,
+		    XCB_PROP_MODE_REPLACE, 3, "awm");
+		g_wm_backend->change_prop(&g_plat, g_plat.root,
+		    g_plat.netatom[NetWMCheck], XCB_ATOM_WINDOW, 32,
+		    XCB_PROP_MODE_REPLACE, 1, &win32);
 
 		/* EWMH support per view — netatom[] is Atom=unsigned long, need
 		 * uint32_t array for XCB format-32 */
@@ -1384,13 +1331,13 @@ setup(void)
 			int        k;
 			for (k = 0; k < NetLast; k++)
 				supported[k] = (xcb_atom_t) g_plat.netatom[k];
-			xcb_change_property(g_plat.xc, XCB_PROP_MODE_REPLACE, g_plat.root,
-			    g_plat.netatom[NetSupported], XCB_ATOM_ATOM, 32, NetLast,
-			    supported);
+			g_wm_backend->change_prop(&g_plat, g_plat.root,
+			    g_plat.netatom[NetSupported], XCB_ATOM_ATOM, 32,
+			    XCB_PROP_MODE_REPLACE, NetLast, supported);
 		}
 
-		xcb_delete_property(
-		    g_plat.xc, g_plat.root, g_plat.netatom[NetClientList]);
+		g_wm_backend->delete_prop(
+		    &g_plat, g_plat.root, g_plat.netatom[NetClientList]);
 	}
 	wmprop_setup();
 	/* Update workarea for all monitors */
@@ -1407,11 +1354,8 @@ setup(void)
 		    XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_ENTER_WINDOW |
 		    XCB_EVENT_MASK_LEAVE_WINDOW | XCB_EVENT_MASK_STRUCTURE_NOTIFY |
 		    XCB_EVENT_MASK_PROPERTY_CHANGE;
-		xcb_change_window_attributes(
-		    g_plat.xc, g_plat.root, XCB_CW_EVENT_MASK, &evmask);
-		uint32_t cur = (uint32_t) cursor[CurNormal]->cursor;
-		xcb_change_window_attributes(
-		    g_plat.xc, g_plat.root, XCB_CW_CURSOR, &cur);
+		g_wm_backend->select_root_events(&g_plat, evmask);
+		g_wm_backend->set_root_cursor(&g_plat, cursor[CurNormal]->cursor);
 	}
 	grabkeys();
 	focus(NULL);
@@ -1441,68 +1385,6 @@ setup(void)
  *   3. 96.0                            (safe default)
  * ---------------------------------------------------------------------- */
 
-#ifdef XRANDR
-/*
- * Query the physical size of the first active RandR output and derive DPI.
- * Returns the calculated DPI, or 0.0 if unavailable.
- */
-static double
-randr_probe_dpi(xcb_connection_t *conn, int scr_num)
-{
-	xcb_screen_iterator_t                           sit;
-	xcb_window_t                                    root_win;
-	xcb_randr_get_screen_resources_current_cookie_t src;
-	xcb_randr_get_screen_resources_current_reply_t *sr;
-	xcb_randr_crtc_t                               *crtcs;
-	int                                             i;
-	double                                          dpi = 0.0;
-
-	sit = xcb_setup_roots_iterator(xcb_get_setup(conn));
-	for (i = 0; i < scr_num; i++)
-		xcb_screen_next(&sit);
-	root_win = sit.data->root;
-
-	src = xcb_randr_get_screen_resources_current(conn, root_win);
-	sr  = xcb_randr_get_screen_resources_current_reply(conn, src, NULL);
-	if (!sr)
-		return 0.0;
-
-	crtcs = xcb_randr_get_screen_resources_current_crtcs(sr);
-
-	for (i = 0; i < (int) sr->num_crtcs && dpi == 0.0; i++) {
-		xcb_randr_get_crtc_info_cookie_t cic;
-		xcb_randr_get_crtc_info_reply_t *ci;
-		xcb_randr_output_t              *outputs;
-
-		cic = xcb_randr_get_crtc_info(conn, crtcs[i], XCB_CURRENT_TIME);
-		ci  = xcb_randr_get_crtc_info_reply(conn, cic, NULL);
-		if (!ci || ci->num_outputs == 0 || ci->width == 0) {
-			free(ci);
-			continue;
-		}
-
-		outputs = xcb_randr_get_crtc_info_outputs(ci);
-		{
-			xcb_randr_get_output_info_cookie_t oic;
-			xcb_randr_get_output_info_reply_t *oi;
-
-			oic =
-			    xcb_randr_get_output_info(conn, outputs[0], XCB_CURRENT_TIME);
-			oi = xcb_randr_get_output_info_reply(conn, oic, NULL);
-			if (oi && oi->mm_width > 0) {
-				/* pixels-per-inch from horizontal axis */
-				dpi = (double) ci->width / ((double) oi->mm_width / 25.4);
-			}
-			free(oi);
-		}
-		free(ci);
-	}
-
-	free(sr);
-	return dpi;
-}
-#endif /* XRANDR */
-
 /*
  * Resolve ui_dpi and ui_scale using the three-level chain.
  * Must be called after loadxrdb() and after xc/screen are valid.
@@ -1521,7 +1403,7 @@ resolve_dpi(void)
 #ifdef XRANDR
 	/* Level 2: RandR physical size */
 	if (d <= 0.0) {
-		d = randr_probe_dpi(g_plat.xc, g_plat.screen);
+		d = g_wm_backend->randr_probe_dpi(&g_plat);
 		if (d > 0.0)
 			awm_info("DPI: using RandR physical size = %.1f", d);
 	}
@@ -1564,6 +1446,8 @@ main(int argc, char *argv[])
 	 * from the very first gtk_init() call. */
 	unsetenv("WAYLAND_DISPLAY");
 	setenv("GDK_BACKEND", "x11", 1);
+	g_wm_backend = &wm_backend_x11;
+	g_wm_backend->init_screen(&g_plat);
 	loadxrdb();
 	resolve_dpi();
 	{

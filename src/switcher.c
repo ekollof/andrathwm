@@ -473,12 +473,12 @@ switcher_hide(void)
 	}
 
 	/* Release the keyboard grab we took in switcher_show_internal */
-	xcb_ungrab_keyboard(g_plat.xc, XCB_CURRENT_TIME);
+	g_wm_backend->ungrab_keyboard(&g_plat, XCB_CURRENT_TIME);
 
 	sw_active = 0;
 	if (sw_win)
 		gtk_widget_hide(sw_win);
-	xcb_flush(g_plat.xc);
+	g_wm_backend->flush(&g_plat);
 }
 
 static void
@@ -507,9 +507,9 @@ switcher_confirm(void)
 	/* Warp the pointer to the centre of the chosen window unconditionally.
 	 * This is required for focus-follows-mouse: without a warp the pointer
 	 * stays where it is and the next mouse-move will steal focus back. */
-	xcb_warp_pointer(g_plat.xc, XCB_WINDOW_NONE, chosen->win, 0, 0, 0, 0,
-	    (int16_t) (chosen->w / 2), (int16_t) (chosen->h / 2));
-	xcb_flush(g_plat.xc);
+	g_wm_backend->warp_pointer(
+	    &g_plat, chosen->win, chosen->w / 2, chosen->h / 2);
+	g_wm_backend->flush(&g_plat);
 }
 
 static void
@@ -638,9 +638,9 @@ switcher_show_internal(int all_monitors, int start_prev)
 			xcb_window_t xwin = (xcb_window_t) gdk_x11_window_get_xid(gwin);
 			if (xwin) {
 				uint32_t stack_above = XCB_STACK_MODE_ABOVE;
-				xcb_configure_window(g_plat.xc, xwin,
-				    XCB_CONFIG_WINDOW_STACK_MODE, &stack_above);
-				xcb_flush(g_plat.xc);
+				g_wm_backend->configure_win(
+				    &g_plat, xwin, XCB_CONFIG_WINDOW_STACK_MODE, &stack_above);
+				g_wm_backend->flush(&g_plat);
 			}
 		}
 	}
@@ -648,9 +648,8 @@ switcher_show_internal(int all_monitors, int start_prev)
 	/* Grab the keyboard so we receive all key events (including releases of
 	 * Alt/Super) while the switcher is open.  This supplements the passive
 	 * grabs on individual keybindings. */
-	xcb_grab_keyboard(g_plat.xc, 0, g_plat.root, XCB_CURRENT_TIME,
-	    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
-	xcb_flush(g_plat.xc);
+	g_wm_backend->grab_keyboard(&g_plat, g_plat.root, XCB_CURRENT_TIME);
+	g_wm_backend->flush(&g_plat);
 }
 
 /* -------------------------------------------------------------------------

@@ -108,7 +108,7 @@ buttonpress(xcb_generic_event_t *e)
 		restack(g_awm_selmon);
 		g_wm_backend->allow_events(
 		    &g_plat, XCB_ALLOW_REPLAY_POINTER, XCB_CURRENT_TIME);
-		xflush();
+		g_wm_backend->flush(&g_plat);
 		click = ClkClientWin;
 	}
 #ifdef STATUSNOTIFIER
@@ -210,7 +210,7 @@ clientmessage(xcb_generic_event_t *e)
 			sendevent(c->win, g_plat.xatom[Xembed],
 			    XCB_EVENT_MASK_STRUCTURE_NOTIFY, XCB_CURRENT_TIME,
 			    XEMBED_EMBEDDED_NOTIFY, 0, systray->win, XEMBED_VERSION);
-			xflush();
+			g_wm_backend->flush(&g_plat);
 			resizebarwin(g_awm_selmon);
 			updatesystray();
 			setclientstate(c, XCB_ICCCM_WM_STATE_NORMAL);
@@ -244,7 +244,7 @@ clientmessage(xcb_generic_event_t *e)
 		        g_plat.wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
 			g_wm_backend->kill_client_hard(&g_plat, c->win);
 		}
-		xflush();
+		g_wm_backend->flush(&g_plat);
 	} else if (cme->type == g_plat.netatom[NetMoveResizeWindow]) {
 		/* _NET_MOVERESIZE_WINDOW client message */
 		int          x, y, w, h;
@@ -322,7 +322,7 @@ configurerequest(xcb_generic_event_t *e)
 			/* Don't let clients move/resize themselves while fullscreen;
 			 * just echo back the current geometry so they don't hang. */
 			configure(c);
-			xflush();
+			g_wm_backend->flush(&g_plat);
 			return;
 		}
 		if (ev->value_mask & XCB_CONFIG_WINDOW_BORDER_WIDTH)
@@ -396,7 +396,7 @@ configurerequest(xcb_generic_event_t *e)
 			g_wm_backend->configure_win(
 			    &g_plat, ev->window, ev->value_mask, vals);
 	}
-	xflush();
+	g_wm_backend->flush(&g_plat);
 }
 
 void

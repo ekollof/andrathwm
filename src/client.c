@@ -635,7 +635,7 @@ killclient(const Arg *arg)
 	        g_plat.wmatom[WMDelete], XCB_CURRENT_TIME, 0, 0, 0)) {
 
 		g_wm_backend->kill_client_hard(&g_plat, g_awm_selmon->sel->win);
-		xflush();
+		g_wm_backend->flush(&g_plat);
 	}
 }
 
@@ -932,7 +932,7 @@ resizeclient(Client *c, int x, int y, int w, int h)
 		    vals);
 	}
 	configure(c);
-	xflush();
+	g_wm_backend->flush(&g_plat);
 #ifdef COMPOSITOR
 	compositor_configure_window(c, bw);
 #endif
@@ -1540,7 +1540,7 @@ unmanage(Client *c, int destroyed)
 		g_wm_backend->ungrab_button(&g_plat, c->win);
 		setclientstate(c, XCB_ICCCM_WM_STATE_WITHDRAWN);
 		g_wm_backend->ungrab_server(&g_plat);
-		xflush();
+		g_wm_backend->flush(&g_plat);
 	}
 	freeicon(c);
 #ifdef COMPOSITOR
