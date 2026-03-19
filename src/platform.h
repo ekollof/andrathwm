@@ -209,6 +209,91 @@ typedef struct {
 	/* Event loop: poll and wait variants. */
 	xcb_generic_event_t *(*poll_event)(PlatformCtx *p);
 	xcb_generic_event_t *(*next_event)(PlatformCtx *p);
+
+	/* --- keyboard grab ------------------------------------------------- */
+	/* Grab the keyboard; owner_events=0.  Call flush() after if needed. */
+	void (*grab_keyboard)(PlatformCtx *p, xcb_window_t w, xcb_timestamp_t t);
+	/* Release the keyboard grab. */
+	void (*ungrab_keyboard)(PlatformCtx *p, xcb_timestamp_t t);
+	/* Ungrab all passive key grabs on a window. */
+	void (*ungrab_key)(PlatformCtx *p, xcb_window_t w);
+
+	/* --- root window tree ---------------------------------------------- */
+	/* Query immediate children of root.  Fills *wins_out (caller must
+	 * free(*wins_out)) and *n_out.  Returns 1 on success. */
+	int (*query_root_tree)(
+	    PlatformCtx *p, xcb_window_t **wins_out, int *n_out);
+
+	/* --- window attributes batch --------------------------------------- */
+	/* Fetch override_redirect and map_state for w in one round-trip.
+	 * Returns 1 on success. */
+	int (*get_window_attributes)(PlatformCtx *p, xcb_window_t w,
+	    int *override_redirect_out, int *map_state_out);
+
+	/* --- raw property read --------------------------------------------- */
+	/* Generic xcb_get_property wrapper.  Returns a heap-allocated reply
+	 * that the caller must free(), or NULL on failure.  value_len and
+	 * value pointer are accessed via the returned reply. */
+	xcb_get_property_reply_t *(*get_prop_raw)(PlatformCtx *p, xcb_window_t w,
+	    xcb_atom_t prop, xcb_atom_t type, uint32_t long_length);
+
+	/* --- connection introspection -------------------------------------- */
+	/* Return the file descriptor of the X connection (for fork pre-exec
+	 * close).  Returns -1 if no connection. */
+	int (*get_connection_fd)(PlatformCtx *p);
+
+	/* --- synchronous round-trip ---------------------------------------- */
+	/* Issue a cheap synchronous round-trip to flush all pending requests
+	 * to the server and wait for them to be processed. */
+	void (*sync)(PlatformCtx *p);
+
+	/* --- pixmap / colormap teardown ------------------------------------ */
+	void (*free_pixmap)(PlatformCtx *p, xcb_pixmap_t pm);
+	void (*free_colormap)(PlatformCtx *p, xcb_colormap_t cm);
+
+	/* --- atom interning ------------------------------------------------ */
+	/* Batch-intern N atoms in a single async round-trip.  names[] and
+	 * atoms_out[] are parallel arrays of length n. */
+	void (*intern_atoms_batch)(
+	    PlatformCtx *p, const char **names, xcb_atom_t *atoms_out, int n);
+
+	/* --- generic window creation --------------------------------------- */
+	/* Create an input-output window; returns its XID. */
+	xcb_window_t (*create_window)(PlatformCtx *p, xcb_window_t parent, int x,
+	    int y, int w, int h, uint32_t val_mask, const uint32_t *vals);
+
+	/* --- root event mask / cursor selection ---------------------------- */
+	/* Set the event mask on the root window. */
+	void (*select_root_events)(PlatformCtx *p, uint32_t mask);
+	/* Set the cursor on the root window. */
+	void (*set_root_cursor)(PlatformCtx *p, xcb_cursor_t cursor);
+
+	/* --- RandR setup --------------------------------------------------- */
+#ifdef XRANDR
+	/* Probe RandR extension: populate randrbase/rrerrbase, subscribe to
+	 * screen-change notifications.  No-op if extension absent. */
+	void (*randr_init)(PlatformCtx *p);
+	/* Query physical DPI from the first active RandR output.
+	 * Returns the DPI value, or 0.0 if unavailable. */
+	double (*randr_probe_dpi)(PlatformCtx *p);
+#endif
+
+	/* --- screen setup -------------------------------------------------- */
+	/* Populate sw, sh, root from the xcb_setup for the configured screen
+	 * number.  Called once at the start of setup(). */
+	void (*init_screen)(PlatformCtx *p);
+
+	/* --- key symbol table lifecycle ------------------------------------ */
+	/* Allocate the key symbols table (xcb_key_symbols_alloc). */
+	void (*keysyms_alloc)(PlatformCtx *p);
+	/* Free the key symbols table (xcb_key_symbols_free). */
+	void (*keysyms_free)(PlatformCtx *p);
+
+	/* --- resource manager ---------------------------------------------- */
+	/* Fetch the RESOURCE_MANAGER property from the root window and return
+	 * it as a NUL-terminated heap string.  Caller must free().
+	 * Returns NULL if unavailable. */
+	char *(*get_resource_manager)(PlatformCtx *p);
 } WmBackend;
 
 extern WmBackend *g_wm_backend;

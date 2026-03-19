@@ -876,6 +876,338 @@ x11_next_event(PlatformCtx *p)
 }
 
 /* -------------------------------------------------------------------------
+ * keyboard grab
+ * ---------------------------------------------------------------------- */
+
+static void
+x11_grab_keyboard(PlatformCtx *p, xcb_window_t w, xcb_timestamp_t t)
+{
+	xcb_grab_keyboard(
+	    p->xc, 0, w, t, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+}
+
+static void
+x11_ungrab_keyboard(PlatformCtx *p, xcb_timestamp_t t)
+{
+	xcb_ungrab_keyboard(p->xc, t);
+}
+
+static void
+x11_ungrab_key(PlatformCtx *p, xcb_window_t w)
+{
+	xcb_ungrab_key(p->xc, XCB_GRAB_ANY, w, XCB_MOD_MASK_ANY);
+}
+
+/* -------------------------------------------------------------------------
+ * root window tree
+ * ---------------------------------------------------------------------- */
+
+static int
+x11_query_root_tree(PlatformCtx *p, xcb_window_t **wins_out, int *n_out)
+{
+	xcb_query_tree_cookie_t ck = xcb_query_tree(p->xc, p->root);
+	xcb_query_tree_reply_t *tr = xcb_query_tree_reply(p->xc, ck, NULL);
+
+	if (!tr)
+		return 0;
+	{
+		int           n    = xcb_query_tree_children_length(tr);
+		xcb_window_t *src  = xcb_query_tree_children(tr);
+		xcb_window_t *copy = NULL;
+
+		if (n > 0) {
+			copy = malloc((size_t) n * sizeof(xcb_window_t));
+			if (!copy) {
+				free(tr);
+				return 0;
+			}
+			memcpy(copy, src, (size_t) n * sizeof(xcb_window_t));
+		}
+		free(tr);
+		*wins_out = copy;
+		*n_out    = n;
+	}
+	return 1;
+}
+
+/* -------------------------------------------------------------------------
+ * window attributes batch
+ * ---------------------------------------------------------------------- */
+
+static int
+x11_get_window_attributes(PlatformCtx *p, xcb_window_t w,
+    int *override_redirect_out, int *map_state_out)
+{
+	xcb_get_window_attributes_cookie_t ck =
+	    xcb_get_window_attributes(p->xc, w);
+	xcb_get_window_attributes_reply_t *r =
+	    xcb_get_window_attributes_reply(p->xc, ck, NULL);
+
+	if (!r)
+		return 0;
+	*override_redirect_out = r->override_redirect;
+	*map_state_out         = r->map_state;
+	free(r);
+	return 1;
+}
+
+/* -------------------------------------------------------------------------
+ * raw property read
+ * ---------------------------------------------------------------------- */
+
+static xcb_get_property_reply_t *
+x11_get_prop_raw(PlatformCtx *p, xcb_window_t w, xcb_atom_t prop,
+    xcb_atom_t type, uint32_t long_length)
+{
+	xcb_get_property_cookie_t ck =
+	    xcb_get_property(p->xc, 0, w, prop, type, 0, long_length);
+	return xcb_get_property_reply(p->xc, ck, NULL);
+}
+
+/* -------------------------------------------------------------------------
+ * connection introspection
+ * ---------------------------------------------------------------------- */
+
+static int
+x11_get_connection_fd(PlatformCtx *p)
+{
+	if (!p->xc)
+		return -1;
+	return xcb_get_file_descriptor(p->xc);
+}
+
+/* -------------------------------------------------------------------------
+ * synchronous round-trip
+ * ---------------------------------------------------------------------- */
+
+static void
+x11_sync(PlatformCtx *p)
+{
+	xcb_get_input_focus_cookie_t ck = xcb_get_input_focus(p->xc);
+	xcb_get_input_focus_reply_t *r =
+	    xcb_get_input_focus_reply(p->xc, ck, NULL);
+
+	free(r);
+}
+
+/* -------------------------------------------------------------------------
+ * pixmap / colormap teardown
+ * ---------------------------------------------------------------------- */
+
+static void
+x11_free_pixmap(PlatformCtx *p, xcb_pixmap_t pm)
+{
+	xcb_free_pixmap(p->xc, pm);
+}
+
+static void
+x11_free_colormap(PlatformCtx *p, xcb_colormap_t cm)
+{
+	xcb_free_colormap(p->xc, cm);
+}
+
+/* -------------------------------------------------------------------------
+ * atom interning
+ * ---------------------------------------------------------------------- */
+
+static void
+x11_intern_atoms_batch(
+    PlatformCtx *p, const char **names, xcb_atom_t *atoms_out, int n)
+{
+	xcb_intern_atom_cookie_t *cookies;
+	xcb_intern_atom_reply_t  *reply;
+	int                       i;
+
+	if (n <= 0)
+		return;
+	cookies = ecalloc((size_t) n, sizeof *cookies);
+	for (i = 0; i < n; i++) {
+		uint16_t nlen = (uint16_t) strlen(names[i]);
+		cookies[i]    = xcb_intern_atom(p->xc, 0, nlen, names[i]);
+	}
+	for (i = 0; i < n; i++) {
+		reply        = xcb_intern_atom_reply(p->xc, cookies[i], NULL);
+		atoms_out[i] = reply ? reply->atom : XCB_ATOM_NONE;
+		free(reply);
+	}
+	free(cookies);
+}
+
+/* -------------------------------------------------------------------------
+ * generic window creation
+ * ---------------------------------------------------------------------- */
+
+static xcb_window_t
+x11_create_window(PlatformCtx *p, xcb_window_t parent, int x, int y, int w,
+    int h, uint32_t val_mask, const uint32_t *vals)
+{
+	xcb_window_t wid = xcb_generate_id(p->xc);
+
+	xcb_create_window(p->xc, XCB_COPY_FROM_PARENT, wid, parent, (int16_t) x,
+	    (int16_t) y, (uint16_t) w, (uint16_t) h, 0,
+	    XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, val_mask, vals);
+	return wid;
+}
+
+/* -------------------------------------------------------------------------
+ * root event mask / cursor selection
+ * ---------------------------------------------------------------------- */
+
+static void
+x11_select_root_events(PlatformCtx *p, uint32_t mask)
+{
+	xcb_change_window_attributes(p->xc, p->root, XCB_CW_EVENT_MASK, &mask);
+}
+
+static void
+x11_set_root_cursor(PlatformCtx *p, xcb_cursor_t cursor)
+{
+	xcb_change_window_attributes(p->xc, p->root, XCB_CW_CURSOR, &cursor);
+}
+
+/* -------------------------------------------------------------------------
+ * RandR setup
+ * ---------------------------------------------------------------------- */
+
+#ifdef XRANDR
+static void
+x11_randr_init(PlatformCtx *p)
+{
+	const xcb_query_extension_reply_t *ext =
+	    xcb_get_extension_data(p->xc, &xcb_randr_id);
+
+	if (ext && ext->present) {
+		p->randrbase = ext->first_event;
+		p->rrerrbase = ext->first_error;
+		xcb_randr_select_input(
+		    p->xc, p->root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE);
+	}
+}
+
+static double
+x11_randr_probe_dpi(PlatformCtx *p)
+{
+	xcb_randr_get_screen_resources_current_cookie_t src;
+	xcb_randr_get_screen_resources_current_reply_t *sr;
+	xcb_randr_crtc_t                               *crtcs;
+	int                                             i;
+	double                                          dpi = 0.0;
+
+	src = xcb_randr_get_screen_resources_current(p->xc, p->root);
+	sr  = xcb_randr_get_screen_resources_current_reply(p->xc, src, NULL);
+	if (!sr)
+		return 0.0;
+	crtcs = xcb_randr_get_screen_resources_current_crtcs(sr);
+	for (i = 0; i < (int) sr->num_crtcs && dpi == 0.0; i++) {
+		xcb_randr_get_crtc_info_cookie_t cic;
+		xcb_randr_get_crtc_info_reply_t *ci;
+		xcb_randr_output_t              *outputs;
+
+		cic = xcb_randr_get_crtc_info(p->xc, crtcs[i], XCB_CURRENT_TIME);
+		ci  = xcb_randr_get_crtc_info_reply(p->xc, cic, NULL);
+		if (!ci || ci->num_outputs == 0 || ci->width == 0) {
+			free(ci);
+			continue;
+		}
+		outputs = xcb_randr_get_crtc_info_outputs(ci);
+		{
+			xcb_randr_get_output_info_cookie_t oic;
+			xcb_randr_get_output_info_reply_t *oi;
+
+			oic =
+			    xcb_randr_get_output_info(p->xc, outputs[0], XCB_CURRENT_TIME);
+			oi = xcb_randr_get_output_info_reply(p->xc, oic, NULL);
+			if (oi && oi->mm_width > 0)
+				dpi = (double) ci->width / ((double) oi->mm_width / 25.4);
+			free(oi);
+		}
+		free(ci);
+	}
+	free(sr);
+	return dpi;
+}
+#endif /* XRANDR */
+
+/* -------------------------------------------------------------------------
+ * screen setup
+ * ---------------------------------------------------------------------- */
+
+static void
+x11_init_screen(PlatformCtx *p)
+{
+	xcb_screen_iterator_t sit = xcb_setup_roots_iterator(xcb_get_setup(p->xc));
+	int                   i;
+
+	for (i = 0; i < p->screen; i++)
+		xcb_screen_next(&sit);
+	p->sw   = (int) sit.data->width_in_pixels;
+	p->sh   = (int) sit.data->height_in_pixels;
+	p->root = sit.data->root;
+}
+
+/* -------------------------------------------------------------------------
+ * key symbol table lifecycle
+ * ---------------------------------------------------------------------- */
+
+static void
+x11_keysyms_alloc(PlatformCtx *p)
+{
+	p->keysyms = xcb_key_symbols_alloc(p->xc);
+}
+
+static void
+x11_keysyms_free(PlatformCtx *p)
+{
+	if (p->keysyms) {
+		xcb_key_symbols_free(p->keysyms);
+		p->keysyms = NULL;
+	}
+}
+
+/* -------------------------------------------------------------------------
+ * resource manager
+ * ---------------------------------------------------------------------- */
+
+static char *
+x11_get_resource_manager(PlatformCtx *p)
+{
+	xcb_intern_atom_cookie_t  ack;
+	xcb_intern_atom_reply_t  *ar;
+	xcb_atom_t                res_mgr;
+	xcb_get_property_cookie_t pck;
+	xcb_get_property_reply_t *pr;
+	char                     *resm;
+
+	ack = xcb_intern_atom(
+	    p->xc, 1, strlen("RESOURCE_MANAGER"), "RESOURCE_MANAGER");
+	ar = xcb_intern_atom_reply(p->xc, ack, NULL);
+	if (!ar || ar->atom == XCB_ATOM_NONE) {
+		free(ar);
+		return NULL;
+	}
+	res_mgr = ar->atom;
+	free(ar);
+
+	pck = xcb_get_property(
+	    p->xc, 0, p->root, res_mgr, XCB_ATOM_STRING, 0, 65536);
+	pr = xcb_get_property_reply(p->xc, pck, NULL);
+	if (!pr || pr->type == XCB_ATOM_NONE || pr->format != 8 ||
+	    pr->value_len == 0) {
+		free(pr);
+		return NULL;
+	}
+	resm = malloc(pr->value_len + 1);
+	if (!resm) {
+		free(pr);
+		return NULL;
+	}
+	memcpy(resm, xcb_get_property_value(pr), pr->value_len);
+	resm[pr->value_len] = '\0';
+	free(pr);
+	return resm;
+}
+
+/* -------------------------------------------------------------------------
  * XCB async error handler
  * ---------------------------------------------------------------------- */
 
@@ -1048,6 +1380,28 @@ WmBackend wm_backend_x11 = {
 	.update_geom              = x11_update_geom,
 	.poll_event               = x11_poll_event,
 	.next_event               = x11_next_event,
+	.grab_keyboard            = x11_grab_keyboard,
+	.ungrab_keyboard          = x11_ungrab_keyboard,
+	.ungrab_key               = x11_ungrab_key,
+	.query_root_tree          = x11_query_root_tree,
+	.get_window_attributes    = x11_get_window_attributes,
+	.get_prop_raw             = x11_get_prop_raw,
+	.get_connection_fd        = x11_get_connection_fd,
+	.sync                     = x11_sync,
+	.free_pixmap              = x11_free_pixmap,
+	.free_colormap            = x11_free_colormap,
+	.intern_atoms_batch       = x11_intern_atoms_batch,
+	.create_window            = x11_create_window,
+	.select_root_events       = x11_select_root_events,
+	.set_root_cursor          = x11_set_root_cursor,
+#ifdef XRANDR
+	.randr_init      = x11_randr_init,
+	.randr_probe_dpi = x11_randr_probe_dpi,
+#endif
+	.init_screen          = x11_init_screen,
+	.keysyms_alloc        = x11_keysyms_alloc,
+	.keysyms_free         = x11_keysyms_free,
+	.get_resource_manager = x11_get_resource_manager,
 };
 
 WmBackend *g_wm_backend = NULL;
